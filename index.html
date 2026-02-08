@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark" translate="no">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="google" content="notranslate" />
+    <title>PRISM (食鉴)</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts & Material Symbols -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@200..800&family=Noto+Serif+SC:wght@200..900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "primary": "#11c4d4", 
+              "background-light": "#f6f8f8",
+              "background-dark": "#080c0d",
+              "surface-dark": "#131b1d",
+              "ochre": "#d9a441",
+              "purple": "#9d4edd",
+              "mineral": "#7aa0a0",
+            },
+            fontFamily: {
+              "display": ["Manrope", "sans-serif"],
+              "serif": ["'Noto Serif SC'", "serif"],
+            },
+            backgroundImage: {
+              'shanshui-gradient': 'linear-gradient(to bottom, #080c0d 0%, #0d1416 100%)',
+            },
+            boxShadow: {
+              'glow-cyan': '0 0 15px rgba(17, 196, 212, 0.3)',
+              'glow-ochre': '0 0 15px rgba(217, 164, 65, 0.2)',
+              'glow-purple': '0 0 15px rgba(157, 78, 221, 0.2)',
+            }
+          },
+        },
+      }
+    </script>
+    <style>
+      body {
+        background-color: #080c0d;
+        color: white;
+        -webkit-font-smoothing: antialiased;
+      }
+      /* Hide scrollbar for clean UI */
+      ::-webkit-scrollbar {
+        width: 0px;
+        background: transparent;
+      }
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      }
+      .icon-filled {
+        font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.2.4/",
+    "react": "https://esm.sh/react@^19.2.4",
+    "recharts": "https://esm.sh/recharts@^3.7.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>

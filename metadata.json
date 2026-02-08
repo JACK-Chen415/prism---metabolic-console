@@ -1,0 +1,8 @@
+{
+  "name": "PRISM - Metabolic Console",
+  "description": "A high-fidelity metabolic health tracking application featuring AI insights, biometric logging, and a unified prism interface.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
