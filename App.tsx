@@ -72,49 +72,49 @@ const INITIAL_MEALS: Meal[] = [
 
 // Initial Messages Data
 const INITIAL_APP_MESSAGES: AppMessage[] = [
-    {
-      id: 0,
-      type: 'ADVICE',
-      title: '代谢状态良好',
-      time: '现在',
-      content: '今日各项摄入控制良好，请继续保持。建议晚餐后散步 20 分钟。',
-      attribution: '归因：今日热量与钠摄入均在合理区间。',
-      isRead: false,
-    },
-    {
-      id: 2,
-      type: 'ADVICE',
-      title: '晚餐备选建议',
-      time: '申时 16:45',
-      content: '检测到今日蛋白质摄入不足。推荐晚餐包含清蒸鱼类或白灼虾。',
-      attribution: '归因：早餐与午餐均为碳水主导，缺乏优质蛋白。',
-      isRead: false,
-    },
-    {
-      id: 1,
-      type: 'WARNING',
-      title: '钠摄入预警',
-      time: '午时 13:20',
-      content: '午餐钠摄入已达日限额 85%。建议额外补充 250ml 水分，促进排泄。',
-      attribution: '归因：识别到午餐含有大量生抽与调味酱汁。',
-      isRead: false,
-    },
-    {
-      id: 3,
-      type: 'BRIEF',
-      title: '周代谢简报',
-      time: '辰时 09:00',
-      content: '本周血糖波动率下降 5%，尿酸水平维持在正常区间。',
-      attribution: '归因：高纤维饮食干预初见成效。',
-      isRead: true,
-    }
-  ];
+  {
+    id: 0,
+    type: 'ADVICE',
+    title: '代谢状态良好',
+    time: '现在',
+    content: '今日各项摄入控制良好，请继续保持。建议晚餐后散步 20 分钟。',
+    attribution: '归因：今日热量与钠摄入均在合理区间。',
+    isRead: false,
+  },
+  {
+    id: 2,
+    type: 'ADVICE',
+    title: '晚餐备选建议',
+    time: '申时 16:45',
+    content: '检测到今日蛋白质摄入不足。推荐晚餐包含清蒸鱼类或白灼虾。',
+    attribution: '归因：早餐与午餐均为碳水主导，缺乏优质蛋白。',
+    isRead: false,
+  },
+  {
+    id: 1,
+    type: 'WARNING',
+    title: '钠摄入预警',
+    time: '午时 13:20',
+    content: '午餐钠摄入已达日限额 85%。建议额外补充 250ml 水分，促进排泄。',
+    attribution: '归因：识别到午餐含有大量生抽与调味酱汁。',
+    isRead: false,
+  },
+  {
+    id: 3,
+    type: 'BRIEF',
+    title: '周代谢简报',
+    time: '辰时 09:00',
+    content: '本周血糖波动率下降 5%，尿酸水平维持在正常区间。',
+    attribution: '归因：高纤维饮食干预初见成效。',
+    isRead: true,
+  }
+];
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<View>(View.SPLASH);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [isGuest, setIsGuest] = useState(false);
-  
+
   // Shared State for Medical Conditions
   const [medicalConditions, setMedicalConditions] = useState<ConditionData[]>(INITIAL_MEDICAL_DATA);
 
@@ -172,19 +172,19 @@ const App: React.FC = () => {
     const sodiumLimit = dailyTargets.sodium;
 
     if (totalSodium > sodiumLimit) {
-        // Check if latest message is already a warning to avoid duplicates
-        if (appMessages[0].type !== 'WARNING') {
-            const warningMsg: AppMessage = {
-                id: Date.now(),
-                type: 'WARNING',
-                title: '钠摄入超标预警',
-                time: new Date().toLocaleTimeString('zh-CN', {hour: '2-digit', minute:'2-digit'}),
-                content: `今日钠摄入已超出 ${totalSodium - sodiumLimit}mg。建议接下来大量饮水（至少500ml）并食用含钾食物（如香蕉）以促进代谢。`,
-                attribution: '归因：最新饮食记录显示钠含量较高。',
-                isRead: false
-            };
-            setAppMessages(prev => [warningMsg, ...prev]);
-        }
+      // Check if latest message is already a warning to avoid duplicates
+      if (appMessages[0].type !== 'WARNING') {
+        const warningMsg: AppMessage = {
+          id: Date.now(),
+          type: 'WARNING',
+          title: '钠摄入超标预警',
+          time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+          content: `今日钠摄入已超出 ${totalSodium - sodiumLimit}mg。建议接下来大量饮水（至少500ml）并食用含钾食物（如香蕉）以促进代谢。`,
+          attribution: '归因：最新饮食记录显示钠含量较高。',
+          isRead: false
+        };
+        setAppMessages(prev => [warningMsg, ...prev]);
+      }
     }
   }, [meals, dailyTargets.sodium]);
 
@@ -209,7 +209,7 @@ const App: React.FC = () => {
   return (
     <div className="relative min-h-screen w-full max-w-md mx-auto bg-gradient-to-b from-[#0c1416] to-[#132320] overflow-hidden flex flex-col">
       {/* Background Overlay Texture */}
-      <div 
+      <div
         className="fixed inset-0 z-0 pointer-events-none opacity-30 mix-blend-overlay"
         style={{
           backgroundImage: 'url("/images/bg-texture.png")'
@@ -221,11 +221,11 @@ const App: React.FC = () => {
       {/* Main Content Area */}
       <main className="flex-1 relative z-10 overflow-y-auto scroll-smooth no-scrollbar h-full">
         {currentView === View.LOGIN && (
-          <LoginView 
+          <LoginView
             onViewChange={(view) => {
               setIsGuest(false); // Real login
               handleNavChange(view);
-            }} 
+            }}
             onSkipLogin={() => {
               setIsGuest(true);
               setCurrentView(View.HOME);
@@ -233,32 +233,32 @@ const App: React.FC = () => {
           />
         )}
         {currentView === View.REGISTER && (
-          <RegisterView 
+          <RegisterView
             onViewChange={(view) => {
               setIsGuest(false); // Real registration
               handleNavChange(view);
-            }} 
+            }}
           />
         )}
         {currentView === View.FORGOT_PASSWORD && (
-          <ForgotPasswordView 
+          <ForgotPasswordView
             onViewChange={(view) => {
               setIsGuest(false);
               handleNavChange(view);
-            }} 
+            }}
           />
         )}
         {currentView === View.HOME && (
-          <HomeView 
-            onViewChange={handleNavChange} 
+          <HomeView
+            onViewChange={handleNavChange}
             meals={meals}
             dailyTargets={dailyTargets}
             latestMessage={appMessages[0]}
           />
         )}
         {currentView === View.LOG && (
-          <LogView 
-            userProfile={userProfile} 
+          <LogView
+            userProfile={userProfile}
             meals={meals}
             dailyTargets={dailyTargets}
             onAddMeal={handleAddMeal}
@@ -266,27 +266,27 @@ const App: React.FC = () => {
         )}
         {currentView === View.CHAT && <ChatView onViewChange={handleNavChange} />}
         {currentView === View.PROFILE && (
-          <ProfileView 
-            onViewChange={handleNavChange} 
+          <ProfileView
+            onViewChange={handleNavChange}
             medicalConditions={medicalConditions}
           />
         )}
         {currentView === View.CAMERA && <CameraView onViewChange={handleNavChange} />}
         {currentView === View.SETTINGS && (
-          <SettingsView 
-            onViewChange={handleNavChange} 
+          <SettingsView
+            onViewChange={handleNavChange}
             userProfile={userProfile}
             onUpdateProfile={setUserProfile}
           />
         )}
         {currentView === View.MESSAGES && (
-          <MessageView 
-            onViewChange={handleNavChange} 
+          <MessageView
+            onViewChange={handleNavChange}
             messages={appMessages}
           />
         )}
         {currentView === View.MEDICAL_ARCHIVES && (
-          <MedicalArchivesView 
+          <MedicalArchivesView
             onViewChange={handleNavChange}
             conditions={medicalConditions}
             setConditions={setMedicalConditions}
@@ -301,13 +301,13 @@ const App: React.FC = () => {
         currentView !== View.LOGIN &&
         currentView !== View.REGISTER &&
         currentView !== View.FORGOT_PASSWORD &&
-        currentView !== View.CAMERA && 
-        currentView !== View.SETTINGS && 
+        currentView !== View.CAMERA &&
+        currentView !== View.SETTINGS &&
         currentView !== View.MESSAGES &&
         currentView !== View.HEALTH_REPORT_ARCHIVES
       ) && (
-        <BottomNav currentView={currentView} onViewChange={handleNavChange} />
-      )}
+          <BottomNav currentView={currentView} onViewChange={handleNavChange} />
+        )}
     </div>
   );
 };

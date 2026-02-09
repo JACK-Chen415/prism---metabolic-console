@@ -1,0 +1,70 @@
+# Prism Metabolic Console - Docker Compose 部署配置
+
+services:
+  # PostgreSQL 数据库
+  db:
+    image: postgres:16-alpine
+    container_name: prism_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-prism_secure_password}
+      POSTGRES_DB: prism_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI 后端服务
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: prism_backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:${DB_PASSWORD:-prism_secure_password}@db:5432/prism_db
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-in-production}
+      VOLCENGINE_ACCESS_KEY: ${VOLCENGINE_ACCESS_KEY}
+      VOLCENGINE_SECRET_KEY: ${VOLCENGINE_SECRET_KEY}
+      DOUBAO_ENDPOINT_ID: ${DOUBAO_ENDPOINT_ID}
+      DOUBAO_VISION_ENDPOINT_ID: ${DOUBAO_VISION_ENDPOINT_ID}
+      CORS_ORIGINS: '["http://localhost:5173","http://localhost:3000","https://your-domain.com"]'
+    volumes:
+      - uploads_data:/app/uploads
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx 反向代理 (可选，生产环境推荐)
+  nginx:
+    image: nginx:alpine
+    container_name: prism_nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./dist:/usr/share/nginx/html:ro
+    profiles:
+      - production
+
+volumes:
+  postgres_data:
+  uploads_data:

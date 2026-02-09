@@ -1,3 +1,8 @@
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
 # Logs
 logs
 *.log
@@ -22,3 +27,14 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+backend/venv/
+backend/.venv/
+*.egg-info/
+uploads/
