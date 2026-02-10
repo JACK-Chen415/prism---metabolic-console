@@ -46,7 +46,15 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = 10
     
     # CORS 配置
-    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://localhost:3003",
+        "http://localhost:3004",
+        "http://localhost:3005"
+    ]
 
 
 @lru_cache

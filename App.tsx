@@ -248,6 +248,20 @@ const App: React.FC = () => {
     setCurrentView(View.LOGIN);
   }, []);
 
+  // 标记所有消息为已读
+  const handleMarkAllRead = useCallback(async () => {
+    // 更新本地状态
+    setAppMessages(prev => prev.map(m => ({ ...m, isRead: true })));
+    // 同步到后端
+    if (TokenManager.isAuthenticated()) {
+      try {
+        await MessagesAPI.markAllAsRead();
+      } catch (err) {
+        console.error('标记已读失败:', err);
+      }
+    }
+  }, []);
+
   // 监听 auth:logout 事件（API 层 Token 刷新失败时触发）
   useEffect(() => {
     const onAuthLogout = () => {
@@ -451,6 +465,7 @@ const App: React.FC = () => {
           <MessageView
             onViewChange={handleNavChange}
             messages={appMessages}
+            onMarkAllRead={handleMarkAllRead}
           />
         )}
         {currentView === View.MEDICAL_ARCHIVES && (

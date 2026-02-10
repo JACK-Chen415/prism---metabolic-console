@@ -62,6 +62,117 @@
       .icon-filled {
         font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
       }
+
+      /* ===== 聊天气泡 Markdown 渲染样式 ===== */
+      /* 标题 */
+      .rounded-xl h3 {
+        font-size: 1rem;
+        font-weight: 700;
+        margin: 1em 0 0.5em 0;
+        padding-bottom: 0.3em;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+        color: #11c4d4;
+      }
+      .rounded-xl h3:first-child {
+        margin-top: 0;
+      }
+      .rounded-xl h4 {
+        font-size: 0.95rem;
+        font-weight: 700;
+        margin: 0.8em 0 0.4em 0;
+        color: #d9a441;
+      }
+      .rounded-xl h5 {
+        font-size: 0.875rem;
+        font-weight: 600;
+        margin: 0.6em 0 0.3em 0;
+        color: rgba(255,255,255,0.85);
+      }
+      /* 段落 */
+      .rounded-xl p {
+        margin: 0.5em 0;
+        line-height: 1.7;
+      }
+      /* 分隔线 */
+      .rounded-xl hr {
+        border: none;
+        border-top: 1px solid rgba(255,255,255,0.1);
+        margin: 0.8em 0;
+      }
+      /* 无序列表 */
+      .rounded-xl ul {
+        list-style: disc;
+        padding-left: 1.5em;
+        margin: 0.4em 0;
+      }
+      /* 有序列表 */
+      .rounded-xl ol {
+        list-style: decimal;
+        padding-left: 1.5em;
+        margin: 0.4em 0;
+      }
+      .rounded-xl li {
+        margin: 0.25em 0;
+        line-height: 1.6;
+      }
+      /* 嵌套列表 */
+      .rounded-xl li > ul,
+      .rounded-xl li > ol {
+        margin: 0.2em 0;
+      }
+      /* 加粗 */
+      .rounded-xl strong {
+        color: #ffffff;
+        font-weight: 700;
+      }
+      /* 引用块 */
+      .rounded-xl blockquote {
+        border-left: 3px solid #11c4d4;
+        padding: 0.4em 0.8em;
+        margin: 0.5em 0;
+        background: rgba(17,196,212,0.05);
+        border-radius: 0 6px 6px 0;
+      }
+      /* 行内代码 */
+      .rounded-xl code {
+        background: rgba(255,255,255,0.08);
+        padding: 0.15em 0.4em;
+        border-radius: 4px;
+        font-size: 0.85em;
+        font-family: 'Courier New', monospace;
+      }
+      /* 代码块 */
+      .rounded-xl pre {
+        background: rgba(0,0,0,0.3);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 8px;
+        padding: 0.8em 1em;
+        margin: 0.5em 0;
+        overflow-x: auto;
+        font-size: 0.8em;
+        line-height: 1.5;
+      }
+      .rounded-xl pre code {
+        background: none;
+        padding: 0;
+      }
+      /* 表格 */
+      .rounded-xl table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 0.5em 0;
+        font-size: 0.85em;
+      }
+      .rounded-xl th, .rounded-xl td {
+        border: 1px solid rgba(255,255,255,0.1);
+        padding: 0.4em 0.6em;
+        text-align: left;
+      }
+      .rounded-xl th {
+        background: rgba(17,196,212,0.1);
+        font-weight: 700;
+        color: #11c4d4;
+      }
     </style>
   <script type="importmap">
 {

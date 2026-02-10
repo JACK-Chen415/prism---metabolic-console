@@ -1,6 +1,22 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { View } from '../../types';
 import { ChatAPI, TokenManager } from '../../services/api';
+import { marked } from 'marked';
+
+// 配置 marked：启用换行符支持，关闭不需要的功能
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+});
+
+// Markdown 渲染辅助函数
+const renderMarkdown = (content: string): string => {
+  try {
+    return marked.parse(content) as string;
+  } catch {
+    return content;
+  }
+};
 
 interface ChatViewProps {
   onViewChange: (view: View) => void;
@@ -19,55 +35,67 @@ interface Message {
   timestamp: number;
 }
 
-// Initial time reference for demo purposes
-const NOW = Date.now();
-
-const INITIAL_MESSAGES: Message[] = [
-  {
-    id: '3',
-    role: 'SYSTEM',
-    content: '聊天风格已切换：分析师模式',
-    timestamp: NOW - 1000 * 60 * 30 // 30 minutes ago
-  },
-  {
-    id: '4',
-    role: 'AI',
-    aiMode: 'STRICT',
-    aiName: '食鉴AI',
-    content: '正在切换协议。请立即上传菜单照片。<span class="text-primary font-bold">绝对禁止点油条。</span>',
-    timestamp: NOW - 1000 * 60 * 29 // 29 minutes ago
-  },
-  {
-    id: '5',
-    role: 'USER',
-    content: '明白了，这是菜单。',
-    image: '/images/menu-sample.png',
-    timestamp: NOW - 1000 * 60 * 2 // 2 minutes ago
-  }
-];
-
 const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
-  const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [currentMode, setCurrentMode] = useState<'STRICT' | 'GENTLE'>('STRICT');
-  const [sessionId, setSessionId] = useState<number | null>(null);
+  const [sessionId, setSessionId] = useState<number | null>(() => {
+    const saved = sessionStorage.getItem('PRISM_CHAT_SESSION_ID');
+    return saved ? parseInt(saved, 10) : null;
+  });
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // 创建或恢复会话
+  // 创建或恢复会话，加载历史消息
   useEffect(() => {
-    if (TokenManager.isAuthenticated() && !sessionId) {
-      ChatAPI.createSession('食鉴AI对话').then((res: any) => {
-        if (res && res.id) {
-          setSessionId(res.id);
-          setMessages([]); // 清除demo消息，使用真实会话
+    const initSession = async () => {
+      if (!TokenManager.isAuthenticated()) return;
+
+      // 1. 尝试复用已有会话
+      const savedId = sessionStorage.getItem('PRISM_CHAT_SESSION_ID');
+      if (savedId) {
+        try {
+          setIsLoadingHistory(true);
+          const session = await ChatAPI.getSession(parseInt(savedId, 10)) as any;
+          setSessionId(session.id);
+          // 后端消息格式 → 前端 Message 格式
+          const loadedMsgs: Message[] = (session.messages || []).map((m: any) => {
+            const role = (m.role || '').toUpperCase(); // 后端返回小写 'user'/'assistant'
+            const isUser = role === 'USER';
+            return {
+              id: m.id.toString(),
+              role: isUser ? 'USER' as MessageRole : 'AI' as MessageRole,
+              content: m.content,
+              aiMode: !isUser ? 'STRICT' as const : undefined,
+              aiName: !isUser ? '食鉴AI' : undefined,
+              timestamp: new Date(m.created_at).getTime(),
+            };
+          });
+          setMessages(loadedMsgs);
+          setIsLoadingHistory(false);
+          return;
+        } catch {
+          // 会话不存在或失效，清除并创建新的
+          sessionStorage.removeItem('PRISM_CHAT_SESSION_ID');
+          setIsLoadingHistory(false);
         }
-      }).catch(err => {
+      }
+
+      // 2. 创建新会话
+      try {
+        const res = await ChatAPI.createSession('食鉴AI对话') as any;
+        if (res?.id) {
+          setSessionId(res.id);
+          sessionStorage.setItem('PRISM_CHAT_SESSION_ID', res.id.toString());
+        }
+      } catch (err) {
         console.error('创建会话失败:', err);
-      });
-    }
+      }
+    };
+    initSession();
   }, []);
 
   // 自动滚动到底部
@@ -294,10 +322,19 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
       handleSendMessage();
     }
+  };
+
+  // textarea 自动增高
+  const handleTextareaInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInputValue(e.target.value);
+    const el = e.target;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px'; // 最大约4行
   };
 
   return (
@@ -407,7 +444,7 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
                         ? 'bg-[#0f282d] border border-primary/20'
                         : 'bg-surface-dark border border-white/5'
                         }`}
-                      dangerouslySetInnerHTML={{ __html: msg.content }} // Allow HTML for bolding/coloring
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
                     />
                   </div>
                 </div>
@@ -468,20 +505,20 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
           </button>
         </div>
 
-        <div className="flex items-center gap-2 p-1.5 bg-surface-dark border border-white/10 rounded-full shadow-lg">
+        <div className="flex items-end gap-2 p-1.5 bg-surface-dark border border-white/10 rounded-2xl shadow-lg">
           <button
             onClick={handleGalleryClick}
-            className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-white transition-colors"
+            className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-white transition-colors shrink-0"
           >
             <span className="material-symbols-outlined">add_photo_alternate</span>
           </button>
-          <input
-            type="text"
+          <textarea
             value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
+            onChange={handleTextareaInput}
             onKeyDown={handleKeyDown}
             placeholder={isListening ? "正在聆听..." : "咨询关于您的代谢健康..."}
-            className={`flex-1 bg-transparent border-none outline-none text-white placeholder-slate-500 text-sm focus:ring-0 caret-primary font-serif tracking-wide font-bold ${isListening ? 'animate-pulse' : ''}`}
+            rows={1}
+            className={`flex-1 bg-transparent border-none outline-none text-white placeholder-slate-500 text-sm focus:ring-0 caret-primary font-serif tracking-wide font-bold resize-none max-h-[120px] py-2.5 ${isListening ? 'animate-pulse' : ''}`}
           />
           <button
             onClick={startListening}

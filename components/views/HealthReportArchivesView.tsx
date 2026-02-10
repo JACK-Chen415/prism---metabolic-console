@@ -96,7 +96,7 @@ const HealthReportArchivesView: React.FC<HealthReportArchivesViewProps> = ({ onV
   ];
 
   const getStatusStyle = (status: string) => {
-    switch(status) {
+    switch (status) {
       case 'IMPROVED':
         return { bg: 'bg-[#10b981]', text: '改善', color: 'text-[#10b981]' };
       case 'FLUCTUATING':
@@ -116,7 +116,7 @@ const HealthReportArchivesView: React.FC<HealthReportArchivesViewProps> = ({ onV
 
   const handleAiInterpretation = () => {
     // Generate context string
-    const context = reports.map(r => 
+    const context = reports.map(r =>
       `【${r.year}.${r.date} ${r.title}】\n` +
       `状态: ${r.status === 'IMPROVED' ? '改善' : r.status === 'FLUCTUATING' ? '波动' : '平稳'}\n` +
       `摘要: ${r.summary}\n` +
@@ -137,120 +137,120 @@ const HealthReportArchivesView: React.FC<HealthReportArchivesViewProps> = ({ onV
         {/* Detail Header */}
         <div className="sticky top-0 z-20 bg-[#080c0d]/95 backdrop-blur-md border-b border-white/5">
           <div className="flex items-center gap-4 p-4">
-              <button 
-                  onClick={() => setSelectedReport(null)}
-                  className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors -ml-2"
-              >
-                  <span className="material-symbols-outlined text-white/80">arrow_back</span>
-              </button>
-              <div className="flex flex-col">
-                  <h1 className="text-white text-lg font-bold font-serif">{selectedReport.title}</h1>
-                  <p className="text-xs text-slate-500 font-display">{selectedReport.year}.{selectedReport.date}</p>
-              </div>
+            <button
+              onClick={() => setSelectedReport(null)}
+              className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors -ml-2"
+            >
+              <span className="material-symbols-outlined text-white/80">arrow_back</span>
+            </button>
+            <div className="flex flex-col">
+              <h1 className="text-white text-lg font-bold font-serif">{selectedReport.title}</h1>
+              <p className="text-xs text-slate-500 font-display">{selectedReport.year}.{selectedReport.date}</p>
+            </div>
           </div>
-          
+
           {/* Tabs */}
           <div className="flex px-4 border-b border-white/5">
-            <button 
-                onClick={() => setActiveTab('ANALYSIS')}
-                className={`flex-1 py-3 text-sm font-medium transition-all relative ${activeTab === 'ANALYSIS' ? 'text-[#45b7aa]' : 'text-slate-400'}`}
+            <button
+              onClick={() => setActiveTab('ANALYSIS')}
+              className={`flex-1 py-3 text-sm font-medium transition-all relative ${activeTab === 'ANALYSIS' ? 'text-[#45b7aa]' : 'text-slate-400'}`}
             >
-                智能分析
-                {activeTab === 'ANALYSIS' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#45b7aa]"></div>}
+              智能分析
+              {activeTab === 'ANALYSIS' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#45b7aa]"></div>}
             </button>
-            <button 
-                onClick={() => setActiveTab('ORIGINAL')}
-                className={`flex-1 py-3 text-sm font-medium transition-all relative ${activeTab === 'ORIGINAL' ? 'text-[#45b7aa]' : 'text-slate-400'}`}
+            <button
+              onClick={() => setActiveTab('ORIGINAL')}
+              className={`flex-1 py-3 text-sm font-medium transition-all relative ${activeTab === 'ORIGINAL' ? 'text-[#45b7aa]' : 'text-slate-400'}`}
             >
-                原始报告
-                {activeTab === 'ORIGINAL' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#45b7aa]"></div>}
+              原始报告
+              {activeTab === 'ORIGINAL' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#45b7aa]"></div>}
             </button>
           </div>
         </div>
 
         {/* Content Area */}
         <div className="flex-1 overflow-y-auto p-4 pb-20">
-          
+
           {activeTab === 'ANALYSIS' ? (
             <div className="space-y-6">
-                {/* 1. Summary Card */}
-                <div className="bg-[#162624] border border-[#45b7aa]/20 rounded-xl p-5 shadow-lg relative overflow-hidden">
-                    <div className="absolute top-0 right-0 p-3 opacity-10">
-                        <span className="material-symbols-outlined text-6xl text-[#45b7aa]">psychology</span>
-                    </div>
-                    <h3 className="text-[#45b7aa] font-bold font-serif text-sm mb-2 flex items-center gap-2">
-                        <span className="material-symbols-outlined text-base">auto_awesome</span>
-                        AI 综合解读
-                    </h3>
-                    <p className="text-white/90 text-sm leading-relaxed text-justify font-sans">
-                        {selectedReport.details.aiAdvice}
-                    </p>
-                    
-                    {/* Abnormal Tags */}
-                    {selectedReport.details.abnormalities.length > 0 && (
-                        <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-white/5">
-                            {selectedReport.details.abnormalities.map((tag, idx) => (
-                                <span key={idx} className="px-2 py-1 rounded bg-ochre/10 text-ochre text-xs font-bold border border-ochre/20">
-                                    ! {tag}
-                                </span>
-                            ))}
-                        </div>
-                    )}
+              {/* 1. Summary Card */}
+              <div className="bg-[#162624] border border-[#45b7aa]/20 rounded-xl p-5 shadow-lg relative overflow-hidden">
+                <div className="absolute top-0 right-0 p-3 opacity-10">
+                  <span className="material-symbols-outlined text-6xl text-[#45b7aa]">psychology</span>
                 </div>
+                <h3 className="text-[#45b7aa] font-bold font-serif text-sm mb-2 flex items-center gap-2">
+                  <span className="material-symbols-outlined text-base">auto_awesome</span>
+                  AI 综合解读
+                </h3>
+                <p className="text-white/90 text-sm leading-relaxed text-justify font-sans">
+                  {selectedReport.details.aiAdvice}
+                </p>
 
-                {/* 2. Metrics Table */}
-                <div className="space-y-3">
-                    <h3 className="text-white font-serif text-base font-bold pl-1 border-l-2 border-white/20">关键指标详情</h3>
-                    <div className="bg-[#131b1d] border border-white/5 rounded-xl overflow-hidden">
-                        <table className="w-full text-left text-sm">
-                            <thead className="bg-white/5 text-slate-400 font-medium">
-                                <tr>
-                                    <th className="px-4 py-3 font-normal">项目</th>
-                                    <th className="px-4 py-3 font-normal text-right">结果</th>
-                                    <th className="px-4 py-3 font-normal text-right">参考值</th>
-                                    <th className="px-4 py-3 font-normal text-center w-12">状态</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-white/5">
-                                {selectedReport.details.metrics.map((metric, idx) => {
-                                    const style = getStatusStyle(metric.status);
-                                    return (
-                                        <tr key={idx} className="hover:bg-white/5 transition-colors">
-                                            <td className="px-4 py-3 text-white font-medium">{metric.name}</td>
-                                            <td className={`px-4 py-3 text-right font-display font-bold ${metric.status !== 'NORMAL' ? 'text-ochre' : 'text-white'}`}>
-                                                {metric.value} <span className="text-[10px] text-slate-500 font-normal">{metric.unit}</span>
-                                            </td>
-                                            <td className="px-4 py-3 text-right text-slate-500 text-xs font-display">{metric.refRange}</td>
-                                            <td className="px-4 py-3 text-center">
-                                                <span className={`material-symbols-outlined text-base ${style.color}`}>
-                                                    {style.icon}
-                                                </span>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
-                    </div>
+                {/* Abnormal Tags */}
+                {selectedReport.details.abnormalities.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-white/5">
+                    {selectedReport.details.abnormalities.map((tag, idx) => (
+                      <span key={idx} className="px-2 py-1 rounded bg-ochre/10 text-ochre text-xs font-bold border border-ochre/20">
+                        ! {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* 2. Metrics Table */}
+              <div className="space-y-3">
+                <h3 className="text-white font-serif text-base font-bold pl-1 border-l-2 border-white/20">关键指标详情</h3>
+                <div className="bg-[#131b1d] border border-white/5 rounded-xl overflow-hidden">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-white/5 text-slate-400 font-medium">
+                      <tr>
+                        <th className="px-4 py-3 font-normal">项目</th>
+                        <th className="px-4 py-3 font-normal text-right">结果</th>
+                        <th className="px-4 py-3 font-normal text-right">参考值</th>
+                        <th className="px-4 py-3 font-normal text-center w-12">状态</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {selectedReport.details.metrics.map((metric, idx) => {
+                        const style = getStatusStyle(metric.status);
+                        return (
+                          <tr key={idx} className="hover:bg-white/5 transition-colors">
+                            <td className="px-4 py-3 text-white font-medium">{metric.name}</td>
+                            <td className={`px-4 py-3 text-right font-display font-bold ${metric.status !== 'NORMAL' ? 'text-ochre' : 'text-white'}`}>
+                              {metric.value} <span className="text-[10px] text-slate-500 font-normal">{metric.unit}</span>
+                            </td>
+                            <td className="px-4 py-3 text-right text-slate-500 text-xs font-display">{metric.refRange}</td>
+                            <td className="px-4 py-3 text-center">
+                              <span className={`material-symbols-outlined text-base ${style.color}`}>
+                                {style.icon}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
+              </div>
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center h-full min-h-[50vh] gap-4">
-                {selectedReport.details.imageUrl ? (
-                     <div className="w-full rounded-xl overflow-hidden border border-white/10 shadow-lg relative group">
-                        <img src={selectedReport.details.imageUrl} alt="Original Report" className="w-full h-auto object-cover" />
-                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                            <button className="px-4 py-2 bg-white/20 backdrop-blur rounded-full text-white font-bold flex items-center gap-2 hover:bg-white/30">
-                                <span className="material-symbols-outlined">zoom_in</span> 查看大图
-                            </button>
-                        </div>
-                     </div>
-                ) : (
-                    <div className="flex flex-col items-center text-slate-500">
-                         <span className="material-symbols-outlined text-4xl mb-2 opacity-50">image_not_supported</span>
-                         <p className="text-sm">暂无原始图片存档</p>
-                    </div>
-                )}
+              {selectedReport.details.imageUrl ? (
+                <div className="w-full rounded-xl overflow-hidden border border-white/10 shadow-lg relative group">
+                  <img src={selectedReport.details.imageUrl} alt="Original Report" className="w-full h-auto object-cover" />
+                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                    <button className="px-4 py-2 bg-white/20 backdrop-blur rounded-full text-white font-bold flex items-center gap-2 hover:bg-white/30">
+                      <span className="material-symbols-outlined">zoom_in</span> 查看大图
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center text-slate-500">
+                  <span className="material-symbols-outlined text-4xl mb-2 opacity-50">image_not_supported</span>
+                  <p className="text-sm">暂无原始图片存档</p>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -265,28 +265,28 @@ const HealthReportArchivesView: React.FC<HealthReportArchivesViewProps> = ({ onV
       <div className="sticky top-0 z-20 bg-[#080c0d]/95 backdrop-blur-md border-b border-white/5 pb-2">
         {/* Nav Bar */}
         <div className="flex items-center gap-4 p-4">
-            <button 
-                onClick={() => onViewChange(View.PROFILE)}
-                className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors -ml-2"
-            >
-                <span className="material-symbols-outlined text-white/80">arrow_back</span>
-            </button>
-            <h1 className="text-white text-xl font-bold font-serif tracking-widest">体检档案</h1>
+          <button
+            onClick={() => onViewChange(View.PROFILE)}
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors -ml-2"
+          >
+            <span className="material-symbols-outlined text-white/80">arrow_back</span>
+          </button>
+          <h1 className="text-white text-xl font-bold font-serif tracking-widest">体检档案</h1>
         </div>
-        
+
         {/* Key Metrics Ticker */}
         <div className="px-4 overflow-hidden">
-            <div className="bg-[#131b1d] rounded-lg p-2.5 flex items-center gap-3 border border-white/5 shadow-inner">
-                <span className="material-symbols-outlined text-[#45b7aa] text-lg shrink-0">analytics</span>
-                <div className="flex-1 overflow-hidden whitespace-nowrap">
-                    <p className="text-xs text-slate-300 font-display animate-marquee inline-block">
-                        最新数据 (2023.10.24) &nbsp;|&nbsp; 
-                        <span className="text-[#10b981]">尿酸 342 (正常)</span> &nbsp;|&nbsp; 
-                        <span className="text-[#10b981]">血压 118/78 (正常)</span> &nbsp;|&nbsp; 
-                        <span className="text-ochre">体重 72.5kg (微胖)</span>
-                    </p>
-                </div>
+          <div className="bg-[#131b1d] rounded-lg p-2.5 flex items-center gap-3 border border-white/5 shadow-inner">
+            <span className="material-symbols-outlined text-[#45b7aa] text-lg shrink-0">analytics</span>
+            <div className="flex-1 overflow-hidden whitespace-nowrap">
+              <p className="text-xs text-slate-300 font-display animate-marquee inline-block">
+                最新数据 (2023.10.24) &nbsp;|&nbsp;
+                <span className="text-[#10b981]">尿酸 342 (正常)</span> &nbsp;|&nbsp;
+                <span className="text-[#10b981]">血压 118/78 (正常)</span> &nbsp;|&nbsp;
+                <span className="text-ochre">体重 72.5kg (微胖)</span>
+              </p>
             </div>
+          </div>
         </div>
       </div>
 
@@ -296,49 +296,49 @@ const HealthReportArchivesView: React.FC<HealthReportArchivesViewProps> = ({ onV
         <div className="absolute left-[86px] top-6 bottom-0 w-px bg-white/10"></div>
 
         <div className="flex flex-col gap-8">
-            {reports.map((report) => {
-                const statusStyle = getStatusStyle(report.status);
-                
-                return (
-                    <div key={report.id} className="relative flex gap-6">
-                        {/* Left: Date */}
-                        <div className="w-14 shrink-0 flex flex-col items-end pt-1">
-                            <span className="text-white font-display font-bold text-lg leading-none">{report.year}</span>
-                            <span className="text-slate-500 font-display text-xs mt-0.5">{report.date}</span>
-                        </div>
+          {reports.map((report) => {
+            const statusStyle = getStatusStyle(report.status);
 
-                        {/* Node Dot */}
-                        <div className="absolute left-[59px] top-2.5 w-2.5 h-2.5 rounded-full bg-[#080c0d] border-2 border-[#45b7aa] z-10 shadow-[0_0_0_4px_rgba(8,12,13,1)]"></div>
+            return (
+              <div key={report.id} className="relative flex gap-6">
+                {/* Left: Date */}
+                <div className="w-14 shrink-0 flex flex-col items-end pt-1">
+                  <span className="text-white font-display font-bold text-lg leading-none">{report.year}</span>
+                  <span className="text-slate-500 font-display text-xs mt-0.5">{report.date}</span>
+                </div>
 
-                        {/* Right: Card */}
-                        <div 
-                            onClick={() => setSelectedReport(report)}
-                            className="flex-1 bg-[#162624] border border-white/5 rounded-xl p-4 shadow-lg hover:border-[#45b7aa]/30 transition-colors active:scale-[0.99] cursor-pointer group"
-                        >
-                            <div className="flex justify-between items-start mb-2">
-                                <h3 className="text-white font-bold font-serif text-base group-hover:text-[#45b7aa] transition-colors">{report.title}</h3>
-                                <div className={`px-2 py-0.5 rounded text-[10px] font-bold ${statusStyle.color} bg-white/5 border border-white/5`}>
-                                    {statusStyle.text}
-                                </div>
-                            </div>
-                            
-                            <p className="text-slate-400 text-xs leading-relaxed text-justify mb-3 line-clamp-2">
-                                {report.summary}
-                            </p>
+                {/* Node Dot */}
+                <div className="absolute left-[59px] top-2.5 w-2.5 h-2.5 rounded-full bg-[#080c0d] border-2 border-[#45b7aa] z-10 shadow-[0_0_0_4px_rgba(8,12,13,1)]"></div>
 
-                            <div className="flex items-center gap-2 pt-2 border-t border-white/5">
-                                <span className="material-symbols-outlined text-white/20 text-sm group-hover:text-[#45b7aa] transition-colors">visibility</span>
-                                <span className="text-[10px] text-white/30 group-hover:text-[#45b7aa] transition-colors">查看详情</span>
-                            </div>
-                        </div>
+                {/* Right: Card */}
+                <div
+                  onClick={() => setSelectedReport(report)}
+                  className="flex-1 bg-[#162624] border border-white/5 rounded-xl p-4 shadow-lg hover:border-[#45b7aa]/30 transition-colors active:scale-[0.99] cursor-pointer group"
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <h3 className="text-white font-bold font-serif text-base group-hover:text-[#45b7aa] transition-colors">{report.title}</h3>
+                    <div className={`px-2 py-0.5 rounded text-[10px] font-bold ${statusStyle.color} bg-white/5 border border-white/5`}>
+                      {statusStyle.text}
                     </div>
-                );
-            })}
+                  </div>
+
+                  <p className="text-slate-400 text-xs leading-relaxed text-justify mb-3 line-clamp-2">
+                    {report.summary}
+                  </p>
+
+                  <div className="flex items-center gap-2 pt-2 border-t border-white/5">
+                    <span className="material-symbols-outlined text-white/20 text-sm group-hover:text-[#45b7aa] transition-colors">visibility</span>
+                    <span className="text-[10px] text-white/30 group-hover:text-[#45b7aa] transition-colors">查看详情</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
       {/* 3. FAB: AI Interpretation */}
-      <button 
+      <button
         onClick={handleAiInterpretation}
         className="fixed bottom-8 right-6 z-30 flex items-center gap-2 pl-4 pr-5 py-3 rounded-full bg-[#45b7aa] text-[#080c0d] font-bold shadow-[0_0_20px_rgba(69,183,170,0.4)] hover:shadow-[0_0_30px_rgba(69,183,170,0.6)] active:scale-95 transition-all"
       >

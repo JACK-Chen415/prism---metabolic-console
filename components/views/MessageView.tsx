@@ -1,18 +1,26 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, AppMessage } from '../../types';
 
 interface MessageViewProps {
   onViewChange: (view: View) => void;
   messages: AppMessage[];
+  onMarkAllRead?: () => void;
 }
 
 type TabType = 'ALL' | 'WARNING' | 'ADVICE' | 'BRIEF';
 
-const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages }) => {
+const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages, onMarkAllRead }) => {
   const [activeTab, setActiveTab] = useState<TabType>('ALL');
 
-  const filteredMessages = activeTab === 'ALL' 
-    ? messages 
+  // 进入消息页时自动标记全部已读
+  useEffect(() => {
+    if (onMarkAllRead) {
+      onMarkAllRead();
+    }
+  }, []);
+
+  const filteredMessages = activeTab === 'ALL'
+    ? messages
     : messages.filter(m => m.type === activeTab);
 
   const getTabLabel = (tab: TabType) => {
@@ -61,11 +69,11 @@ const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages }) => 
     <div className="flex flex-col w-full h-full pb-20">
       {/* Header Area */}
       <div className="relative sticky top-0 z-20 pt-4 bg-gradient-to-b from-[#080c0d] via-[#0d1416] to-[#0d1416]/95 backdrop-blur-sm border-b border-white/5">
-        
+
         {/* Top Nav & Title */}
         <div className="px-6 pb-4 flex items-start justify-between">
           <div className="flex items-center gap-4">
-            <button 
+            <button
               onClick={() => onViewChange(View.HOME)}
               className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors -ml-2"
             >
@@ -91,13 +99,13 @@ const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages }) => 
                 <span className={`text-sm font-serif tracking-widest ${isActive ? 'font-bold' : 'font-medium'}`}>
                   {getTabLabel(tab)}
                 </span>
-                
+
                 {/* Mountain Silhouette SVG for Active Tab */}
                 {isActive && (
                   <div className="absolute bottom-0 left-0 right-0 h-[6px] text-primary w-full flex justify-center overflow-hidden">
-                     <svg viewBox="0 0 40 6" className="w-10 h-full fill-current opacity-80" preserveAspectRatio="none">
-                        <path d="M0,6 L40,6 L35,2 C30,0 25,4 20,2 C15,0 10,4 5,2 L0,6 Z" />
-                     </svg>
+                    <svg viewBox="0 0 40 6" className="w-10 h-full fill-current opacity-80" preserveAspectRatio="none">
+                      <path d="M0,6 L40,6 L35,2 C30,0 25,4 20,2 C15,0 10,4 5,2 L0,6 Z" />
+                    </svg>
                   </div>
                 )}
               </button>
@@ -113,7 +121,7 @@ const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages }) => 
         {filteredMessages.map((msg) => {
           const styles = getTypeStyles(msg.type);
           return (
-            <div 
+            <div
               key={msg.id}
               className="group relative bg-[#162624]/90 border border-white/5 rounded-lg overflow-hidden backdrop-blur-sm shadow-lg transition-transform active:scale-[0.99]"
             >
@@ -141,7 +149,7 @@ const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages }) => 
                     <p className="text-slate-300 text-sm leading-relaxed font-serif text-justify">
                       {msg.content}
                     </p>
-                    
+
                     {/* Attribution */}
                     <p className="mt-3 text-[10px] text-slate-500 font-serif border-l-2 border-white/10 pl-2 leading-tight">
                       {msg.attribution}
@@ -152,10 +160,10 @@ const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages }) => 
             </div>
           );
         })}
-        
+
         {/* End of List Decoration */}
         <div className="py-8 flex justify-center opacity-30">
-             <span className="text-xs font-serif text-slate-500 tracking-[0.5em]">— 完 —</span>
+          <span className="text-xs font-serif text-slate-500 tracking-[0.5em]">— 完 —</span>
         </div>
       </div>
     </div>

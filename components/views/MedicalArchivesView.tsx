@@ -209,8 +209,8 @@ const MedicalArchivesView: React.FC<MedicalArchivesViewProps> = ({ onViewChange,
           <button
             onClick={() => setIsEditing(!isEditing)}
             className={`w-16 h-9 flex items-center justify-center rounded-md font-bold text-sm transition-all duration-300 shadow-lg mt-1 ${isEditing
-                ? 'bg-primary text-background-dark shadow-[0_0_15px_rgba(17,196,212,0.4)]'
-                : 'bg-white/10 text-white hover:bg-white/20'
+              ? 'bg-primary text-background-dark shadow-[0_0_15px_rgba(17,196,212,0.4)]'
+              : 'bg-white/10 text-white hover:bg-white/20'
               }`}
           >
             {isEditing ? '完成' : '编辑'}
