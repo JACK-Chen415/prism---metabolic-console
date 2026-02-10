@@ -206,20 +206,38 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
 
         {/* Dynamic Insight Card based on Latest Message */}
         {latestMessage && (
-          <div className={`group relative overflow-hidden rounded-xl ${msgStyle.bg} border ${msgStyle.border} p-5 shadow-lg animate-fade-in`}>
-            <div className={`absolute top-0 right-0 w-24 h-24 ${msgStyle.glowColor} rounded-full -mr-10 -mt-10 blur-2xl`}></div>
-            <div className="flex gap-4">
-              <div className="shrink-0 flex items-start pt-1">
-                <div className={`w-10 h-10 rounded-full ${msgStyle.iconBg} flex items-center justify-center ${msgStyle.iconColor}`}>
-                  <span className="material-symbols-outlined">{msgStyle.icon}</span>
+          <div className={`group relative overflow-hidden rounded-2xl border ${msgStyle.border} p-0 shadow-lg transition-all duration-500 hover:shadow-2xl hover:-translate-y-0.5 animate-fade-in bg-surface-dark`}>
+            {/* Background with Gradient */}
+            <div className={`absolute inset-0 ${msgStyle.bg} opacity-90`}></div>
+            <div className={`absolute inset-0 bg-gradient-to-br from-white/5 to-transparent opacity-50`}></div>
+
+            {/* Glow Effect */}
+            <div className={`absolute -top-10 -right-10 w-32 h-32 ${msgStyle.glowColor} rounded-full blur-[60px] opacity-60`}></div>
+
+            <div className="relative z-10 p-5">
+              {/* Header Row: Icon + Title */}
+              <div className="flex items-center gap-3 mb-3">
+                <div className={`w-8 h-8 rounded-lg ${msgStyle.iconBg} flex items-center justify-center ${msgStyle.iconColor} shadow-sm ring-1 ring-white/10`}>
+                  <span className="material-symbols-outlined text-[20px]">{msgStyle.icon}</span>
                 </div>
+                <h4 className={`text-base font-bold font-serif tracking-wide ${msgStyle.textColor} flex-1 truncate`}>
+                  {latestMessage.title}
+                </h4>
+                {/* Optional Status Indicator */}
+                <div className={`w-1.5 h-1.5 rounded-full ${msgStyle.iconColor} bg-current animate-pulse opacity-80`}></div>
               </div>
-              <div className="flex flex-col gap-1.5">
-                <h4 className={`text-base font-bold font-serif tracking-wide ${msgStyle.textColor}`}>{latestMessage.title}</h4>
-                <p className="text-gray-400 text-sm leading-relaxed text-justify font-serif tracking-wide">
+
+              {/* Content Body */}
+              <div className="pl-1">
+                <p className="text-slate-300 text-sm leading-relaxed text-justify font-sans tracking-wide opacity-90">
                   {latestMessage.content}
                 </p>
               </div>
+
+              {/* Footer / Action (Optional, for future layout) */}
+              {/* <div className="mt-3 pt-3 border-t border-white/5 flex justify-end">
+                <span className="text-[10px] text-white/40 font-serif tracking-widest">JUST NOW</span>
+              </div> */}
             </div>
           </div>
         )}
