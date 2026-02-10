@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { View, ConditionData, UserProfile, Meal, DailyTargets, AppMessage } from './types';
 import SplashScreen from './components/SplashScreen';
 import BottomNav from './components/BottomNav';
@@ -14,6 +14,7 @@ import HealthReportArchivesView from './components/views/HealthReportArchivesVie
 import LoginView from './components/views/LoginView';
 import RegisterView from './components/views/RegisterView';
 import ForgotPasswordView from './components/views/ForgotPasswordView';
+import { TokenManager, AuthAPI, MealsAPI, ConditionsAPI, MessagesAPI } from './services/api';
 
 // Initial Data moved from MedicalArchivesView
 const INITIAL_MEDICAL_DATA: ConditionData[] = [
@@ -114,6 +115,8 @@ const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<View>(View.SPLASH);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [isGuest, setIsGuest] = useState(false);
+  const [isAuthChecked, setIsAuthChecked] = useState(false);
+  const [userNickname, setUserNickname] = useState('用户');
 
   // Shared State for Medical Conditions
   const [medicalConditions, setMedicalConditions] = useState<ConditionData[]>(INITIAL_MEDICAL_DATA);
@@ -132,19 +135,157 @@ const App: React.FC = () => {
   // Shared State for Messages
   const [appMessages, setAppMessages] = useState<AppMessage[]>(INITIAL_APP_MESSAGES);
 
-  // Auto-transition from Splash to Login
+  // 从API加载用户数据（登录/注册成功后或自动登录时调用）
+  // 返回 true 表示成功加载了用户 profile，false 表示认证失败
+  const loadUserData = useCallback(async (): Promise<boolean> => {
+    try {
+      // 并行加载所有用户数据
+      const [profileRes, mealsRes, conditionsRes, messagesRes] = await Promise.allSettled([
+        AuthAPI.getProfile(),
+        MealsAPI.getToday(),
+        ConditionsAPI.list(),
+        MessagesAPI.list({ limit: 20 })
+      ]);
+
+      // 用户信息（核心校验：profile 必须成功，否则视为认证失败）
+      if (profileRes.status === 'fulfilled') {
+        const p = profileRes.value as any;
+        setUserProfile({
+          gender: p.gender || 'MALE',
+          age: p.age || 28,
+          height: p.height || 175,
+          weight: p.weight || 70
+        });
+        setUserNickname(p.nickname || p.phone || '用户');
+      } else {
+        // profile 请求失败 = 认证无效
+        console.error('用户认证无效:', profileRes.reason);
+        TokenManager.clearTokens();
+        return false;
+      }
+
+      // 今日饮食
+      if (mealsRes.status === 'fulfilled') {
+        const mealsList = (mealsRes.value as any);
+        if (Array.isArray(mealsList) && mealsList.length > 0) {
+          setMeals(mealsList.map((m: any) => ({
+            id: String(m.id),
+            name: m.name,
+            portion: m.portion || '1份',
+            calories: m.calories || 0,
+            sodium: m.sodium || 0,
+            purine: m.purine || 0,
+            type: m.meal_type || 'DINNER',
+            category: m.category || 'STAPLE',
+            note: m.note || ''
+          })));
+        } else {
+          setMeals([]);
+        }
+      }
+
+      // 健康档案
+      if (conditionsRes.status === 'fulfilled') {
+        const condList = (conditionsRes.value as any);
+        if (Array.isArray(condList) && condList.length > 0) {
+          setMedicalConditions(condList.map((c: any) => ({
+            id: c.condition_code || String(c.id),
+            title: c.title,
+            icon: c.icon || 'medical_services',
+            status: c.status || 'MONITORING',
+            trend: c.trend || 'STABLE',
+            value: c.value,
+            unit: c.unit,
+            dictum: c.dictum || '',
+            attribution: c.attribution || '',
+            type: c.condition_type || 'CHRONIC'
+          })));
+        }
+      }
+
+      // 消息通知
+      if (messagesRes.status === 'fulfilled') {
+        const msgList = (messagesRes.value as any);
+        if (Array.isArray(msgList) && msgList.length > 0) {
+          setAppMessages(msgList.map((m: any) => ({
+            id: m.id,
+            type: m.message_type || 'ADVICE',
+            title: m.title,
+            time: m.created_at ? new Date(m.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '现在',
+            content: m.content,
+            attribution: m.attribution || '',
+            isRead: m.is_read || false
+          })));
+        }
+      }
+
+      return true;
+    } catch (error) {
+      console.error('加载用户数据失败:', error);
+      TokenManager.clearTokens();
+      return false;
+    }
+  }, []);
+
+  // 认证成功回调
+  const handleAuthSuccess = useCallback(async (_user: unknown) => {
+    const success = await loadUserData();
+    if (success) {
+      setCurrentView(View.HOME);
+    } else {
+      setCurrentView(View.LOGIN);
+    }
+  }, [loadUserData]);
+
+  // 退出登录
+  const handleLogout = useCallback(() => {
+    TokenManager.clearTokens();
+    setMeals(INITIAL_MEALS);
+    setMedicalConditions(INITIAL_MEDICAL_DATA);
+    setAppMessages(INITIAL_APP_MESSAGES);
+    setUserProfile({ gender: 'MALE', age: 28, height: 181, weight: 72.5 });
+    setIsGuest(false);
+    setCurrentView(View.LOGIN);
+  }, []);
+
+  // 监听 auth:logout 事件（API 层 Token 刷新失败时触发）
+  useEffect(() => {
+    const onAuthLogout = () => {
+      handleLogout();
+    };
+    window.addEventListener('auth:logout', onAuthLogout);
+    return () => window.removeEventListener('auth:logout', onAuthLogout);
+  }, [handleLogout]);
+
+  // Splash -> 检查登录状态
   useEffect(() => {
     if (currentView === View.SPLASH) {
-      const timer = setTimeout(() => {
+      const timer = setTimeout(async () => {
         setIsTransitioning(true);
+
+        // 检查是否已登录
+        if (TokenManager.isAuthenticated()) {
+          const success = await loadUserData();
+          if (success) {
+            setTimeout(() => {
+              setCurrentView(View.HOME);
+              setIsTransitioning(false);
+              setIsAuthChecked(true);
+            }, 500);
+            return;
+          }
+          // loadUserData 返回 false = Token 过期，继续走到 LOGIN
+        }
+
         setTimeout(() => {
           setCurrentView(View.LOGIN);
           setIsTransitioning(false);
-        }, 500); // Wait for fade out
+          setIsAuthChecked(true);
+        }, 500);
       }, 3500);
       return () => clearTimeout(timer);
     }
-  }, [currentView]);
+  }, [currentView, loadUserData]);
 
   // AI Logic: Calculate Daily Targets based on Profile & Conditions
   const dailyTargets: DailyTargets = useMemo(() => {
@@ -198,8 +339,30 @@ const App: React.FC = () => {
     setCurrentView(view);
   };
 
-  const handleAddMeal = (meal: Meal) => {
+  const handleAddMeal = async (meal: Meal) => {
+    // 先更新本地状态（乐观更新）
     setMeals(prev => [...prev, meal]);
+
+    // 同步到后端
+    if (TokenManager.isAuthenticated()) {
+      try {
+        const today = new Date().toISOString().split('T')[0];
+        await MealsAPI.create({
+          client_id: meal.id,
+          name: meal.name,
+          portion: meal.portion || '1份',
+          calories: meal.calories,
+          sodium: meal.sodium,
+          purine: meal.purine,
+          meal_type: meal.type as 'BREAKFAST' | 'LUNCH' | 'DINNER' | 'SNACK',
+          category: meal.category as 'STAPLE' | 'MEAT' | 'VEG' | 'DRINK' | 'SNACK',
+          record_date: today,
+          note: meal.note
+        });
+      } catch (error) {
+        console.error('同步饮食记录失败:', error);
+      }
+    }
   };
 
   if (currentView === View.SPLASH) {
@@ -223,21 +386,23 @@ const App: React.FC = () => {
         {currentView === View.LOGIN && (
           <LoginView
             onViewChange={(view) => {
-              setIsGuest(false); // Real login
+              setIsGuest(false);
               handleNavChange(view);
             }}
             onSkipLogin={() => {
               setIsGuest(true);
               setCurrentView(View.HOME);
             }}
+            onLoginSuccess={handleAuthSuccess}
           />
         )}
         {currentView === View.REGISTER && (
           <RegisterView
             onViewChange={(view) => {
-              setIsGuest(false); // Real registration
+              setIsGuest(false);
               handleNavChange(view);
             }}
+            onRegisterSuccess={handleAuthSuccess}
           />
         )}
         {currentView === View.FORGOT_PASSWORD && (
@@ -254,6 +419,7 @@ const App: React.FC = () => {
             meals={meals}
             dailyTargets={dailyTargets}
             latestMessage={appMessages[0]}
+            appMessages={appMessages}
           />
         )}
         {currentView === View.LOG && (
@@ -269,6 +435,7 @@ const App: React.FC = () => {
           <ProfileView
             onViewChange={handleNavChange}
             medicalConditions={medicalConditions}
+            userNickname={userNickname}
           />
         )}
         {currentView === View.CAMERA && <CameraView onViewChange={handleNavChange} />}
@@ -277,6 +444,7 @@ const App: React.FC = () => {
             onViewChange={handleNavChange}
             userProfile={userProfile}
             onUpdateProfile={setUserProfile}
+            onLogout={handleLogout}
           />
         )}
         {currentView === View.MESSAGES && (
