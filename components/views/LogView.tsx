@@ -60,40 +60,42 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
 
   const addMeal = () => {
     if(!mealInput.name) return;
-    
-    // Improved AI Simulation Logic
+    const portionNum = parseFloat((mealInput.portion || '').replace(/[^\d.]/g, ''));
+    const multiplier = !Number.isNaN(portionNum) && portionNum > 0 ? Math.min(Math.max(portionNum / 100, 0.5), 3) : 1;
+
     let estCal = 0;
     let estSod = 0;
     let estPur = 0;
-
-    // Base calculation
     switch(mealInput.category) {
-        case 'MEAT':
-            estCal = Math.floor(Math.random() * 300) + 200; // 200-500
-            estSod = Math.floor(Math.random() * 400) + 100; // 100-500
-            estPur = Math.floor(Math.random() * 150) + 50;  // High Purine
-            break;
-        case 'VEG':
-            estCal = Math.floor(Math.random() * 100) + 50;  // 50-150
-            estSod = Math.floor(Math.random() * 50) + 10;   // Low Sodium
-            estPur = Math.floor(Math.random() * 20) + 5;    // Low Purine
-            break;
-        case 'STAPLE':
-            estCal = Math.floor(Math.random() * 400) + 150; // 150-550
-            estSod = Math.floor(Math.random() * 200) + 50;  
-            estPur = Math.floor(Math.random() * 50) + 10;
-            break;
-        case 'SNACK':
-            estCal = Math.floor(Math.random() * 400) + 100;
-            estSod = Math.floor(Math.random() * 500) + 50;  // potentially salty
-            estPur = Math.floor(Math.random() * 30) + 0;
-            break;
-        case 'DRINK':
-            estCal = Math.floor(Math.random() * 200) + 0;
-            estSod = Math.floor(Math.random() * 50) + 0;
-            estPur = Math.floor(Math.random() * 50) + 0;
-            break;
+      case 'MEAT':
+        estCal = 260;
+        estSod = 180;
+        estPur = 130;
+        break;
+      case 'VEG':
+        estCal = 95;
+        estSod = 25;
+        estPur = 12;
+        break;
+      case 'STAPLE':
+        estCal = 240;
+        estSod = 90;
+        estPur = 28;
+        break;
+      case 'SNACK':
+        estCal = 210;
+        estSod = 160;
+        estPur = 20;
+        break;
+      case 'DRINK':
+        estCal = 75;
+        estSod = 15;
+        estPur = 8;
+        break;
     }
+    estCal = Math.round(estCal * multiplier);
+    estSod = Math.round(estSod * multiplier);
+    estPur = Math.round(estPur * multiplier);
 
     // AI Analysis adjustment based on Note
     if (mealInput.note) {
@@ -117,8 +119,10 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
         }
     }
 
+    const newClientId = crypto.randomUUID();
     onAddMeal({
-        id: Date.now().toString(),
+        id: newClientId,
+        clientId: newClientId,
         name: mealInput.name,
         portion: mealInput.portion || '1份',
         calories: estCal,

@@ -117,8 +117,61 @@ npm run dev
 
 ### 5. 访问应用
 
-- **前端**: http://localhost:5173
+- **前端**: http://localhost:3000
 - **API 文档**: http://localhost:8000/api/docs
+
+---
+
+## 🧪 本地一键运行（推荐）
+
+```bash
+# 1) 启动数据库与后端（Docker）
+docker compose up -d db backend
+
+# 2) 启动前端（本机）
+npm install
+npm run dev
+```
+
+默认访问：
+- 前端：`http://localhost:3000`
+- 后端健康检查：`http://localhost:8000/api/health`
+- API 文档：`http://localhost:8000/api/docs`
+
+---
+
+## 🔍 功能实现说明（本次更新）
+
+### 1) 饮食 AI 估算：确定性规则（非随机）
+
+位置：`components/views/LogView.tsx`
+
+- 先按 `category` 给固定基线值（热量/钠/嘌呤）
+- 再从 `portion` 中提取数字作为乘数（限制在 `0.5 ~ 3`）
+- 最后根据备注关键词做固定增量修正（例如“咸/酱/卤”增加钠，“炸/油/煎”增加热量）
+
+这样同样输入会得到同样结果，便于追踪与测试。
+
+### 2) 验证码登录与重置密码
+
+后端接口：
+- `POST /api/auth/send-code`
+- `POST /api/auth/login-code`
+- `POST /api/auth/reset-password`
+
+位置：
+- 路由：`backend/app/api/routes/auth.py`
+- Schema：`backend/app/schemas/user.py`
+- 验证码服务：`backend/app/services/verification_service.py`
+
+当前是谁在“发送验证码”？
+- **开发版由后端服务自己生成并返回验证码文本**（`message` 字段），用于本地调试。
+- 还**没有接入真实短信网关**（如阿里云短信、腾讯云短信、Twilio）。
+
+生产环境建议：
+- 将 `VerificationService` 替换为外部短信服务适配器
+- 验证码只记录日志，不回传给前端
+- 增加频控、IP 限流、设备指纹、防刷策略
 
 ---
 
@@ -187,4 +240,3 @@ VITE_API_URL=http://localhost:8000/api
 ## 📄 许可证
 
 MIT License
-

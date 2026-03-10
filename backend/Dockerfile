@@ -32,7 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # WeasyPrint 依赖
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
-    libgdk-pixbuf2.0-0 \
+    libgdk-pixbuf-2.0-0 \
     libffi-dev \
     shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
@@ -59,5 +59,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import httpx; httpx.get('http://localhost:8000/api/health')" || exit 1
 
-# 启动命令
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 启动命令 (shell 形式支持 $PORT 环境变量, Render 等云平台会注入 PORT)
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}

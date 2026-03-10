@@ -53,6 +53,46 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
 
+class SendCodeRequest(BaseModel):
+    """发送验证码请求"""
+    phone: str = Field(..., min_length=11, max_length=11, description="手机号")
+    purpose: str = Field(..., description="用途: login/reset_password")
+
+    @field_validator("phone")
+    @classmethod
+    def validate_code_phone(cls, v: str) -> str:
+        if not re.match(r"^1[3-9]\d{9}$", v):
+            raise ValueError("手机号格式不正确")
+        return v
+
+
+class CodeLoginRequest(BaseModel):
+    """验证码登录请求"""
+    phone: str = Field(..., min_length=11, max_length=11, description="手机号")
+    code: str = Field(..., min_length=4, max_length=6, description="验证码")
+
+    @field_validator("phone")
+    @classmethod
+    def validate_login_code_phone(cls, v: str) -> str:
+        if not re.match(r"^1[3-9]\d{9}$", v):
+            raise ValueError("手机号格式不正确")
+        return v
+
+
+class ResetPasswordRequest(BaseModel):
+    """重置密码请求"""
+    phone: str = Field(..., min_length=11, max_length=11)
+    code: str = Field(..., min_length=4, max_length=6)
+    new_password: str = Field(..., min_length=6, max_length=50)
+
+    @field_validator("phone")
+    @classmethod
+    def validate_reset_phone(cls, v: str) -> str:
+        if not re.match(r"^1[3-9]\d{9}$", v):
+            raise ValueError("手机号格式不正确")
+        return v
+
+
 # ==================== 响应 Schema ====================
 
 class UserResponse(BaseModel):

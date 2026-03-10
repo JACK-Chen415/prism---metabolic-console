@@ -12,7 +12,7 @@ import base64
 from app.api.deps import DbSession, CurrentUser
 from app.models.chat import ChatSession, ChatMessage, MessageRole
 from app.models.health_condition import HealthCondition
-from app.models.meal import Meal, MealType, FoodCategory
+from app.models.meal import Meal, MealType, FoodCategory, SyncStatus
 from app.schemas.chat import (
     ChatMessageCreate,
     ChatSessionCreate,
@@ -20,9 +20,11 @@ from app.schemas.chat import (
     ChatSessionResponse,
     ChatSessionDetailResponse,
     FoodRecognitionRequest,
-    FoodRecognitionResponse
+    FoodRecognitionResponse,
+    QuickLogRequest
 )
 from app.schemas.common import PaginatedResponse
+from app.schemas.meal import MealResponse
 from app.services.ai_service import doubao_service
 from datetime import date
 import uuid
@@ -322,22 +324,58 @@ async def recognize_food_upload(
     )
 
 
-@router.post("/quick-log", response_model=dict)
+@router.post("/quick-log", response_model=MealResponse, status_code=status.HTTP_201_CREATED)
 async def quick_log_from_recognition(
-    food_index: int,
-    session_id: int,
-    meal_type: MealType,
+    data: QuickLogRequest,
     current_user: CurrentUser,
     db: DbSession
 ):
     """
-    快速从识别结果添加饮食记录
-    
-    从最近的识别结果中选择一个食物添加到饮食日志
+    快速从识别结果添加饮食记录（前端传入 food_item）
     """
-    # 这里需要从会话上下文中获取识别结果
-    # 简化实现：直接从消息中解析
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="此功能尚在开发中"
+    if data.session_id is not None:
+        session_result = await db.execute(
+            select(ChatSession).where(
+                ChatSession.id == data.session_id,
+                ChatSession.user_id == current_user.id
+            )
+        )
+        if not session_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="会话不存在"
+            )
+
+    try:
+        meal_type = MealType(data.meal_type.upper())
+    except Exception:
+        meal_type = MealType.DINNER
+
+    try:
+        category = FoodCategory(data.food_item.category.upper())
+    except Exception:
+        category = FoodCategory.STAPLE
+
+    nutrition = data.food_item.nutrition
+    meal = Meal(
+        user_id=current_user.id,
+        client_id=str(uuid.uuid4()),
+        name=data.food_item.food_name,
+        portion=data.food_item.estimated_portion or "1份",
+        calories=nutrition.calories or 0,
+        sodium=nutrition.sodium or 0,
+        purine=nutrition.purine or 0,
+        protein=nutrition.protein,
+        carbs=nutrition.carbs,
+        fat=nutrition.fat,
+        fiber=nutrition.fiber,
+        meal_type=meal_type,
+        category=category,
+        record_date=date.today(),
+        ai_recognized=True,
+        sync_status=SyncStatus.SYNCED
     )
+    db.add(meal)
+    await db.flush()
+    await db.refresh(meal)
+    return MealResponse.model_validate(meal)

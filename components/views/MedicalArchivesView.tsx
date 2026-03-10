@@ -30,8 +30,8 @@ const MedicalArchivesView: React.FC<MedicalArchivesViewProps> = ({ onViewChange,
       // 同步后端
       if (TokenManager.isAuthenticated()) {
         try {
-          const numId = parseInt(editingItem.id);
-          if (!isNaN(numId)) {
+          if (editingItem.backendId) {
+            const numId = editingItem.backendId;
             await ConditionsAPI.update(numId, {
               status: editingItem.status,
               trend: editingItem.trend,
@@ -46,9 +46,11 @@ const MedicalArchivesView: React.FC<MedicalArchivesViewProps> = ({ onViewChange,
         }
       }
     } else {
+      const generatedCode = `cond_${Date.now()}`;
       // 新增档案
       const newItem: ConditionData = {
-        id: Date.now().toString(),
+        id: generatedCode,
+        conditionCode: generatedCode,
         title: editingItem.title || '未命名',
         icon: editingItem.type === 'ALLERGY' ? 'warning' : 'monitor_heart',
         status: editingItem.status || 'STABLE',
@@ -66,7 +68,7 @@ const MedicalArchivesView: React.FC<MedicalArchivesViewProps> = ({ onViewChange,
       if (TokenManager.isAuthenticated()) {
         try {
           const result = await ConditionsAPI.create({
-            condition_code: newItem.id,
+            condition_code: newItem.conditionCode || generatedCode,
             title: newItem.title,
             icon: newItem.icon,
             condition_type: (newItem.type || 'CHRONIC') as 'CHRONIC' | 'ALLERGY',
@@ -77,7 +79,12 @@ const MedicalArchivesView: React.FC<MedicalArchivesViewProps> = ({ onViewChange,
           // 用后端返回的真ID替换临时ID
           if (result?.id) {
             setConditions(prev => prev.map(c =>
-              c.id === newItem.id ? { ...c, id: String(result.id) } : c
+              c.id === newItem.id ? {
+                ...c,
+                backendId: result.id,
+                conditionCode: result.condition_code || c.conditionCode || c.id,
+                id: result.condition_code || c.id
+              } : c
             ));
           }
         } catch (error) {
@@ -96,9 +103,9 @@ const MedicalArchivesView: React.FC<MedicalArchivesViewProps> = ({ onViewChange,
       // 同步后端
       if (TokenManager.isAuthenticated()) {
         try {
-          const numId = parseInt(deleteId);
-          if (!isNaN(numId)) {
-            await ConditionsAPI.delete(numId);
+          const target = conditions.find(c => c.id === deleteId);
+          if (target?.backendId) {
+            await ConditionsAPI.delete(target.backendId);
           }
         } catch (error) {
           console.error('删除健康档案失败:', error);

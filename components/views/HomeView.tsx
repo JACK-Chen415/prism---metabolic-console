@@ -5,7 +5,7 @@ interface HomeViewProps {
   onViewChange: (view: View) => void;
   meals: Meal[];
   dailyTargets: DailyTargets;
-  latestMessage: AppMessage;
+  latestMessage?: AppMessage;
   appMessages: AppMessage[];
 }
 
@@ -220,7 +220,7 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
                 <div className={`w-8 h-8 rounded-lg ${msgStyle.iconBg} flex items-center justify-center ${msgStyle.iconColor} shadow-sm ring-1 ring-white/10`}>
                   <span className="material-symbols-outlined text-[20px]">{msgStyle.icon}</span>
                 </div>
-                <h4 className={`text-base font-bold font-serif tracking-wide ${msgStyle.textColor} flex-1 truncate`}>
+                <h4 className={`text-base font-bold font-sans tracking-wide ${msgStyle.textColor} flex-1 truncate`}>
                   {latestMessage.title}
                 </h4>
                 {/* Optional Status Indicator */}
@@ -243,25 +243,42 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
         )}
 
         {/* Recommendation Card */}
-        <div className="group relative overflow-hidden rounded-xl bg-surface-dark border border-white/5 p-4 shadow-lg">
-          <div className="flex items-stretch gap-4">
-            <div
-              className="w-24 h-24 shrink-0 rounded-lg bg-center bg-cover relative overflow-hidden"
-              style={{ backgroundImage: "url('/images/food-fish.png')" }}
-            >
-              <div className="absolute inset-0 bg-black/20"></div>
-            </div>
-            <div className="flex flex-col justify-between py-0.5 flex-1">
-              <div>
-                <div className="flex justify-between items-start">
-                  <h4 className="text-white text-base font-bold font-serif tracking-wide">晚餐推荐</h4>
-                  <span className="material-symbols-outlined text-white/30 text-sm">bookmark</span>
+        <div className="group relative overflow-hidden rounded-2xl border border-white/5 p-0 shadow-lg transition-all duration-500 hover:shadow-2xl hover:shadow-glow-purple hover:-translate-y-0.5 bg-surface-dark">
+          {/* Background Effects */}
+          <div className="absolute inset-0 bg-surface-dark opacity-90"></div>
+          <div className="absolute inset-0 bg-gradient-to-br from-purple/10 to-transparent opacity-40"></div>
+          <div className="absolute -top-10 -right-10 w-32 h-32 bg-purple/20 rounded-full blur-[60px] opacity-40"></div>
+
+          <div className="relative z-10 p-4">
+            <div className="flex items-stretch gap-4">
+              {/* Food Image with better framing */}
+              <div
+                className="w-24 h-24 shrink-0 rounded-xl bg-center bg-cover relative overflow-hidden shadow-md ring-1 ring-white/10 group-hover:scale-[1.02] transition-transform duration-500"
+                style={{ backgroundImage: "url('/images/food-fish.png')" }}
+              >
+                <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"></div>
+                <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1">
+                  <span className="material-symbols-outlined text-white text-[14px]">restaurant</span>
                 </div>
-                <p className="text-gray-400 text-sm mt-1 line-clamp-2 font-serif tracking-wide">根据您的嘌呤余额（{remaining.purine}mg），推荐尝试清蒸海鲈鱼食谱。</p>
               </div>
-              <div className="flex items-center gap-2 mt-2">
-                <span className="text-[10px] px-2 py-0.5 rounded border border-purple/30 text-purple/80 bg-purple/5 font-serif font-bold tracking-wide">低嘌呤</span>
-                <span className="text-[10px] px-2 py-0.5 rounded border border-ochre/30 text-ochre/80 bg-ochre/5 font-serif font-bold tracking-wide">高蛋白</span>
+
+              <div className="flex flex-col justify-between py-1 flex-1 min-w-0">
+                <div>
+                  <div className="flex justify-between items-start">
+                    <h4 className="text-white text-base font-bold font-serif tracking-wide truncate pr-2 transition-colors">晚餐推荐</h4>
+                    {/* Action Icon */}
+                    <div className="w-6 h-6 rounded-full bg-white/5 flex items-center justify-center transition-colors hover:bg-white/10">
+                      <span className="material-symbols-outlined text-white/30 text-xs hover:text-white">bookmark</span>
+                    </div>
+                  </div>
+                  <p className="text-slate-400 text-sm mt-1.5 line-clamp-2 font-serif tracking-wide leading-snug">根据您的嘌呤余额（{remaining.purine}mg），推荐尝试清蒸海鲈鱼食谱。</p>
+                </div>
+
+                {/* Tags */}
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="text-[10px] px-2 py-0.5 rounded-md border border-purple/20 text-purple/90 bg-purple/10 font-bold tracking-wide backdrop-blur-sm">低嘌呤</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-md border border-ochre/20 text-ochre/90 bg-ochre/10 font-bold tracking-wide backdrop-blur-sm">高蛋白</span>
+                </div>
               </div>
             </div>
           </div>

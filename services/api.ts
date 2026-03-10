@@ -219,6 +219,19 @@ export const AuthAPI = {
     login: (phone: string, password: string) =>
         apiClient.post('/auth/login', { phone, password }, false),
 
+    sendCode: (phone: string, purpose: 'login' | 'reset_password') =>
+        apiClient.post('/auth/send-code', { phone, purpose }, false),
+
+    loginWithCode: (phone: string, code: string) =>
+        apiClient.post('/auth/login-code', { phone, code }, false),
+
+    resetPassword: (phone: string, code: string, newPassword: string) =>
+        apiClient.post('/auth/reset-password', {
+            phone,
+            code,
+            new_password: newPassword
+        }, false),
+
     getProfile: () => apiClient.get('/auth/me'),
 
     updateProfile: (data: {
@@ -321,7 +334,30 @@ export const ChatAPI = {
         }),
 
     recognizeFoodUpload: (file: File) =>
-        apiClient.upload('/chat/recognize-food/upload', file)
+        apiClient.upload('/chat/recognize-food/upload', file),
+
+    quickLog: (
+        foodItem: {
+            food_name: string;
+            estimated_portion?: string;
+            category?: string;
+            nutrition: {
+                calories: number;
+                sodium: number;
+                purine: number;
+                protein?: number;
+                carbs?: number;
+                fat?: number;
+                fiber?: number;
+            };
+        },
+        mealType: 'BREAKFAST' | 'LUNCH' | 'DINNER' | 'SNACK' = 'DINNER',
+        sessionId?: number
+    ) => apiClient.post('/chat/quick-log', {
+        session_id: sessionId,
+        meal_type: mealType,
+        food_item: foodItem
+    })
 };
 
 // 健康档案相关

@@ -1,0 +1,30 @@
+# See https://docs.render.com/blueprint-spec for docs
+
+services:
+  # FastAPI 后端
+  - type: web
+    name: prism-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    envVars:
+      # 数据库连接（在 Neon 控制台获取）
+      - key: DATABASE_URL
+        sync: false
+      # JWT 密钥（生产环境使用强随机字符串）
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      # 豆包 AI 配置
+      - key: ARK_API_KEY
+        sync: false
+      - key: DOUBAO_ENDPOINT_ID
+        sync: false
+      - key: DOUBAO_VISION_ENDPOINT_ID
+        sync: false
+      # CORS
+      - key: CORS_ORIGINS
+        value: '["https://prism-metabolic-console.vercel.app","http://localhost:3000"]'
+      # 应用配置
+      - key: DEBUG
+        value: "false"

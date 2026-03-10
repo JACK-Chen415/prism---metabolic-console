@@ -25,6 +25,8 @@ export type TrendType = 'IMPROVED' | 'WORSENING' | 'STABLE';
 
 export interface ConditionData {
   id: string;
+  backendId?: number;
+  conditionCode?: string;
   title: string;
   icon: string;
   status: ConditionStatus;
@@ -53,6 +55,7 @@ export type FoodCategory = 'STAPLE' | 'MEAT' | 'VEG' | 'DRINK' | 'SNACK';
 
 export interface Meal {
   id: string;
+  clientId?: string;
   name: string;
   portion: string;
   calories: number;

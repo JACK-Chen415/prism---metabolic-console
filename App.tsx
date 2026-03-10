@@ -15,11 +15,13 @@ import LoginView from './components/views/LoginView';
 import RegisterView from './components/views/RegisterView';
 import ForgotPasswordView from './components/views/ForgotPasswordView';
 import { TokenManager, AuthAPI, MealsAPI, ConditionsAPI, MessagesAPI } from './services/api';
+import { OfflineMealsService, syncScheduler, getTodayDateString } from './services/offline';
 
 // Initial Data moved from MedicalArchivesView
 const INITIAL_MEDICAL_DATA: ConditionData[] = [
   {
     id: 'gout',
+    conditionCode: 'gout',
     title: '痛风',
     icon: 'rheumatology',
     status: 'ACTIVE',
@@ -32,6 +34,7 @@ const INITIAL_MEDICAL_DATA: ConditionData[] = [
   },
   {
     id: 'hypertension',
+    conditionCode: 'hypertension',
     title: '高血压',
     icon: 'cardiology',
     status: 'MONITORING',
@@ -44,6 +47,7 @@ const INITIAL_MEDICAL_DATA: ConditionData[] = [
   },
   {
     id: 'peanut',
+    conditionCode: 'peanut',
     title: '花生过敏',
     icon: 'no_food',
     status: 'ALERT',
@@ -54,6 +58,7 @@ const INITIAL_MEDICAL_DATA: ConditionData[] = [
   },
   {
     id: 'seafood',
+    conditionCode: 'seafood',
     title: '海鲜过敏',
     icon: 'restaurant_menu',
     status: 'ALERT',
@@ -66,9 +71,9 @@ const INITIAL_MEDICAL_DATA: ConditionData[] = [
 
 // Initial Meals Data
 const INITIAL_MEALS: Meal[] = [
-  { id: '1', name: '全麦吐司 & 煎蛋', portion: '2片 + 1个', calories: 350, sodium: 400, purine: 50, type: 'BREAKFAST', category: 'STAPLE' },
-  { id: '2', name: '鸡胸肉藜麦沙拉', portion: '300g', calories: 420, sodium: 600, purine: 120, type: 'LUNCH', category: 'MEAT' },
-  { id: '3', name: '坚果酸奶', portion: '1杯 (150g)', calories: 180, sodium: 80, purine: 20, type: 'SNACK', category: 'SNACK' },
+  { id: '1', clientId: '1', name: '全麦吐司 & 煎蛋', portion: '2片 + 1个', calories: 350, sodium: 400, purine: 50, type: 'BREAKFAST', category: 'STAPLE' },
+  { id: '2', clientId: '2', name: '鸡胸肉藜麦沙拉', portion: '300g', calories: 420, sodium: 600, purine: 120, type: 'LUNCH', category: 'MEAT' },
+  { id: '3', clientId: '3', name: '坚果酸奶', portion: '1杯 (150g)', calories: 180, sodium: 80, purine: 20, type: 'SNACK', category: 'SNACK' },
 ];
 
 // Initial Messages Data
@@ -167,21 +172,51 @@ const App: React.FC = () => {
       // 今日饮食
       if (mealsRes.status === 'fulfilled') {
         const mealsList = (mealsRes.value as any);
-        if (Array.isArray(mealsList) && mealsList.length > 0) {
-          setMeals(mealsList.map((m: any) => ({
-            id: String(m.id),
-            name: m.name,
-            portion: m.portion || '1份',
-            calories: m.calories || 0,
-            sodium: m.sodium || 0,
-            purine: m.purine || 0,
-            type: m.meal_type || 'DINNER',
-            category: m.category || 'STAPLE',
-            note: m.note || ''
-          })));
-        } else {
-          setMeals([]);
-        }
+        const remoteMeals = Array.isArray(mealsList) ? mealsList.map((m: any) => ({
+          id: String(m.id),
+          clientId: m.client_id || String(m.id),
+          name: m.name,
+          portion: m.portion || '1份',
+          calories: m.calories || 0,
+          sodium: m.sodium || 0,
+          purine: m.purine || 0,
+          type: m.meal_type || 'DINNER',
+          category: m.category || 'STAPLE',
+          note: m.note || ''
+        })) : [];
+
+        const localPending = (await OfflineMealsService.getToday())
+          .filter(item => item.syncStatus === 'PENDING')
+          .map(item => ({
+            id: item.clientId,
+            clientId: item.clientId,
+            name: item.name,
+            portion: item.portion || '1份',
+            calories: item.calories || 0,
+            sodium: item.sodium || 0,
+            purine: item.purine || 0,
+            type: item.mealType || 'DINNER',
+            category: item.category || 'STAPLE',
+            note: item.note || ''
+          }));
+
+        const remoteClientIds = new Set(remoteMeals.map((m: Meal) => m.clientId));
+        const mergedMeals = [...remoteMeals, ...localPending.filter((m: Meal) => !remoteClientIds.has(m.clientId))];
+        setMeals(mergedMeals);
+      } else {
+        const localMeals = await OfflineMealsService.getToday();
+        setMeals(localMeals.map(item => ({
+          id: item.clientId,
+          clientId: item.clientId,
+          name: item.name,
+          portion: item.portion || '1份',
+          calories: item.calories || 0,
+          sodium: item.sodium || 0,
+          purine: item.purine || 0,
+          type: item.mealType || 'DINNER',
+          category: item.category || 'STAPLE',
+          note: item.note || ''
+        })));
       }
 
       // 健康档案
@@ -189,7 +224,9 @@ const App: React.FC = () => {
         const condList = (conditionsRes.value as any);
         if (Array.isArray(condList) && condList.length > 0) {
           setMedicalConditions(condList.map((c: any) => ({
-            id: c.condition_code || String(c.id),
+            id: c.condition_code || `condition-${c.id}`,
+            backendId: c.id,
+            conditionCode: c.condition_code || `condition-${c.id}`,
             title: c.title,
             icon: c.icon || 'medical_services',
             status: c.status || 'MONITORING',
@@ -200,6 +237,8 @@ const App: React.FC = () => {
             attribution: c.attribution || '',
             type: c.condition_type || 'CHRONIC'
           })));
+        } else {
+          setMedicalConditions([]);
         }
       }
 
@@ -216,6 +255,8 @@ const App: React.FC = () => {
             attribution: m.attribution || '',
             isRead: m.is_read || false
           })));
+        } else {
+          setAppMessages([]);
         }
       }
 
@@ -231,6 +272,7 @@ const App: React.FC = () => {
   const handleAuthSuccess = useCallback(async (_user: unknown) => {
     const success = await loadUserData();
     if (success) {
+      syncScheduler.start();
       setCurrentView(View.HOME);
     } else {
       setCurrentView(View.LOGIN);
@@ -240,6 +282,7 @@ const App: React.FC = () => {
   // 退出登录
   const handleLogout = useCallback(() => {
     TokenManager.clearTokens();
+    syncScheduler.stop();
     setMeals(INITIAL_MEALS);
     setMedicalConditions(INITIAL_MEDICAL_DATA);
     setAppMessages(INITIAL_APP_MESSAGES);
@@ -280,9 +323,10 @@ const App: React.FC = () => {
         // 检查是否已登录
         if (TokenManager.isAuthenticated()) {
           const success = await loadUserData();
-          if (success) {
-            setTimeout(() => {
-              setCurrentView(View.HOME);
+            if (success) {
+              syncScheduler.start();
+              setTimeout(() => {
+                setCurrentView(View.HOME);
               setIsTransitioning(false);
               setIsAuthChecked(true);
             }, 500);
@@ -310,12 +354,12 @@ const App: React.FC = () => {
 
     // 2. Calculate Sodium Target
     // Default: 2300mg. Hypertension: 1500mg.
-    const hasHypertension = medicalConditions.some(c => c.id === 'hypertension' && (c.status === 'ACTIVE' || c.status === 'MONITORING'));
+    const hasHypertension = medicalConditions.some(c => (c.conditionCode || c.id) === 'hypertension' && (c.status === 'ACTIVE' || c.status === 'MONITORING'));
     const sodium = hasHypertension ? 1500 : 2300;
 
     // 3. Calculate Purine Target
     // Normal: 600-1000mg tolerance (but low purine diet is <400). Gout: 200mg.
-    const hasGout = medicalConditions.some(c => c.id === 'gout' && (c.status === 'ACTIVE' || c.status === 'MONITORING'));
+    const hasGout = medicalConditions.some(c => (c.conditionCode || c.id) === 'gout' && (c.status === 'ACTIVE' || c.status === 'MONITORING'));
     const purine = hasGout ? 300 : 600;
 
     return { calories, sodium, purine };
@@ -328,7 +372,7 @@ const App: React.FC = () => {
 
     if (totalSodium > sodiumLimit) {
       // Check if latest message is already a warning to avoid duplicates
-      if (appMessages[0].type !== 'WARNING') {
+      if (!appMessages[0] || appMessages[0].type !== 'WARNING') {
         const warningMsg: AppMessage = {
           id: Date.now(),
           type: 'WARNING',
@@ -360,9 +404,9 @@ const App: React.FC = () => {
     // 同步到后端
     if (TokenManager.isAuthenticated()) {
       try {
-        const today = new Date().toISOString().split('T')[0];
+        const today = getTodayDateString();
         await MealsAPI.create({
-          client_id: meal.id,
+          client_id: meal.clientId || meal.id,
           name: meal.name,
           portion: meal.portion || '1份',
           calories: meal.calories,
@@ -375,9 +419,28 @@ const App: React.FC = () => {
         });
       } catch (error) {
         console.error('同步饮食记录失败:', error);
+        await OfflineMealsService.add({
+          serverId: undefined,
+          name: meal.name,
+          portion: meal.portion || '1份',
+          calories: meal.calories || 0,
+          sodium: meal.sodium || 0,
+          purine: meal.purine || 0,
+          mealType: meal.type,
+          category: meal.category,
+          recordDate: getTodayDateString(),
+          note: meal.note,
+          aiRecognized: false
+        });
       }
     }
   };
+
+  useEffect(() => {
+    return () => {
+      syncScheduler.stop();
+    };
+  }, []);
 
   if (currentView === View.SPLASH) {
     return <SplashScreen isExiting={isTransitioning} />;

@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { View } from '../../types';
 import { ChatAPI, TokenManager } from '../../services/api';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 
 // 配置 marked：启用换行符支持，关闭不需要的功能
 marked.setOptions({
@@ -12,10 +13,20 @@ marked.setOptions({
 // Markdown 渲染辅助函数
 const renderMarkdown = (content: string): string => {
   try {
-    return marked.parse(content) as string;
+    const raw = marked.parse(content) as string;
+    return DOMPurify.sanitize(raw);
   } catch {
-    return content;
+    return DOMPurify.sanitize(content);
   }
+};
+
+const escapeText = (text: string): string => {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 };
 
 interface ChatViewProps {
@@ -32,7 +43,28 @@ interface Message {
   // Specific properties for styling different AI personas
   aiMode?: 'GENTLE' | 'STRICT';
   aiName?: string;
+  recognizedFoods?: RecognizedFood[];
   timestamp: number;
+}
+
+interface RecognizedFood {
+  food_name: string;
+  estimated_portion: string;
+  category: string;
+  nutrition: {
+    calories: number;
+    sodium: number;
+    purine: number;
+    protein?: number;
+    carbs?: number;
+    fat?: number;
+    fiber?: number;
+  };
+}
+
+interface RecognitionResponse {
+  foods?: RecognizedFood[];
+  ai_response?: string;
 }
 
 const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
@@ -134,7 +166,7 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
       const userMsg: Message = {
         id: Date.now().toString(),
         role: 'USER',
-        content: autoMsg.replace(/\n/g, '<br/>'), // Simple formatting for display
+        content: autoMsg,
         timestamp: Date.now()
       };
       setMessages(prev => [...prev, userMsg]);
@@ -146,19 +178,36 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
           role: 'AI',
           aiMode: 'STRICT',
           aiName: '食鉴AI',
-          content: `已深度分析您的 ${autoMsg.match(/【.*?】/g)?.length || 3} 份体检档案。
-          <br/><br/>
-          <strong class="text-primary">趋势解读：</strong><br/>
-          1. <strong>尿酸控制成效显著</strong>：从 480 降至 342 μmol/L，已回到安全区间。这表明您当前的低嘌呤饮食策略（如减少海鲜摄入）非常成功。<br/>
-          2. <strong>血脂风险浮现</strong>：虽然尿酸改善，但甘油三酯近期升至 1.85 mmol/L，提示可能存在"碳水代偿"现象（即少吃肉多吃了主食）。<br/><br/>
-          <strong class="text-ochre">干预建议：</strong><br/>
-          建议将晚餐主食替换为粗粮（如荞麦面或红薯），并增加抗阻力训练。是否需要为您生成针对甘油三酯控制的一周食谱？`,
+          content: `已深度分析您的 ${autoMsg.match(/【.*?】/g)?.length || 3} 份体检档案。\n\n**趋势解读：**\n1. **尿酸控制成效显著**：从 480 降至 342 μmol/L，已回到安全区间。\n2. **血脂风险浮现**：甘油三酯近期升至 1.85 mmol/L，建议降低精制碳水比例。\n\n**干预建议：**\n晚餐主食替换为粗粮，并增加每周 2 次抗阻训练。`,
           timestamp: Date.now()
         };
         setMessages(prev => [...prev, aiMsg]);
       }, 2500);
     }
   }, []);
+
+  useEffect(() => {
+    const raw = sessionStorage.getItem('PRISM_FOOD_SCAN_RESULT');
+    if (!raw) return;
+    sessionStorage.removeItem('PRISM_FOOD_SCAN_RESULT');
+    try {
+      const result = JSON.parse(raw) as RecognitionResponse;
+      const foods = result.foods || [];
+      const content = result.ai_response || '已识别食物图片，正在分析营养成分。';
+      const aiMsg: Message = {
+        id: Date.now().toString(),
+        role: 'AI',
+        aiMode: currentMode,
+        aiName: '食鉴AI',
+        content,
+        recognizedFoods: foods,
+        timestamp: Date.now()
+      };
+      setMessages(prev => [...prev, aiMsg]);
+    } catch {
+      // ignore parse failure
+    }
+  }, [currentMode]);
 
   const handleGalleryClick = () => {
     fileInputRef.current?.click();
@@ -183,13 +232,14 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
       if (TokenManager.isAuthenticated()) {
         setIsSending(true);
         try {
-          const result = await ChatAPI.recognizeFoodUpload(file) as any;
+          const result = await ChatAPI.recognizeFoodUpload(file) as RecognitionResponse;
           const aiMsg: Message = {
             id: (Date.now() + 1).toString(),
             role: 'AI',
             aiMode: currentMode,
             aiName: '食鉴AI',
-            content: result?.analysis || result?.content || '已识别食物图片，正在分析营养成分...',
+            content: result?.ai_response || '已识别食物图片，正在分析营养成分...',
+            recognizedFoods: result?.foods || [],
             timestamp: Date.now()
           };
           setMessages(prev => [...prev, aiMsg]);
@@ -337,6 +387,26 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
     el.style.height = Math.min(el.scrollHeight, 120) + 'px'; // 最大约4行
   };
 
+  const handleQuickLog = async (food: RecognizedFood) => {
+    if (!TokenManager.isAuthenticated()) return;
+    try {
+      await ChatAPI.quickLog(food, 'DINNER', sessionId || undefined);
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'SYSTEM',
+        content: `已记入日志：${food.food_name}`,
+        timestamp: Date.now()
+      }]);
+    } catch (error) {
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'SYSTEM',
+        content: `记日志失败：${error instanceof Error ? error.message : '未知错误'}`,
+        timestamp: Date.now()
+      }]);
+    }
+  };
+
   return (
     <div className="flex flex-col w-full min-h-[calc(100vh-100px)]">
       {/* Hidden File Input */}
@@ -415,10 +485,9 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
                     <img src="/images/user-avatar.png" alt="User" className="w-full h-full object-cover" />
                   </div>
                   <div className="flex flex-col gap-1 items-end max-w-[85%]">
-                    <div
-                      className="bg-white/10 border border-white/5 rounded-xl rounded-tr-none px-3.5 py-2.5 text-white text-sm leading-relaxed font-serif tracking-wide"
-                      dangerouslySetInnerHTML={{ __html: msg.content }}
-                    />
+                    <div className="bg-white/10 border border-white/5 rounded-xl rounded-tr-none px-3.5 py-2.5 text-white text-sm leading-relaxed font-serif tracking-wide whitespace-pre-wrap break-words">
+                      {msg.content}
+                    </div>
                     {msg.image && (
                       <div className="rounded-xl overflow-hidden border border-white/10 w-48 h-32 relative mt-1">
                         <img src={msg.image} className="absolute inset-0 w-full h-full object-cover opacity-60" alt="Attachment" />
@@ -446,6 +515,19 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
                         }`}
                       dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
                     />
+                    {msg.recognizedFoods && msg.recognizedFoods.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        {msg.recognizedFoods.slice(0, 3).map((food, idx) => (
+                          <button
+                            key={`${food.food_name}-${idx}`}
+                            onClick={() => handleQuickLog(food)}
+                            className="px-2 py-1 rounded-lg text-xs bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20 transition-colors"
+                          >
+                            记日志: {food.food_name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

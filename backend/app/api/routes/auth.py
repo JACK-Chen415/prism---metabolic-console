@@ -22,6 +22,9 @@ from app.models.user import User
 from app.schemas.user import (
     UserRegister,
     UserLogin,
+    CodeLoginRequest,
+    SendCodeRequest,
+    ResetPasswordRequest,
     UserProfileUpdate,
     PasswordChange,
     RefreshTokenRequest,
@@ -30,6 +33,7 @@ from app.schemas.user import (
     LoginResponse,
     DailyTargets
 )
+from app.services.verification_service import verification_service
 
 router = APIRouter(prefix="/auth", tags=["认证"])
 
@@ -115,6 +119,98 @@ async def login(data: UserLogin, db: DbSession):
             expires_in=settings.jwt_access_token_expire_minutes * 60
         )
     )
+
+
+@router.post("/send-code")
+async def send_code(data: SendCodeRequest, db: DbSession):
+    """
+    发送验证码（开发模式）
+
+    purpose:
+    - login
+    - reset_password
+    """
+    if data.purpose not in {"login", "reset_password"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="不支持的验证码用途"
+        )
+
+    if data.purpose == "reset_password":
+        result = await db.execute(select(User).where(User.phone == data.phone))
+        if not result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="该手机号未注册"
+            )
+
+    code = verification_service.issue_code(data.phone, data.purpose)
+    return {
+        "success": True,
+        "message": f"验证码已发送（开发环境验证码：{code}）",
+        "expires_in": 300
+    }
+
+
+@router.post("/login-code", response_model=LoginResponse)
+async def login_with_code(data: CodeLoginRequest, db: DbSession):
+    """验证码登录"""
+    if not verification_service.verify(data.phone, "login", data.code):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="验证码无效或已过期"
+        )
+
+    result = await db.execute(select(User).where(User.phone == data.phone))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="该手机号未注册"
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="账户已被禁用"
+        )
+
+    user.last_login_at = datetime.now(timezone.utc)
+    await db.flush()
+
+    access_token = create_access_token(user.id)
+    refresh_token = create_refresh_token(user.id)
+
+    return LoginResponse(
+        user=UserResponse.model_validate(user),
+        tokens=TokenResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_in=settings.jwt_access_token_expire_minutes * 60
+        )
+    )
+
+
+@router.post("/reset-password")
+async def reset_password(data: ResetPasswordRequest, db: DbSession):
+    """通过验证码重置密码"""
+    if not verification_service.verify(data.phone, "reset_password", data.code):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="验证码无效或已过期"
+        )
+
+    result = await db.execute(select(User).where(User.phone == data.phone))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="该手机号未注册"
+        )
+
+    user.password_hash = get_password_hash(data.new_password)
+    await db.flush()
+    return {"success": True, "message": "密码重置成功"}
 
 
 @router.post("/refresh", response_model=TokenResponse)

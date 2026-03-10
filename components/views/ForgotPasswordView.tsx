@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View } from '../../types';
+import { AuthAPI } from '../../services/api';
 
 interface ForgotPasswordViewProps {
   onViewChange: (view: View) => void;
@@ -15,11 +16,11 @@ const ForgotPasswordView: React.FC<ForgotPasswordViewProps> = ({ onViewChange })
   const [showError, setShowError] = useState(false);
 
   // Validation
-  const isPhoneValid = phone.length >= 11;
+  const isPhoneValid = phone.length === 11;
   const passwordsMatch = password === confirmPassword && password.length > 0;
   
-  // Simulated existing user check
-  const isUserRegistered = true; // In real app, this would be an API call
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorText, setErrorText] = useState('');
 
   // Strength calculation: 0 (None), 1 (Weak), 2 (Medium), 3 (Strong)
   const getStrength = (pwd: string) => {
@@ -38,24 +39,41 @@ const ForgotPasswordView: React.FC<ForgotPasswordViewProps> = ({ onViewChange })
     }
   }, [countdown]);
 
-  const handleGetCode = () => {
+  const handleGetCode = async () => {
     if (!isPhoneValid) return;
-    
-    // Simulate check
-    if (!isUserRegistered) {
-        setShowError(true);
-        setTimeout(() => setShowError(false), 3000);
-        return;
+    try {
+      setIsLoading(true);
+      const res = await AuthAPI.sendCode(phone, 'reset_password') as { message?: string };
+      setCountdown(60);
+      setErrorText(res?.message || '验证码已发送');
+      setShowError(true);
+      setTimeout(() => setShowError(false), 3000);
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : '验证码发送失败');
+      setShowError(true);
+      setTimeout(() => setShowError(false), 3000);
+    } finally {
+      setIsLoading(false);
     }
-    setCountdown(60);
   };
 
-  const handleSubmit = () => {
-     if (isPhoneValid && code.length >= 4 && passwordsMatch && strength > 0) {
-        setIsSuccess(true);
-        setTimeout(() => {
-           onViewChange(View.HOME);
-        }, 3000);
+  const handleSubmit = async () => {
+     if (!(isPhoneValid && code.length >= 4 && passwordsMatch && strength > 0)) {
+      return;
+     }
+     try {
+      setIsLoading(true);
+      await AuthAPI.resetPassword(phone, code, password);
+      setIsSuccess(true);
+      setTimeout(() => {
+        onViewChange(View.LOGIN);
+      }, 2000);
+     } catch (error) {
+      setErrorText(error instanceof Error ? error.message : '密码重置失败');
+      setShowError(true);
+      setTimeout(() => setShowError(false), 3000);
+     } finally {
+      setIsLoading(false);
      }
   };
 
@@ -114,14 +132,14 @@ const ForgotPasswordView: React.FC<ForgotPasswordViewProps> = ({ onViewChange })
                     <input 
                         type="tel"
                         value={phone}
-                        onChange={(e) => setPhone(e.target.value)}
+                        onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 11))}
                         placeholder="请输入注册手机号"
                         className="w-full bg-[#162624]/60 border-b border-white/10 text-white pl-8 pr-4 py-3 outline-none focus:border-[#45b7aa] transition-colors placeholder-slate-600 font-serif tracking-wide"
                     />
                 </div>
                 {showError && (
                     <div className="text-[10px] text-ochre mt-1 flex items-center gap-1 animate-fade-in font-serif tracking-wide">
-                        <span>该通讯ID未收录，请前往</span>
+                        <span>{errorText || '该通讯ID未收录，请前往'}</span>
                         <button onClick={() => onViewChange(View.REGISTER)} className="underline font-bold">注册</button>
                     </div>
                 )}
@@ -135,13 +153,13 @@ const ForgotPasswordView: React.FC<ForgotPasswordViewProps> = ({ onViewChange })
                 <input 
                     type="number"
                     value={code}
-                    onChange={(e) => setCode(e.target.value)}
+                    onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                     placeholder="请输入验证码"
                     className="w-full bg-[#162624]/60 border-b border-white/10 text-white pl-8 pr-24 py-3 outline-none focus:border-[#45b7aa] transition-colors placeholder-slate-600 font-serif tracking-wide"
                 />
                 <button 
                     onClick={handleGetCode}
-                    disabled={countdown > 0 || !isPhoneValid}
+                    disabled={countdown > 0 || !isPhoneValid || isLoading}
                     className={`absolute right-0 top-1/2 -translate-y-1/2 text-xs font-bold transition-colors font-serif tracking-wide ${
                         countdown > 0 
                         ? 'text-ochre' 
@@ -205,16 +223,16 @@ const ForgotPasswordView: React.FC<ForgotPasswordViewProps> = ({ onViewChange })
         <div className="px-8 pb-10 pt-4 z-20">
              <button 
                 onClick={handleSubmit}
-                disabled={!isPhoneValid || !code || !passwordsMatch || strength === 0}
+                 disabled={!isPhoneValid || !code || !passwordsMatch || strength === 0 || isLoading}
                 className={`w-full h-14 rounded-2xl font-serif font-bold tracking-widest text-sm transition-all duration-300 relative overflow-hidden backdrop-blur-md border border-white/5
                     ${(!isPhoneValid || !code || !passwordsMatch || strength === 0)
                         ? 'bg-white/5 text-white/20 cursor-not-allowed' 
                         : 'bg-[#45b7aa]/90 text-white shadow-[0_0_30px_rgba(69,183,170,0.3)] hover:bg-[#45b7aa] hover:shadow-[0_0_40px_rgba(69,183,170,0.5)] active:scale-[0.98]'
                     }
                 `}
-             >
-                 重置并登录
-             </button>
+                 >
+                  {isLoading ? '处理中...' : '重置并登录'}
+              </button>
         </div>
     </div>
   )

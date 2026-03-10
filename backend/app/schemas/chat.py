@@ -98,6 +98,19 @@ class FoodRecognitionResponse(BaseModel):
     image_url: Optional[str] = Field(None, description="上传图片的URL")
 
 
+class QuickLogFoodItem(BaseModel):
+    food_name: str
+    estimated_portion: str = "1份"
+    category: str = "STAPLE"
+    nutrition: NutritionInfo
+
+
+class QuickLogRequest(BaseModel):
+    session_id: Optional[int] = None
+    meal_type: str = Field(default="DINNER", description="BREAKFAST/LUNCH/DINNER/SNACK")
+    food_item: QuickLogFoodItem
+
+
 class AIStreamChunk(BaseModel):
     """AI流式响应块"""
     content: str

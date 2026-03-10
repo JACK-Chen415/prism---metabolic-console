@@ -56,14 +56,25 @@ const LoginView: React.FC<LoginViewProps> = ({ onViewChange, onSkipLogin, onLogi
         setCode(value);
     };
 
-    const handleGetCode = () => {
+    const handleGetCode = async () => {
         if (phone.length !== 11) {
             setErrorMsg('手机号输入错误');
             setShowError(true);
             return;
         }
         if (countdown > 0) return;
-        setCountdown(60);
+        try {
+            setIsLoading(true);
+            const result = await AuthAPI.sendCode(phone, 'login') as { message?: string };
+            setCountdown(60);
+            setErrorMsg(result?.message || '验证码已发送');
+            setShowError(true);
+        } catch (error) {
+            setErrorMsg(error instanceof Error ? error.message : '验证码发送失败');
+            setShowError(true);
+        } finally {
+            setIsLoading(false);
+        }
     };
 
     const handleLogin = async () => {
@@ -80,9 +91,24 @@ const LoginView: React.FC<LoginViewProps> = ({ onViewChange, onSkipLogin, onLogi
                 setShowError(true);
                 return;
             }
-            // 验证码登录暂不支持
-            setErrorMsg('验证码登录功能暂未开放，请使用密码登录');
-            setShowError(true);
+            setIsLoading(true);
+            try {
+                const response = await AuthAPI.loginWithCode(phone, code) as LoginResponse;
+                TokenManager.setTokens(
+                    response.tokens.access_token,
+                    response.tokens.refresh_token
+                );
+                if (onLoginSuccess) {
+                    onLoginSuccess(response.user);
+                } else {
+                    onViewChange(View.HOME);
+                }
+            } catch (error) {
+                setErrorMsg(error instanceof Error ? error.message : '验证码登录失败，请重试');
+                setShowError(true);
+            } finally {
+                setIsLoading(false);
+            }
             return;
         } else {
             if (!password || password.length < 6) {
@@ -241,6 +267,7 @@ const LoginView: React.FC<LoginViewProps> = ({ onViewChange, onSkipLogin, onLogi
                             />
                             <button
                                 onClick={handleGetCode}
+                                disabled={countdown > 0 || isLoading}
                                 className={`absolute right-0 top-1/2 -translate-y-1/2 text-xs font-serif font-bold px-3 py-1.5 rounded-md transition-colors ${countdown > 0 ? 'text-slate-500 cursor-not-allowed' : 'text-ochre hover:bg-ochre/10'}`}
                             >
                                 {countdown > 0 ? `${countdown}s` : '获取验证码'}
