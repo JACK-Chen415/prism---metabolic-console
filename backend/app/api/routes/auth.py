@@ -34,6 +34,7 @@ from app.schemas.user import (
     DailyTargets
 )
 from app.services.verification_service import verification_service
+from app.services.target_service import calculate_daily_targets
 
 router = APIRouter(prefix="/auth", tags=["认证"])
 
@@ -302,16 +303,7 @@ async def get_daily_targets(current_user: CurrentUser, db: DbSession):
     基于用户身体参数动态计算
     """
     from sqlalchemy import select
-    from app.models.health_condition import HealthCondition, ConditionStatus
-    
-    # 默认值（当用户未设置身体参数时）
-    if not all([current_user.gender, current_user.age, current_user.height, current_user.weight]):
-        return DailyTargets(calories=2000, sodium=2300, purine=600)
-    
-    # 计算 BMR (Mifflin-St Jeor 公式)
-    s = 5 if current_user.gender.value == "MALE" else -161
-    bmr = (10 * current_user.weight) + (6.25 * current_user.height) - (5 * current_user.age) + s
-    calories = int(bmr * 1.375)  # 轻度活动系数
+    from app.models.health_condition import HealthCondition
     
     # 查询用户健康状况
     result = await db.execute(
@@ -321,10 +313,4 @@ async def get_daily_targets(current_user: CurrentUser, db: DbSession):
         )
     )
     conditions = result.scalars().all()
-    condition_codes = [c.condition_code for c in conditions]
-    
-    # 根据健康状况调整目标
-    sodium = 1500 if "hypertension" in condition_codes else 2300
-    purine = 300 if "gout" in condition_codes else 600
-    
-    return DailyTargets(calories=calories, sodium=sodium, purine=purine)
+    return calculate_daily_targets(current_user, conditions)

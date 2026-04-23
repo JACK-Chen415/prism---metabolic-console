@@ -3,6 +3,7 @@ import { View } from '../../types';
 import { ChatAPI, TokenManager } from '../../services/api';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import { clearChatSessionId, consumeFoodScanResult, getChatSessionId, setChatSessionId } from '../../services/sessionState';
 
 // 配置 marked：启用换行符支持，关闭不需要的功能
 marked.setOptions({
@@ -31,6 +32,7 @@ const escapeText = (text: string): string => {
 
 interface ChatViewProps {
   onViewChange: (view: View) => void;
+  onMealLogged?: () => void;
 }
 
 type MessageRole = 'USER' | 'AI' | 'SYSTEM';
@@ -67,15 +69,14 @@ interface RecognitionResponse {
   ai_response?: string;
 }
 
-const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
+const ChatView: React.FC<ChatViewProps> = ({ onViewChange, onMealLogged }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [currentMode, setCurrentMode] = useState<'STRICT' | 'GENTLE'>('STRICT');
   const [sessionId, setSessionId] = useState<number | null>(() => {
-    const saved = sessionStorage.getItem('PRISM_CHAT_SESSION_ID');
-    return saved ? parseInt(saved, 10) : null;
+    return getChatSessionId();
   });
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -87,11 +88,11 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
       if (!TokenManager.isAuthenticated()) return;
 
       // 1. 尝试复用已有会话
-      const savedId = sessionStorage.getItem('PRISM_CHAT_SESSION_ID');
+      const savedId = getChatSessionId();
       if (savedId) {
         try {
           setIsLoadingHistory(true);
-          const session = await ChatAPI.getSession(parseInt(savedId, 10)) as any;
+          const session = await ChatAPI.getSession(savedId) as any;
           setSessionId(session.id);
           // 后端消息格式 → 前端 Message 格式
           const loadedMsgs: Message[] = (session.messages || []).map((m: any) => {
@@ -111,7 +112,7 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
           return;
         } catch {
           // 会话不存在或失效，清除并创建新的
-          sessionStorage.removeItem('PRISM_CHAT_SESSION_ID');
+          clearChatSessionId();
           setIsLoadingHistory(false);
         }
       }
@@ -121,7 +122,7 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
         const res = await ChatAPI.createSession('食鉴AI对话') as any;
         if (res?.id) {
           setSessionId(res.id);
-          sessionStorage.setItem('PRISM_CHAT_SESSION_ID', res.id.toString());
+          setChatSessionId(res.id);
         }
       } catch (err) {
         console.error('创建会话失败:', err);
@@ -156,42 +157,9 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Check for auto-send message from other views (e.g. Health Archives)
   useEffect(() => {
-    const autoMsg = sessionStorage.getItem('PRISM_AUTO_SEND_MESSAGE');
-    if (autoMsg) {
-      sessionStorage.removeItem('PRISM_AUTO_SEND_MESSAGE');
-
-      // Add User Message
-      const userMsg: Message = {
-        id: Date.now().toString(),
-        role: 'USER',
-        content: autoMsg,
-        timestamp: Date.now()
-      };
-      setMessages(prev => [...prev, userMsg]);
-
-      // Trigger AI Response
-      setTimeout(() => {
-        const aiMsg: Message = {
-          id: (Date.now() + 1).toString(),
-          role: 'AI',
-          aiMode: 'STRICT',
-          aiName: '食鉴AI',
-          content: `已深度分析您的 ${autoMsg.match(/【.*?】/g)?.length || 3} 份体检档案。\n\n**趋势解读：**\n1. **尿酸控制成效显著**：从 480 降至 342 μmol/L，已回到安全区间。\n2. **血脂风险浮现**：甘油三酯近期升至 1.85 mmol/L，建议降低精制碳水比例。\n\n**干预建议：**\n晚餐主食替换为粗粮，并增加每周 2 次抗阻训练。`,
-          timestamp: Date.now()
-        };
-        setMessages(prev => [...prev, aiMsg]);
-      }, 2500);
-    }
-  }, []);
-
-  useEffect(() => {
-    const raw = sessionStorage.getItem('PRISM_FOOD_SCAN_RESULT');
-    if (!raw) return;
-    sessionStorage.removeItem('PRISM_FOOD_SCAN_RESULT');
-    try {
-      const result = JSON.parse(raw) as RecognitionResponse;
+    const result = consumeFoodScanResult<RecognitionResponse>();
+    if (!result) return;
       const foods = result.foods || [];
       const content = result.ai_response || '已识别食物图片，正在分析营养成分。';
       const aiMsg: Message = {
@@ -204,9 +172,6 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
         timestamp: Date.now()
       };
       setMessages(prev => [...prev, aiMsg]);
-    } catch {
-      // ignore parse failure
-    }
   }, [currentMode]);
 
   const handleGalleryClick = () => {
@@ -390,11 +355,14 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
   const handleQuickLog = async (food: RecognizedFood) => {
     if (!TokenManager.isAuthenticated()) return;
     try {
-      await ChatAPI.quickLog(food, 'DINNER', sessionId || undefined);
+      const hour = new Date().getHours();
+      const mealType = hour < 10 ? 'BREAKFAST' : hour < 14 ? 'LUNCH' : hour < 21 ? 'DINNER' : 'SNACK';
+      await ChatAPI.quickLog(food, mealType, sessionId || undefined);
+      await onMealLogged?.();
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'SYSTEM',
-        content: `已记入日志：${food.food_name}`,
+        content: `已记入${mealType === 'BREAKFAST' ? '早餐' : mealType === 'LUNCH' ? '午餐' : mealType === 'DINNER' ? '晚餐' : '加餐'}：${food.food_name}`,
         timestamp: Date.now()
       }]);
     } catch (error) {
@@ -567,13 +535,13 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange }) => {
       <div className="sticky bottom-24 px-4 pb-2 z-30">
         <div className="flex items-center justify-start px-1 mb-2 gap-2">
           <button
-            onClick={() => setInputValue("生成体检报告")}
+            onClick={() => setInputValue("请基于我今天已记录的饮食和健康档案，说明当前需要注意的风险点和下一餐原则。")}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#131b1d]/90 border border-white/10 backdrop-blur text-xs text-slate-300 hover:text-white hover:border-primary/40 hover:bg-[#162224] transition-all active:scale-95 shadow-lg group"
           >
             <div className="w-5 h-5 rounded-md bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
               <span className="material-symbols-outlined text-[14px] text-primary">assignment</span>
             </div>
-            <span className="font-bold font-serif tracking-wide">生成体检报告</span>
+            <span className="font-bold font-serif tracking-wide">今日风险解读</span>
           </button>
 
           <button

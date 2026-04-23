@@ -1,16 +1,18 @@
 /**
  * Prism Metabolic Console - 离线缓存服务
- * 使用 Dexie.js 封装 IndexedDB，实现饮食日志离线存储与同步
+ * 使用 Dexie.js 封装 IndexedDB，实现按用户隔离的饮食日志离线存储与同步。
  */
 
 import Dexie, { Table } from 'dexie';
+import { getLocalDateString } from './date';
 
-// ==================== 数据类型定义 ====================
+const LEGACY_USER_ID = -1;
 
 export interface CachedMeal {
-    id?: number;                    // 本地自增 ID
-    clientId: string;               // 客户端生成的唯一 ID (UUID)
-    serverId?: number;              // 服务器端 ID（同步后填充）
+    id?: number;
+    userId: number;
+    clientId: string;
+    serverId?: number;
     name: string;
     portion: string;
     calories: number;
@@ -22,7 +24,7 @@ export interface CachedMeal {
     fiber?: number;
     mealType: 'BREAKFAST' | 'LUNCH' | 'DINNER' | 'SNACK';
     category: 'STAPLE' | 'MEAT' | 'VEG' | 'DRINK' | 'SNACK';
-    recordDate: string;             // ISO 日期字符串 YYYY-MM-DD
+    recordDate: string;
     note?: string;
     imageUrl?: string;
     aiRecognized: boolean;
@@ -36,7 +38,9 @@ export interface SyncMeta {
     value: string | number | Date;
 }
 
-// ==================== 数据库定义 ====================
+type MealDraft = Omit<CachedMeal, 'id' | 'userId' | 'clientId' | 'syncStatus' | 'createdAt' | 'updatedAt'> & {
+    clientId?: string;
+};
 
 class PrismDatabase extends Dexie {
     meals!: Table<CachedMeal, number>;
@@ -45,44 +49,44 @@ class PrismDatabase extends Dexie {
     constructor() {
         super('PrismMetabolicConsole');
 
-        // 定义数据库版本和表结构
         this.version(1).stores({
             meals: '++id, clientId, serverId, recordDate, syncStatus, mealType, createdAt',
             syncMeta: 'key'
         });
+
+        this.version(2).stores({
+            meals: '++id, userId, [userId+recordDate], [userId+syncStatus], [userId+clientId], serverId, recordDate, syncStatus, mealType, createdAt',
+            syncMeta: 'key'
+        }).upgrade(async tx => {
+            await tx.table('meals').toCollection().modify(meal => {
+                meal.userId = LEGACY_USER_ID;
+                meal.syncStatus = 'CONFLICT';
+            });
+        });
     }
 }
 
-// 数据库单例
 const db = new PrismDatabase();
 
-// ==================== 工具函数 ====================
-
-/**
- * 生成客户端唯一 ID
- */
 export function generateClientId(): string {
     return crypto.randomUUID();
 }
 
-/**
- * 获取今日日期字符串
- */
 export function getTodayDateString(): string {
-    return new Date().toISOString().split('T')[0];
+    return getLocalDateString();
 }
 
-// ==================== 饮食记录离线操作 ====================
+function syncMetaKey(userId: number, key: string): string {
+    return `user:${userId}:${key}`;
+}
 
 export const OfflineMealsService = {
-    /**
-     * 添加饮食记录（离线优先）
-     */
-    async add(meal: Omit<CachedMeal, 'id' | 'clientId' | 'syncStatus' | 'createdAt' | 'updatedAt'>): Promise<CachedMeal> {
+    async add(userId: number, meal: MealDraft): Promise<CachedMeal> {
         const now = new Date();
         const newMeal: CachedMeal = {
             ...meal,
-            clientId: generateClientId(),
+            userId,
+            clientId: meal.clientId || generateClientId(),
             syncStatus: 'PENDING',
             aiRecognized: meal.aiRecognized ?? false,
             createdAt: now,
@@ -93,62 +97,48 @@ export const OfflineMealsService = {
         return { ...newMeal, id };
     },
 
-    /**
-     * 获取今日饮食记录
-     */
-    async getToday(): Promise<CachedMeal[]> {
-        const today = getTodayDateString();
-        return db.meals.where('recordDate').equals(today).toArray();
+    async getToday(userId: number): Promise<CachedMeal[]> {
+        return this.getByDate(userId, getTodayDateString());
     },
 
-    /**
-     * 获取指定日期的饮食记录
-     */
-    async getByDate(date: string): Promise<CachedMeal[]> {
-        return db.meals.where('recordDate').equals(date).toArray();
+    async getByDate(userId: number, date: string): Promise<CachedMeal[]> {
+        return db.meals.where('[userId+recordDate]').equals([userId, date]).toArray();
     },
 
-    /**
-     * 获取日期范围内的饮食记录
-     */
-    async getByDateRange(startDate: string, endDate: string): Promise<CachedMeal[]> {
+    async getByDateRange(userId: number, startDate: string, endDate: string): Promise<CachedMeal[]> {
         return db.meals
-            .where('recordDate')
-            .between(startDate, endDate, true, true)
+            .where('userId')
+            .equals(userId)
+            .and(meal => meal.recordDate >= startDate && meal.recordDate <= endDate)
             .toArray();
     },
 
-    /**
-     * 获取所有待同步的记录
-     */
-    async getPending(): Promise<CachedMeal[]> {
-        return db.meals.where('syncStatus').equals('PENDING').toArray();
+    async getPending(userId: number): Promise<CachedMeal[]> {
+        return db.meals.where('[userId+syncStatus]').equals([userId, 'PENDING']).toArray();
     },
 
-    /**
-     * 更新记录
-     */
-    async update(id: number, changes: Partial<CachedMeal>): Promise<void> {
+    async update(userId: number, id: number, changes: Partial<CachedMeal>): Promise<void> {
+        const meal = await db.meals.get(id);
+        if (!meal || meal.userId !== userId) return;
+
         await db.meals.update(id, {
             ...changes,
+            userId,
             updatedAt: new Date(),
-            syncStatus: 'PENDING'  // 修改后重新标记为待同步
+            syncStatus: 'PENDING'
         });
     },
 
-    /**
-     * 删除记录
-     */
-    async delete(id: number): Promise<void> {
-        await db.meals.delete(id);
+    async delete(userId: number, id: number): Promise<void> {
+        const meal = await db.meals.get(id);
+        if (meal?.userId === userId) {
+            await db.meals.delete(id);
+        }
     },
 
-    /**
-     * 标记为已同步
-     */
-    async markSynced(clientId: string, serverId: number): Promise<void> {
-        const meal = await db.meals.where('clientId').equals(clientId).first();
-        if (meal && meal.id) {
+    async markSynced(userId: number, clientId: string, serverId: number): Promise<void> {
+        const meal = await db.meals.where('[userId+clientId]').equals([userId, clientId]).first();
+        if (meal?.id) {
             await db.meals.update(meal.id, {
                 serverId,
                 syncStatus: 'SYNCED',
@@ -157,21 +147,7 @@ export const OfflineMealsService = {
         }
     },
 
-    /**
-     * 批量标记为已同步
-     */
-    async markMultipleSynced(items: Array<{ clientId: string; serverId: number }>): Promise<void> {
-        await db.transaction('rw', db.meals, async () => {
-            for (const item of items) {
-                await this.markSynced(item.clientId, item.serverId);
-            }
-        });
-    },
-
-    /**
-     * 从服务器数据合并（处理服务器推送的更新）
-     */
-    async mergeFromServer(serverMeals: Array<{
+    async mergeFromServer(userId: number, serverMeals: Array<{
         id: number;
         client_id: string;
         name: string;
@@ -191,65 +167,46 @@ export const OfflineMealsService = {
     }>): Promise<void> {
         await db.transaction('rw', db.meals, async () => {
             for (const serverMeal of serverMeals) {
-                // 检查本地是否存在
                 const localMeal = await db.meals
-                    .where('clientId')
-                    .equals(serverMeal.client_id)
+                    .where('[userId+clientId]')
+                    .equals([userId, serverMeal.client_id])
                     .first();
 
-                if (localMeal) {
-                    // 更新本地记录
-                    await db.meals.update(localMeal.id!, {
-                        serverId: serverMeal.id,
-                        name: serverMeal.name,
-                        portion: serverMeal.portion,
-                        calories: serverMeal.calories,
-                        sodium: serverMeal.sodium,
-                        purine: serverMeal.purine,
-                        protein: serverMeal.protein,
-                        carbs: serverMeal.carbs,
-                        fat: serverMeal.fat,
-                        fiber: serverMeal.fiber,
-                        mealType: serverMeal.meal_type as CachedMeal['mealType'],
-                        category: serverMeal.category as CachedMeal['category'],
-                        recordDate: serverMeal.record_date,
-                        note: serverMeal.note,
-                        aiRecognized: serverMeal.ai_recognized,
-                        syncStatus: 'SYNCED',
-                        updatedAt: new Date()
-                    });
+                const payload = {
+                    userId,
+                    serverId: serverMeal.id,
+                    name: serverMeal.name,
+                    portion: serverMeal.portion,
+                    calories: serverMeal.calories,
+                    sodium: serverMeal.sodium,
+                    purine: serverMeal.purine,
+                    protein: serverMeal.protein,
+                    carbs: serverMeal.carbs,
+                    fat: serverMeal.fat,
+                    fiber: serverMeal.fiber,
+                    mealType: serverMeal.meal_type as CachedMeal['mealType'],
+                    category: serverMeal.category as CachedMeal['category'],
+                    recordDate: serverMeal.record_date,
+                    note: serverMeal.note,
+                    aiRecognized: serverMeal.ai_recognized,
+                    syncStatus: 'SYNCED' as const,
+                    updatedAt: new Date()
+                };
+
+                if (localMeal?.id) {
+                    await db.meals.update(localMeal.id, payload);
                 } else {
-                    // 新增本地记录
                     await db.meals.add({
+                        ...payload,
                         clientId: serverMeal.client_id,
-                        serverId: serverMeal.id,
-                        name: serverMeal.name,
-                        portion: serverMeal.portion,
-                        calories: serverMeal.calories,
-                        sodium: serverMeal.sodium,
-                        purine: serverMeal.purine,
-                        protein: serverMeal.protein,
-                        carbs: serverMeal.carbs,
-                        fat: serverMeal.fat,
-                        fiber: serverMeal.fiber,
-                        mealType: serverMeal.meal_type as CachedMeal['mealType'],
-                        category: serverMeal.category as CachedMeal['category'],
-                        recordDate: serverMeal.record_date,
-                        note: serverMeal.note,
-                        aiRecognized: serverMeal.ai_recognized,
-                        syncStatus: 'SYNCED',
                         createdAt: new Date(),
-                        updatedAt: new Date()
                     });
                 }
             }
         });
     },
 
-    /**
-     * 计算今日摄入汇总
-     */
-    async getTodaySummary(): Promise<{
+    async getTodaySummary(userId: number): Promise<{
         calories: number;
         sodium: number;
         purine: number;
@@ -258,7 +215,7 @@ export const OfflineMealsService = {
         fat: number;
         mealCount: number;
     }> {
-        const meals = await this.getToday();
+        const meals = await this.getToday(userId);
 
         return {
             calories: meals.reduce((sum, m) => sum + m.calories, 0),
@@ -269,72 +226,63 @@ export const OfflineMealsService = {
             fat: meals.reduce((sum, m) => sum + (m.fat || 0), 0),
             mealCount: meals.length
         };
+    },
+
+    async clearUserData(userId: number): Promise<void> {
+        const meals = await db.meals.where('userId').equals(userId).toArray();
+        await db.meals.bulkDelete(meals.map(meal => meal.id!).filter(Boolean));
+    },
+
+    async clearLegacyData(): Promise<void> {
+        const meals = await db.meals.where('userId').equals(LEGACY_USER_ID).toArray();
+        await db.meals.bulkDelete(meals.map(meal => meal.id!).filter(Boolean));
     }
 };
 
-// ==================== 同步元数据管理 ====================
-
 export const SyncMetaService = {
-    /**
-     * 获取上次同步时间
-     */
-    async getLastSyncTime(): Promise<Date | null> {
-        const meta = await db.syncMeta.get('lastSyncTime');
+    async getLastSyncTime(userId: number): Promise<Date | null> {
+        const meta = await db.syncMeta.get(syncMetaKey(userId, 'lastSyncTime'));
         return meta ? new Date(meta.value as string) : null;
     },
 
-    /**
-     * 更新上次同步时间
-     */
-    async setLastSyncTime(time: Date = new Date()): Promise<void> {
-        await db.syncMeta.put({ key: 'lastSyncTime', value: time.toISOString() });
+    async setLastSyncTime(userId: number, time: Date = new Date()): Promise<void> {
+        await db.syncMeta.put({ key: syncMetaKey(userId, 'lastSyncTime'), value: time.toISOString() });
     },
 
-    /**
-     * 获取同步状态
-     */
-    async getSyncStatus(): Promise<'idle' | 'syncing' | 'error'> {
-        const meta = await db.syncMeta.get('syncStatus');
+    async getSyncStatus(userId: number): Promise<'idle' | 'syncing' | 'error'> {
+        const meta = await db.syncMeta.get(syncMetaKey(userId, 'syncStatus'));
         return (meta?.value as 'idle' | 'syncing' | 'error') || 'idle';
     },
 
-    /**
-     * 设置同步状态
-     */
-    async setSyncStatus(status: 'idle' | 'syncing' | 'error'): Promise<void> {
-        await db.syncMeta.put({ key: 'syncStatus', value: status });
+    async setSyncStatus(userId: number, status: 'idle' | 'syncing' | 'error'): Promise<void> {
+        await db.syncMeta.put({ key: syncMetaKey(userId, 'syncStatus'), value: status });
+    },
+
+    async clearUserMeta(userId: number): Promise<void> {
+        const rows = await db.syncMeta.filter(meta => meta.key.startsWith(`user:${userId}:`)).toArray();
+        await db.syncMeta.bulkDelete(rows.map(row => row.key));
     }
 };
 
-// ==================== 缓存清理策略 ====================
-
 export const CacheCleanupService = {
-    /**
-     * 清理过期缓存
-     * 删除已同步且超过 30 天的记录
-     */
-    async cleanupExpired(): Promise<number> {
+    async cleanupExpired(userId: number): Promise<number> {
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-        const cutoffDate = thirtyDaysAgo.toISOString().split('T')[0];
+        const cutoffDate = getLocalDateString(thirtyDaysAgo);
 
-        // 只删除已同步的旧数据
         const toDelete = await db.meals
-            .where('syncStatus')
-            .equals('SYNCED')
+            .where('[userId+syncStatus]')
+            .equals([userId, 'SYNCED'])
             .and(meal => meal.recordDate < cutoffDate)
             .toArray();
 
-        const idsToDelete = toDelete.map(m => m.id!).filter(id => id !== undefined);
+        const idsToDelete = toDelete.map(m => m.id!).filter(Boolean);
         await db.meals.bulkDelete(idsToDelete);
 
         return idsToDelete.length;
     },
 
-    /**
-     * 获取缓存统计信息
-     */
-    async getStats(): Promise<{
+    async getStats(userId: number): Promise<{
         totalCount: number;
         syncedCount: number;
         pendingCount: number;
@@ -342,14 +290,11 @@ export const CacheCleanupService = {
         newestDate: string | null;
         estimatedSizeKB: number;
     }> {
-        const allMeals = await db.meals.toArray();
+        const allMeals = await db.meals.where('userId').equals(userId).toArray();
         const synced = allMeals.filter(m => m.syncStatus === 'SYNCED');
         const pending = allMeals.filter(m => m.syncStatus === 'PENDING');
-
         const dates = allMeals.map(m => m.recordDate).sort();
-
-        // 粗略估算存储大小
-        const estimatedSizeKB = Math.round(JSON.stringify(allMeals).length / 1024);
+        const estimatedSizeKB = Math.max(1, Math.round(JSON.stringify(allMeals).length / 1024));
 
         return {
             totalCount: allMeals.length,
@@ -361,26 +306,26 @@ export const CacheCleanupService = {
         };
     },
 
-    /**
-     * 清空所有缓存（用于登出时）
-     */
+    async clearUserLocalData(userId: number): Promise<void> {
+        await OfflineMealsService.clearUserData(userId);
+        await SyncMetaService.clearUserMeta(userId);
+    },
+
     async clearAll(): Promise<void> {
         await db.meals.clear();
         await db.syncMeta.clear();
     }
 };
 
-// ==================== 同步调度器 ====================
-
 export class SyncScheduler {
     private syncInterval: number | null = null;
     private isOnline: boolean = navigator.onLine;
+    private currentUserId: number | null = null;
 
     constructor() {
-        // 监听网络状态变化
         window.addEventListener('online', () => {
             this.isOnline = true;
-            this.triggerSync();
+            void this.triggerSync();
         });
 
         window.addEventListener('offline', () => {
@@ -388,63 +333,50 @@ export class SyncScheduler {
         });
     }
 
-    /**
-     * 启动定时同步
-     * @param intervalMs 同步间隔（毫秒），默认 5 分钟
-     */
-    start(intervalMs: number = 5 * 60 * 1000): void {
+    start(userId: number, intervalMs: number = 5 * 60 * 1000): void {
+        this.currentUserId = userId;
         if (this.syncInterval) {
             clearInterval(this.syncInterval);
         }
 
         this.syncInterval = window.setInterval(() => {
-            this.triggerSync();
+            void this.triggerSync();
         }, intervalMs);
 
-        // 启动时立即同步一次
-        this.triggerSync();
+        void this.triggerSync();
     }
 
-    /**
-     * 停止定时同步
-     */
     stop(): void {
         if (this.syncInterval) {
             clearInterval(this.syncInterval);
             this.syncInterval = null;
         }
+        this.currentUserId = null;
     }
 
-    /**
-     * 触发同步
-     */
-    async triggerSync(): Promise<void> {
+    async triggerSync(userId: number | null = this.currentUserId): Promise<void> {
+        if (!userId) return;
+
         if (!this.isOnline) {
             console.log('[Sync] 离线状态，跳过同步');
             return;
         }
 
-        const currentStatus = await SyncMetaService.getSyncStatus();
+        const currentStatus = await SyncMetaService.getSyncStatus(userId);
         if (currentStatus === 'syncing') {
             console.log('[Sync] 同步进行中，跳过');
             return;
         }
 
         try {
-            await SyncMetaService.setSyncStatus('syncing');
-
-            // 获取待同步数据
-            const pendingMeals = await OfflineMealsService.getPending();
+            await SyncMetaService.setSyncStatus(userId, 'syncing');
+            const pendingMeals = await OfflineMealsService.getPending(userId);
 
             if (pendingMeals.length === 0) {
-                console.log('[Sync] 无待同步数据');
-                await SyncMetaService.setSyncStatus('idle');
+                await SyncMetaService.setSyncStatus(userId, 'idle');
                 return;
             }
 
-            console.log(`[Sync] 开始同步 ${pendingMeals.length} 条记录`);
-
-            // 转换为 API 格式
             const mealsToSync = pendingMeals.map(m => ({
                 client_id: m.clientId,
                 name: m.name,
@@ -464,14 +396,9 @@ export class SyncScheduler {
                 ai_recognized: m.aiRecognized
             }));
 
-            // 调用同步 API
             const { MealsAPI } = await import('./api');
-            const lastSyncTime = await SyncMetaService.getLastSyncTime();
-
-            const response = await MealsAPI.sync(
-                mealsToSync,
-                lastSyncTime?.toISOString()
-            ) as {
+            const lastSyncTime = await SyncMetaService.getLastSyncTime(userId);
+            const response = await MealsAPI.sync(mealsToSync, lastSyncTime?.toISOString()) as {
                 synced_count: number;
                 conflicts: string[];
                 server_meals: Array<{
@@ -494,45 +421,29 @@ export class SyncScheduler {
                 }>;
             };
 
-            // 处理同步结果
-            console.log(`[Sync] 同步完成: ${response.synced_count} 条成功, ${response.conflicts.length} 条冲突`);
-
-            // 标记已同步的记录
             for (const meal of pendingMeals) {
                 if (!response.conflicts.includes(meal.clientId)) {
-                    // 从服务器响应中找到对应的 serverId
-                    const serverMeal = response.server_meals.find(
-                        sm => sm.client_id === meal.clientId
-                    );
+                    const serverMeal = response.server_meals.find(sm => sm.client_id === meal.clientId);
                     if (serverMeal) {
-                        await OfflineMealsService.markSynced(meal.clientId, serverMeal.id);
+                        await OfflineMealsService.markSynced(userId, meal.clientId, serverMeal.id);
                     }
                 }
             }
 
-            // 合并服务器端更新
             if (response.server_meals.length > 0) {
-                await OfflineMealsService.mergeFromServer(response.server_meals);
+                await OfflineMealsService.mergeFromServer(userId, response.server_meals);
             }
 
-            // 更新同步时间
-            await SyncMetaService.setLastSyncTime();
-            await SyncMetaService.setSyncStatus('idle');
-
-            // 定期清理过期缓存
-            const cleaned = await CacheCleanupService.cleanupExpired();
-            if (cleaned > 0) {
-                console.log(`[Sync] 清理了 ${cleaned} 条过期缓存`);
-            }
-
+            await SyncMetaService.setLastSyncTime(userId);
+            await SyncMetaService.setSyncStatus(userId, 'idle');
+            await CacheCleanupService.cleanupExpired(userId);
         } catch (error) {
             console.error('[Sync] 同步失败:', error);
-            await SyncMetaService.setSyncStatus('error');
+            await SyncMetaService.setSyncStatus(userId, 'error');
         }
     }
 }
 
-// 导出同步调度器单例
 export const syncScheduler = new SyncScheduler();
 
 export default db;

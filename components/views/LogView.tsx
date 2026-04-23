@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { UserProfile, Meal, FoodCategory, DailyTargets } from '../../types';
 import { HEALTH_TIPS } from '../../data/healthTips';
+import { formatChineseDate, getLocalDateString } from '../../services/date';
+import { estimateMealNutrition } from '../../services/mealEstimation';
 
 interface LogViewProps {
   userProfile: UserProfile;
@@ -31,6 +33,7 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
 
   // Targets from Props
   const targetCalories = dailyTargets.calories;
+  const todayLabel = formatChineseDate(getLocalDateString());
 
   // State
   const [isAdding, setIsAdding] = useState(false);
@@ -60,64 +63,7 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
 
   const addMeal = () => {
     if(!mealInput.name) return;
-    const portionNum = parseFloat((mealInput.portion || '').replace(/[^\d.]/g, ''));
-    const multiplier = !Number.isNaN(portionNum) && portionNum > 0 ? Math.min(Math.max(portionNum / 100, 0.5), 3) : 1;
-
-    let estCal = 0;
-    let estSod = 0;
-    let estPur = 0;
-    switch(mealInput.category) {
-      case 'MEAT':
-        estCal = 260;
-        estSod = 180;
-        estPur = 130;
-        break;
-      case 'VEG':
-        estCal = 95;
-        estSod = 25;
-        estPur = 12;
-        break;
-      case 'STAPLE':
-        estCal = 240;
-        estSod = 90;
-        estPur = 28;
-        break;
-      case 'SNACK':
-        estCal = 210;
-        estSod = 160;
-        estPur = 20;
-        break;
-      case 'DRINK':
-        estCal = 75;
-        estSod = 15;
-        estPur = 8;
-        break;
-    }
-    estCal = Math.round(estCal * multiplier);
-    estSod = Math.round(estSod * multiplier);
-    estPur = Math.round(estPur * multiplier);
-
-    // AI Analysis adjustment based on Note
-    if (mealInput.note) {
-        const note = mealInput.note;
-        // Sodium adjustment
-        if (note.includes('咸') || note.includes('盐') || note.includes('酱') || note.includes('卤')) {
-            estSod += 300;
-        }
-        // Calories adjustment
-        if (note.includes('油') || note.includes('炸') || note.includes('煎') || note.includes('肥')) {
-            estCal += 100;
-        }
-        // Purine adjustment
-        if (note.includes('汤') || note.includes('内脏') || note.includes('海鲜')) {
-            estPur += 80;
-        }
-        // Spicy sauces often have hidden sodium/oil
-        if (note.includes('辣')) {
-            estSod += 50; 
-            estCal += 30;
-        }
-    }
+    const estimated = estimateMealNutrition(mealInput);
 
     const newClientId = crypto.randomUUID();
     onAddMeal({
@@ -125,9 +71,9 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
         clientId: newClientId,
         name: mealInput.name,
         portion: mealInput.portion || '1份',
-        calories: estCal,
-        sodium: estSod,
-        purine: estPur,
+        calories: estimated.calories,
+        sodium: estimated.sodium,
+        purine: estimated.purine,
         type: mealInput.type,
         category: mealInput.category,
         note: mealInput.note
@@ -143,7 +89,7 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
         <h2 className="text-xl font-bold leading-tight tracking-wide flex-1 text-white font-serif">生命日志</h2>
         <div className="flex items-center justify-center bg-surface-dark rounded-full px-3 py-1 border border-white/10">
           <span className="material-symbols-outlined text-base mr-1 text-primary">calendar_today</span>
-          <p className="text-mineral text-sm font-bold leading-normal tracking-wide shrink-0 font-serif">2024年10月24日</p>
+          <p className="text-mineral text-sm font-bold leading-normal tracking-wide shrink-0 font-serif">{todayLabel}</p>
         </div>
       </div>
 
@@ -198,20 +144,20 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
               </div>
             </div>
             
-            {/* BMR (Calculated Estimate) */}
+            {/* Daily target returned by backend */}
             <div className="flex flex-col justify-between gap-3 rounded-2xl p-4 bg-surface-dark shadow-sm border border-white/5">
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-2">
                   <span className="material-symbols-outlined text-primary text-[20px]">local_fire_department</span>
-                  <p className="text-slate-400 text-sm font-bold font-serif tracking-wide">每日基础代谢</p>
+                  <p className="text-slate-400 text-sm font-bold font-serif tracking-wide">每日热量目标</p>
                 </div>
                 <div className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
               </div>
               <div>
-                <p className="text-white tracking-wide text-2xl font-bold leading-tight font-serif">{Math.round(targetCalories / 1.375)}</p>
+                <p className="text-white tracking-wide text-2xl font-bold leading-tight font-serif">{targetCalories}</p>
                 <div className="flex items-center justify-between mt-1 pr-1">
                     <p className="text-slate-400 text-xs font-bold font-serif tracking-wide">kcal/day</p>
-                    <span className="text-[10px] text-slate-500 font-serif font-bold tracking-wide opacity-60">基于{userProfile.gender === 'MALE' ? '男' : '女'}性</span>
+                    <span className="text-[10px] text-slate-500 font-serif font-bold tracking-wide opacity-60">后端目标</span>
                 </div>
               </div>
             </div>
@@ -274,9 +220,9 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
                         <span className="material-symbols-outlined text-sm">smart_toy</span>
                      </div>
                      <p className="text-xs text-slate-300 leading-relaxed text-justify font-serif tracking-wide">
-                         {totalCalories > targetCalories 
-                          ? "今日热量摄入已超过目标。建议晚餐减少碳水化合物摄入（如米饭、面条），并增加 30 分钟中等强度运动来平衡热量盈余。" 
-                          : "今日热量控制良好。建议晚餐补充优质蛋白质（如鱼肉、豆腐），促进夜间基础代谢与身体修复。"}
+                          {totalCalories > targetCalories 
+                           ? "今日热量摄入已超过目标。后续餐次建议优先控制总量和高油高糖食物，具体食材请结合过敏与慢病档案再确认。"
+                           : "今日热量仍有余额。当前仅给出通用原则，个性化菜谱推荐将在规则引擎接入后开放。"}
                      </p>
                  </div>
             </div>
@@ -434,7 +380,7 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
                               className="w-full bg-gradient-to-r from-primary to-[#45b7aa] text-background-dark font-bold py-3.5 rounded-xl hover:shadow-[0_0_20px_rgba(17,196,212,0.4)] transition-all active:scale-[0.98] flex items-center justify-center gap-2 font-serif tracking-wide"
                            >
                                <span className="material-symbols-outlined text-lg">auto_awesome</span>
-                               AI 智能估算记录(含钠/嘌呤)
+                                本地估算记录(含钠/嘌呤)
                            </button>
                            <button 
                               onClick={() => setIsAdding(false)}

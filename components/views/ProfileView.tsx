@@ -1,20 +1,22 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, ConditionData, ConditionStatus } from '../../types';
+import { View, ConditionData, ConditionStatus, UserProfile } from '../../types';
+import { FEATURE_FLAGS } from '../../constants/featureFlags';
 
 interface ProfileViewProps {
     onViewChange?: (view: View) => void;
     medicalConditions: ConditionData[];
-    userNickname?: string;
+    userProfile: UserProfile;
+    onUpdateNickname?: (nickname: string) => Promise<void> | void;
 }
 
-const ProfileView: React.FC<ProfileViewProps> = ({ onViewChange, medicalConditions, userNickname = '用户' }) => {
-    const [avatar, setAvatar] = useState('/images/user-avatar.png');
-    const [name, setName] = useState(userNickname);
+const ProfileView: React.FC<ProfileViewProps> = ({ onViewChange, medicalConditions, userProfile, onUpdateNickname }) => {
+    const [name, setName] = useState(userProfile.nickname || '用户');
     const [isEditingName, setIsEditingName] = useState(false);
     const [showCopyFeedback, setShowCopyFeedback] = useState(false);
 
-    const fileInputRef = useRef<HTMLInputElement>(null);
     const nameInputRef = useRef<HTMLInputElement>(null);
+    const avatar = userProfile.avatarUrl || '/images/user-avatar.png';
+    const metabolicId = userProfile.id ? `PRISM-${String(userProfile.id).padStart(6, '0')}` : '未登录';
 
     useEffect(() => {
         if (isEditingName && nameInputRef.current) {
@@ -22,25 +24,17 @@ const ProfileView: React.FC<ProfileViewProps> = ({ onViewChange, medicalConditio
         }
     }, [isEditingName]);
 
-    const handleAvatarClick = () => {
-        fileInputRef.current?.click();
-    };
-
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0]) {
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                if (e.target?.result) {
-                    setAvatar(e.target.result as string);
-                }
-            };
-            reader.readAsDataURL(e.target.files[0]);
-        }
-    };
+    useEffect(() => {
+        setName(userProfile.nickname || '用户');
+    }, [userProfile.nickname]);
 
     const handleNameBlur = () => {
         setIsEditingName(false);
-        if (name.trim() === '') setName(userNickname);
+        if (name.trim() === '') {
+            setName(userProfile.nickname || '用户');
+            return;
+        }
+        void onUpdateNickname?.(name);
     };
 
     const handleNameKeyDown = (e: React.KeyboardEvent) => {
@@ -50,7 +44,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({ onViewChange, medicalConditio
     };
 
     const handleCopyId = () => {
-        navigator.clipboard.writeText('#8829-XJ');
+        navigator.clipboard.writeText(metabolicId);
         setShowCopyFeedback(true);
         setTimeout(() => setShowCopyFeedback(false), 2000);
     };
@@ -92,15 +86,6 @@ const ProfileView: React.FC<ProfileViewProps> = ({ onViewChange, medicalConditio
 
     return (
         <div className="flex flex-col w-full pb-24">
-            {/* Hidden File Input */}
-            <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handleFileChange}
-                className="hidden"
-                accept="image/*"
-            />
-
             <div className="relative">
                 {/* Glow blob decoration preserved */}
                 <div className="absolute -top-20 -right-20 w-64 h-64 bg-primary/5 rounded-full blur-3xl pointer-events-none z-0"></div>
@@ -124,21 +109,22 @@ const ProfileView: React.FC<ProfileViewProps> = ({ onViewChange, medicalConditio
 
                 {/* Avatar Section */}
                 <div className="relative z-10 px-6 py-6 flex flex-col items-center gap-4">
-                    <div className="relative group cursor-pointer" onClick={handleAvatarClick}>
+                    <div className={`relative group ${FEATURE_FLAGS.profileAvatarUpload ? 'cursor-pointer' : ''}`}>
                         <div className="size-28 rounded-full p-1 bg-gradient-to-tr from-primary/30 to-ochre/30 transition-transform duration-300 group-active:scale-95">
                             <div
                                 className="w-full h-full rounded-full bg-cover bg-center border-4 border-background-dark relative overflow-hidden"
                                 style={{ backgroundImage: `url("${avatar}")` }}
                             >
-                                {/* Edit Overlay on Hover */}
-                                <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <span className="material-symbols-outlined text-white text-2xl">photo_camera</span>
-                                </div>
+                                {!FEATURE_FLAGS.profileAvatarUpload && (
+                                    <div className="absolute bottom-1 left-1 right-1 rounded-full bg-black/40 px-2 py-0.5 text-center">
+                                        <span className="text-[9px] text-white/60 font-serif">头像上传未开放</span>
+                                    </div>
+                                )}
                             </div>
                         </div>
                         <div className="absolute -bottom-2 -right-2 bg-surface-dark border border-white/10 p-1.5 px-3 rounded-full flex items-center gap-1.5 shadow-lg pointer-events-none">
                             <span className="material-symbols-outlined text-primary text-[18px]">ecg_heart</span>
-                            <span className="text-xs font-bold tracking-wide text-white font-serif">85</span>
+                            <span className="text-xs font-bold tracking-wide text-white font-serif">{medicalConditions.length}</span>
                         </div>
                     </div>
 
@@ -164,7 +150,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({ onViewChange, medicalConditio
                         )}
 
                         <div className="flex items-center gap-2 mt-1 relative">
-                            <p className="text-slate-400 text-sm font-bold tracking-wide font-serif">Metabolic ID: #8829-XJ</p>
+                            <p className="text-slate-400 text-sm font-bold tracking-wide font-serif">Metabolic ID: {metabolicId}</p>
                             <button
                                 onClick={handleCopyId}
                                 className="flex items-center justify-center w-6 h-6 rounded-md bg-white/5 text-slate-400 hover:text-white hover:bg-white/10 transition-all active:scale-95"
@@ -231,33 +217,26 @@ const ProfileView: React.FC<ProfileViewProps> = ({ onViewChange, medicalConditio
                         <h3 className="text-white text-base font-bold font-serif tracking-wide">体检档案</h3>
                         {/* Filter button removed */}
                     </div>
-                    <div className="flex flex-col gap-3">
-
-                        {/* File Item 1: Health Report */}
-                        <button
-                            onClick={() => onViewChange && onViewChange(View.HEALTH_REPORT_ARCHIVES)}
-                            className="group relative flex items-center gap-4 p-4 rounded-2xl bg-[#131b1d]/80 backdrop-blur-md border border-white/5 shadow-sm active:scale-[0.98] transition-all hover:border-primary/20 hover:bg-[#131b1d] cursor-pointer"
-                        >
-                            <div className="relative shrink-0 size-12 rounded-xl bg-primary/10 flex items-center justify-center text-primary border border-primary/10">
-                                <span className="material-symbols-outlined text-[24px]">description</span>
-                                <div className="absolute -top-1 -right-1 size-3 bg-[#10b981] rounded-full border-[3px] border-[#131b1d]"></div>
+                    <button
+                        onClick={() => onViewChange && onViewChange(View.HEALTH_REPORT_ARCHIVES)}
+                        className="group relative flex items-center gap-4 p-4 rounded-2xl bg-[#131b1d]/80 backdrop-blur-md border border-white/5 shadow-sm active:scale-[0.98] transition-all hover:border-primary/20 hover:bg-[#131b1d] cursor-pointer"
+                    >
+                        <div className="relative shrink-0 size-12 rounded-xl bg-white/5 flex items-center justify-center text-slate-400 border border-white/10">
+                            <span className="material-symbols-outlined text-[24px]">description</span>
+                        </div>
+                        <div className="flex-1 min-w-0 text-left">
+                            <h4 className="text-sm font-bold font-serif text-white truncate group-hover:text-primary transition-colors tracking-wide">体检原始档案</h4>
+                            <p className="text-xs text-slate-400 mt-1 flex items-center gap-1.5 font-serif font-bold tracking-wide">
+                                暂未接入真实上传与分析接口
+                            </p>
+                        </div>
+                        <div className="shrink-0 flex items-center gap-3">
+                            <div className="px-2.5 py-1 rounded-md bg-white/5 border border-white/10">
+                                <span className="text-[10px] font-bold font-serif text-white/40 tracking-wide">未开放</span>
                             </div>
-                            <div className="flex-1 min-w-0 text-left">
-                                <h4 className="text-sm font-bold font-serif text-white truncate group-hover:text-primary transition-colors tracking-wide">体检报告</h4>
-                                <p className="text-xs text-slate-400 mt-1 flex items-center gap-1.5 font-serif font-bold tracking-wide">
-                                    <span className="material-symbols-outlined text-[12px] opacity-70">calendar_today</span>
-                                    2023年10月24日
-                                </p>
-                            </div>
-                            <div className="shrink-0 flex items-center gap-3">
-                                <div className="px-2.5 py-1 rounded-md bg-[#10b981]/10 border border-[#10b981]/20">
-                                    <span className="text-[10px] font-bold font-serif text-[#10b981] tracking-wide">已分析</span>
-                                </div>
-                                <span className="material-symbols-outlined text-slate-500 group-hover:text-white transition-colors text-xl">chevron_right</span>
-                            </div>
-                        </button>
-
-                    </div>
+                            <span className="material-symbols-outlined text-slate-500 group-hover:text-white transition-colors text-xl">chevron_right</span>
+                        </div>
+                    </button>
                 </div>
             </div>
         </div>

@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.models.user import User
 from app.models.health_condition import HealthCondition
 from app.schemas.chat import NutritionInfo, FoodRecognitionResult
+from app.services.target_service import calculate_bmi, calculate_daily_targets
 
 
 # ═══════════════════════════════════════════════════════════
@@ -288,24 +289,18 @@ class DoubaoAIService:
         """构建用户健康上下文（供 AI 参考）"""
         context_parts = []
         
-        # 基本信息 + BMR 计算
+        # 基本信息 + 每日目标。目标计算统一由 target_service 提供。
         if user.gender and user.age and user.height and user.weight:
             gender_str = "男" if user.gender.value == "MALE" else "女"
-            bmi = round(user.weight / (user.height / 100) ** 2, 1)
-            
-            # Mifflin-St Jeor 公式计算 BMR
-            if user.gender.value == "MALE":
-                bmr = round(10 * user.weight + 6.25 * user.height - 5 * user.age + 5)
-            else:
-                bmr = round(10 * user.weight + 6.25 * user.height - 5 * user.age - 161)
-            
-            tdee = round(bmr * 1.4)  # 轻度活动系数
+            bmi = calculate_bmi(user)
+            targets = calculate_daily_targets(user, conditions)
             
             context_parts.append(
                 f"- 基本信息：{gender_str}，{user.age}岁，身高{user.height}cm，体重{user.weight}kg"
             )
-            context_parts.append(f"- BMI：{bmi}（{'偏瘦' if bmi < 18.5 else '正常' if bmi < 24 else '偏胖' if bmi < 28 else '肥胖'}）")
-            context_parts.append(f"- 参考基础代谢：{bmr}kcal/天，预估总消耗：{tdee}kcal/天")
+            if bmi is not None:
+                context_parts.append(f"- BMI：{bmi}（{'偏瘦' if bmi < 18.5 else '正常' if bmi < 24 else '偏胖' if bmi < 28 else '肥胖'}）")
+            context_parts.append(f"- 每日目标：热量 {targets.calories}kcal，钠 <{targets.sodium}mg，嘌呤 <{targets.purine}mg")
         
         # 慢性病（含状态和具体指标）
         chronic_conditions = [c for c in conditions if c.condition_type.value == "CHRONIC"]

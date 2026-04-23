@@ -1,10 +1,13 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, UserProfile } from '../../types';
 import { AuthAPI, TokenManager } from '../../services/api';
+import { APP_BUILD, APP_DISPLAY_NAME, APP_VERSION } from '../../constants/app';
+import { CacheCleanupService } from '../../services/offline';
 
 interface SettingsViewProps {
     onViewChange: (view: View) => void;
     userProfile: UserProfile;
+    currentUserId: number | null;
     onUpdateProfile: (profile: UserProfile) => void;
     onLogout?: () => void;
 }
@@ -12,14 +15,19 @@ interface SettingsViewProps {
 type ModalType =
     | 'BODY_PARAMS'
     | 'GENDER_SELECT'
-    | 'HEALTH_TAGS'
-    | 'RESTRICTIONS'
-    | 'INTERVENTION'
-    | 'EXPORT_DATA'
     | 'CLEAN_DATA'
     | 'ABOUT'
     | 'LOGOUT_CONFIRM'
     | null;
+
+type CacheStats = {
+    totalCount: number;
+    syncedCount: number;
+    pendingCount: number;
+    oldestDate: string | null;
+    newestDate: string | null;
+    estimatedSizeKB: number;
+};
 
 interface ModalProps {
     title: string;
@@ -42,33 +50,41 @@ const Modal: React.FC<ModalProps> = ({ title, onClose, children }) => (
     </div>
 );
 
-const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, onUpdateProfile, onLogout }) => {
-    // Config State
-    const [aiStyle, setAiStyle] = useState<'strict' | 'gentle'>('strict');
+const DisabledBadge = ({ label = '未开放' }: { label?: string }) => (
+    <span className="text-[10px] bg-white/5 border border-white/10 px-2 py-0.5 rounded text-white/40 font-serif font-bold tracking-wide">
+        {label}
+    </span>
+);
 
-    // Editable Data State (Local buffer for modal editing)
+const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, currentUserId, onUpdateProfile, onLogout }) => {
     const [editProfile, setEditProfile] = useState<UserProfile>(userProfile);
-
-    // Other Settings
-    const [healthTags, setHealthTags] = useState<string[]>(['高尿酸', '高血压']);
-    const [restrictions, setRestrictions] = useState('花生 · 海鲜');
-    const [intervention, setIntervention] = useState('标准');
-
-    // System Data State
-    const [storageSize, setStorageSize] = useState('245 MB');
-    const [isCleaning, setIsCleaning] = useState(false);
-    const [exportFormat, setExportFormat] = useState<'PDF' | 'CSV'>('PDF');
-    const [exportRange, setExportRange] = useState('30DAYS');
-    const [isExporting, setIsExporting] = useState(false);
-
-    // Modal State
     const [activeModal, setActiveModal] = useState<ModalType>(null);
+    const [isCleaning, setIsCleaning] = useState(false);
+    const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
 
-    // Constants
-    const AVAILABLE_TAGS = ['高尿酸', '高血压', '糖尿病', '高血脂', '乳糖不耐受', '麸质过敏', '脂肪肝'];
-    const INTENSITY_OPTIONS = ['轻度', '标准', '频繁'];
+    const appVersionLabel = `v${APP_VERSION}${APP_BUILD !== 'local' ? ` (${APP_BUILD})` : ''}`;
 
-    // Initialize edit buffer when opening body params modal
+    const loadCacheStats = async () => {
+        if (!currentUserId) {
+            setCacheStats(null);
+            return;
+        }
+        try {
+            setCacheStats(await CacheCleanupService.getStats(currentUserId));
+        } catch (error) {
+            console.error('读取缓存统计失败:', error);
+            setCacheStats(null);
+        }
+    };
+
+    useEffect(() => {
+        setEditProfile(userProfile);
+    }, [userProfile]);
+
+    useEffect(() => {
+        void loadCacheStats();
+    }, [currentUserId]);
+
     const openBodyParamsModal = () => {
         setEditProfile(userProfile);
         setActiveModal('BODY_PARAMS');
@@ -83,7 +99,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
         onUpdateProfile(editProfile);
         setActiveModal(null);
 
-        // 同步到后端
         if (TokenManager.isAuthenticated()) {
             try {
                 await AuthAPI.updateProfile({
@@ -98,53 +113,15 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
         }
     };
 
-    const SectionTitle = ({ title }: { title: string }) => (
-        <h3 className="text-white/60 text-xs font-serif font-bold tracking-widest uppercase mb-3 px-1">{title}</h3>
-    );
-
-    const ListItem = ({
-        icon,
-        label,
-        value,
-        action,
-        onClick
-    }: {
-        icon: string;
-        label: string;
-        value?: string | React.ReactNode;
-        action?: React.ReactNode;
-        onClick?: () => void;
-    }) => (
-        <div
-            onClick={onClick}
-            className={`flex items-center justify-between py-3 border-b border-white/5 last:border-0 ${onClick ? 'cursor-pointer active:bg-white/5 transition-colors' : ''}`}
-        >
-            <div className="flex items-center gap-3">
-                <span className="material-symbols-outlined text-white/40 text-lg">{icon}</span>
-                <span className="text-white/90 text-sm font-bold tracking-wide font-serif">{label}</span>
-            </div>
-            <div className="flex items-center gap-2">
-                {value && <span className="text-white/40 text-xs font-serif font-bold tracking-wide max-w-[150px] truncate text-right">{value}</span>}
-                {action || <span className="material-symbols-outlined text-white/20 text-lg">chevron_right</span>}
-            </div>
-        </div>
-    );
-
-    const handleDataClean = () => {
+    const handleDataClean = async () => {
+        if (!currentUserId) return;
         setIsCleaning(true);
-        setTimeout(() => {
-            setStorageSize('12 KB'); // Reset to minimal size
+        try {
+            await CacheCleanupService.cleanupExpired(currentUserId);
+            await loadCacheStats();
+        } finally {
             setIsCleaning(false);
-            setActiveModal(null);
-        }, 1500);
-    };
-
-    const handleExport = () => {
-        setIsExporting(true);
-        setTimeout(() => {
-            setIsExporting(false);
-            setActiveModal(null);
-        }, 2000);
+        }
     };
 
     const handleLogout = () => {
@@ -156,7 +133,40 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
         }
     };
 
-    // Render specific modal content based on activeModal state
+    const SectionTitle = ({ title }: { title: string }) => (
+        <h3 className="text-white/60 text-xs font-serif font-bold tracking-widest uppercase mb-3 px-1">{title}</h3>
+    );
+
+    const ListItem = ({
+        icon,
+        label,
+        value,
+        action,
+        onClick,
+        disabled = false,
+    }: {
+        icon: string;
+        label: string;
+        value?: string | React.ReactNode;
+        action?: React.ReactNode;
+        onClick?: () => void;
+        disabled?: boolean;
+    }) => (
+        <div
+            onClick={disabled ? undefined : onClick}
+            className={`flex items-center justify-between py-3 border-b border-white/5 last:border-0 ${onClick && !disabled ? 'cursor-pointer active:bg-white/5 transition-colors' : ''} ${disabled ? 'opacity-70' : ''}`}
+        >
+            <div className="flex items-center gap-3">
+                <span className="material-symbols-outlined text-white/40 text-lg">{icon}</span>
+                <span className="text-white/90 text-sm font-bold tracking-wide font-serif">{label}</span>
+            </div>
+            <div className="flex items-center gap-2">
+                {value && <span className="text-white/40 text-xs font-serif font-bold tracking-wide max-w-[150px] truncate text-right">{value}</span>}
+                {action || (!disabled && <span className="material-symbols-outlined text-white/20 text-lg">chevron_right</span>)}
+            </div>
+        </div>
+    );
+
     const renderModalContent = () => {
         switch (activeModal) {
             case 'BODY_PARAMS':
@@ -230,163 +240,35 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                         </div>
                     </Modal>
                 );
-            case 'HEALTH_TAGS':
-                return (
-                    <Modal title="健康状态标签" onClose={() => setActiveModal(null)}>
-                        <div className="flex flex-wrap gap-2 mb-6">
-                            {AVAILABLE_TAGS.map(tag => {
-                                const isSelected = healthTags.includes(tag);
-                                return (
-                                    <button
-                                        key={tag}
-                                        onClick={() => {
-                                            if (isSelected) {
-                                                setHealthTags(healthTags.filter(t => t !== tag));
-                                            } else {
-                                                setHealthTags([...healthTags, tag]);
-                                            }
-                                        }}
-                                        className={`px-3 py-1.5 rounded-full text-xs font-serif font-bold tracking-wide transition-all duration-200 ${isSelected ? 'bg-primary/20 text-primary border border-primary/30' : 'bg-white/5 text-slate-400 border border-transparent hover:bg-white/10'}`}
-                                    >
-                                        {tag}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                        <button
-                            onClick={() => setActiveModal(null)}
-                            className="w-full bg-primary/20 text-primary py-3 rounded-xl font-bold border border-primary/20 hover:bg-primary/30 transition-colors font-serif tracking-wide"
-                        >
-                            完成
-                        </button>
-                    </Modal>
-                );
-            case 'RESTRICTIONS':
-                return (
-                    <Modal title="饮食避忌" onClose={() => setActiveModal(null)}>
-                        <div className="space-y-4">
-                            <p className="text-xs text-slate-400 font-serif font-bold tracking-wide">请输入您忌口的食物，如花生、海鲜等。</p>
-                            <textarea
-                                value={restrictions}
-                                onChange={(e) => setRestrictions(e.target.value)}
-                                rows={4}
-                                className="w-full bg-black/20 border border-white/10 rounded-lg p-3 text-white focus:border-primary/50 outline-none text-sm resize-none font-serif tracking-wide"
-                                placeholder="例如：香菜, 羊肉"
-                            />
-                            <button
-                                onClick={() => setActiveModal(null)}
-                                className="w-full bg-primary/20 text-primary py-3 rounded-xl font-bold mt-2 border border-primary/20 hover:bg-primary/30 transition-colors font-serif tracking-wide"
-                            >
-                                保存
-                            </button>
-                        </div>
-                    </Modal>
-                );
-            case 'INTERVENTION':
-                return (
-                    <Modal title="干预强度" onClose={() => setActiveModal(null)}>
-                        <div className="space-y-2 mb-4">
-                            {INTENSITY_OPTIONS.map(opt => (
-                                <button
-                                    key={opt}
-                                    onClick={() => {
-                                        setIntervention(opt);
-                                        setActiveModal(null);
-                                    }}
-                                    className={`w-full py-3 px-4 rounded-xl flex items-center justify-between transition-all active:scale-[0.98] ${intervention === opt ? 'bg-primary/10 border border-primary/30' : 'bg-white/5 border border-transparent hover:bg-white/10'}`}
-                                >
-                                    <span className={`text-sm font-bold font-serif tracking-wide ${intervention === opt ? 'text-primary' : 'text-slate-300'}`}>{opt}</span>
-                                    {intervention === opt && <span className="material-symbols-outlined text-primary text-sm">check</span>}
-                                </button>
-                            ))}
-                        </div>
-                    </Modal>
-                );
-            case 'EXPORT_DATA':
-                return (
-                    <Modal title="导出健康报表" onClose={() => !isExporting && setActiveModal(null)}>
-                        <div className="space-y-4">
-                            <div>
-                                <p className="text-xs text-slate-400 mb-2 font-serif font-bold tracking-wide">选择时间范围</p>
-                                <div className="flex gap-2">
-                                    <button
-                                        onClick={() => setExportRange('7DAYS')}
-                                        className={`flex-1 py-2 rounded-lg text-xs font-serif font-bold tracking-wide border ${exportRange === '7DAYS' ? 'bg-primary/10 border-primary text-primary' : 'border-white/10 text-slate-400'}`}
-                                    >近7天</button>
-                                    <button
-                                        onClick={() => setExportRange('30DAYS')}
-                                        className={`flex-1 py-2 rounded-lg text-xs font-serif font-bold tracking-wide border ${exportRange === '30DAYS' ? 'bg-primary/10 border-primary text-primary' : 'border-white/10 text-slate-400'}`}
-                                    >近30天</button>
-                                    <button
-                                        onClick={() => setExportRange('ALL')}
-                                        className={`flex-1 py-2 rounded-lg text-xs font-serif font-bold tracking-wide border ${exportRange === 'ALL' ? 'bg-primary/10 border-primary text-primary' : 'border-white/10 text-slate-400'}`}
-                                    >全部</button>
-                                </div>
-                            </div>
-                            <div>
-                                <p className="text-xs text-slate-400 mb-2 font-serif font-bold tracking-wide">导出格式</p>
-                                <div className="flex gap-4">
-                                    <button
-                                        onClick={() => setExportFormat('PDF')}
-                                        className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-all ${exportFormat === 'PDF' ? 'border-primary text-primary bg-primary/5' : 'border-white/10 text-slate-400'}`}
-                                    >
-                                        <span className="material-symbols-outlined text-lg">picture_as_pdf</span>
-                                        <span className="text-xs font-bold font-serif tracking-wide">PDF 报告</span>
-                                    </button>
-                                    <button
-                                        onClick={() => setExportFormat('CSV')}
-                                        className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-all ${exportFormat === 'CSV' ? 'border-primary text-primary bg-primary/5' : 'border-white/10 text-slate-400'}`}
-                                    >
-                                        <span className="material-symbols-outlined text-lg">table_chart</span>
-                                        <span className="text-xs font-bold font-serif tracking-wide">CSV 数据</span>
-                                    </button>
-                                </div>
-                            </div>
-                            <button
-                                onClick={handleExport}
-                                disabled={isExporting}
-                                className="w-full bg-primary/20 text-primary py-3 rounded-xl font-bold mt-2 border border-primary/20 hover:bg-primary/30 transition-colors font-serif tracking-wide flex items-center justify-center gap-2 disabled:opacity-50"
-                            >
-                                {isExporting ? (
-                                    <>
-                                        <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
-                                        生成中...
-                                    </>
-                                ) : '确认导出'}
-                            </button>
-                        </div>
-                    </Modal>
-                );
             case 'CLEAN_DATA':
                 return (
-                    <Modal title="存储空间清理" onClose={() => !isCleaning && setActiveModal(null)}>
+                    <Modal title="本地离线缓存" onClose={() => !isCleaning && setActiveModal(null)}>
                         <div className="space-y-4">
                             <div className="bg-black/20 rounded-lg p-4 flex items-center justify-between">
                                 <div className="flex flex-col">
-                                    <span className="text-slate-400 text-xs font-serif font-bold tracking-wide">当前占用</span>
-                                    <span className="text-white font-serif tracking-wide text-xl font-bold">{storageSize}</span>
+                                    <span className="text-slate-400 text-xs font-serif font-bold tracking-wide">本账号本地缓存</span>
+                                    <span className="text-white font-serif tracking-wide text-xl font-bold">
+                                        {cacheStats ? `${cacheStats.estimatedSizeKB} KB` : '未登录'}
+                                    </span>
                                 </div>
                                 <span className="material-symbols-outlined text-white/20 text-4xl">database</span>
                             </div>
-                            <div className="space-y-2">
-                                <div className="flex items-center justify-between p-2 rounded hover:bg-white/5">
-                                    <div className="flex items-center gap-2">
-                                        <span className="material-symbols-outlined text-slate-400 text-sm">image</span>
-                                        <span className="text-sm text-slate-300 font-serif font-bold tracking-wide">图片缓存</span>
-                                    </div>
-                                    <span className="text-xs text-white/40 font-serif font-bold tracking-wide">182 MB</span>
+                            <div className="space-y-2 text-xs text-slate-400 font-serif font-bold tracking-wide">
+                                <div className="flex items-center justify-between p-2 rounded bg-white/5">
+                                    <span>记录总数</span>
+                                    <span>{cacheStats?.totalCount ?? 0}</span>
                                 </div>
-                                <div className="flex items-center justify-between p-2 rounded hover:bg-white/5">
-                                    <div className="flex items-center gap-2">
-                                        <span className="material-symbols-outlined text-slate-400 text-sm">chat</span>
-                                        <span className="text-sm text-slate-300 font-serif font-bold tracking-wide">对话记录</span>
-                                    </div>
-                                    <span className="text-xs text-white/40 font-serif font-bold tracking-wide">63 MB</span>
+                                <div className="flex items-center justify-between p-2 rounded bg-white/5">
+                                    <span>待同步</span>
+                                    <span>{cacheStats?.pendingCount ?? 0}</span>
                                 </div>
+                                <p className="text-[11px] text-slate-500 leading-relaxed pt-1">
+                                    清理只会删除本账号已同步且超过 30 天的本地离线缓存，不会删除服务器饮食记录或 AI 对话。
+                                </p>
                             </div>
                             <button
                                 onClick={handleDataClean}
-                                disabled={isCleaning || storageSize === '12 KB'}
+                                disabled={isCleaning || !currentUserId}
                                 className="w-full bg-red-500/10 text-red-400 py-3 rounded-xl font-bold mt-2 border border-red-500/20 hover:bg-red-500/20 transition-colors font-serif tracking-wide flex items-center justify-center gap-2 disabled:opacity-50 disabled:grayscale"
                             >
                                 {isCleaning ? (
@@ -394,14 +276,14 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                                         <span className="material-symbols-outlined animate-spin text-sm">rotate_right</span>
                                         清理中...
                                     </>
-                                ) : storageSize === '12 KB' ? '系统已是最新' : '立即清理'}
+                                ) : '清理过期缓存'}
                             </button>
                         </div>
                     </Modal>
                 );
             case 'ABOUT':
                 return (
-                    <Modal title="关于食鉴" onClose={() => setActiveModal(null)}>
+                    <Modal title={`关于${APP_DISPLAY_NAME}`} onClose={() => setActiveModal(null)}>
                         <div className="flex flex-col items-center justify-center py-4">
                             <div className="w-16 h-16 bg-primary/10 rounded-2xl flex items-center justify-center border border-primary/20 mb-3 shadow-[0_0_20px_rgba(17,196,212,0.15)]">
                                 <svg className="w-8 h-8 drop-shadow-lg" fill="none" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -410,21 +292,21 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                                 </svg>
                             </div>
                             <h4 className="text-white text-lg font-display font-bold">PRISM</h4>
-                            <p className="text-white/40 text-xs font-serif tracking-widest mt-1">版本 v2.4.0 (Build 892)</p>
+                            <p className="text-white/40 text-xs font-serif tracking-widest mt-1">版本 {appVersionLabel}</p>
                         </div>
                         <div className="space-y-1 border-t border-white/5 pt-2">
-                            <button className="w-full py-3 flex items-center justify-between text-sm text-slate-300 hover:bg-white/5 px-2 rounded-lg transition-colors font-serif font-bold tracking-wide">
+                            <div className="w-full py-3 flex items-center justify-between text-sm text-slate-500 px-2 rounded-lg font-serif font-bold tracking-wide">
                                 <span>用户协议</span>
-                                <span className="material-symbols-outlined text-xs text-white/30">chevron_right</span>
-                            </button>
-                            <button className="w-full py-3 flex items-center justify-between text-sm text-slate-300 hover:bg-white/5 px-2 rounded-lg transition-colors font-serif font-bold tracking-wide">
+                                <DisabledBadge label="未接入" />
+                            </div>
+                            <div className="w-full py-3 flex items-center justify-between text-sm text-slate-500 px-2 rounded-lg font-serif font-bold tracking-wide">
                                 <span>隐私政策</span>
-                                <span className="material-symbols-outlined text-xs text-white/30">chevron_right</span>
-                            </button>
-                            <button className="w-full py-3 flex items-center justify-between text-sm text-slate-300 hover:bg-white/5 px-2 rounded-lg transition-colors font-serif font-bold tracking-wide">
+                                <DisabledBadge label="未接入" />
+                            </div>
+                            <div className="w-full py-3 flex items-center justify-between text-sm text-slate-500 px-2 rounded-lg font-serif font-bold tracking-wide">
                                 <span>检查更新</span>
-                                <span className="text-[10px] bg-white/10 px-2 py-0.5 rounded text-white/60">已是最新</span>
-                            </button>
+                                <DisabledBadge label="未接入" />
+                            </div>
                         </div>
                     </Modal>
                 );
@@ -434,7 +316,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                         <div className="text-center py-2">
                             <p className="text-slate-300 text-sm leading-relaxed mb-6 font-serif tracking-wide">
                                 确定要退出当前账号吗？<br />
-                                未同步的数据可能会丢失。
+                                本地敏感缓存会被清理，未同步的数据可能会丢失。
                             </p>
                             <div className="flex gap-3">
                                 <button
@@ -456,13 +338,10 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
             default:
                 return null;
         }
-    }
+    };
 
     return (
         <div className="flex flex-col w-full h-full">
-            {/* Background is now handled by App.tsx to ensure global consistency */}
-
-            {/* Header */}
             <div className="relative z-10 sticky top-0 bg-[#0c1416]/95 backdrop-blur-md border-b border-white/5 p-4 flex items-center justify-between">
                 <div className="flex items-center gap-4">
                     <button
@@ -482,17 +361,14 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                     className="w-10 h-10 rounded-full border border-mineral/50 p-0.5 overflow-hidden"
                 >
                     <img
-                        src="/images/user-avatar.png"
+                        src={userProfile.avatarUrl || '/images/user-avatar.png'}
                         alt="User"
                         className="w-full h-full object-cover rounded-full"
                     />
                 </button>
             </div>
 
-            {/* Scrollable Content */}
             <div className="relative z-10 flex-1 overflow-y-auto p-4 pb-24 space-y-6">
-
-                {/* Profile Section */}
                 <div>
                     <SectionTitle title="个人资料" />
                     <div className="bg-[#131b1d]/80 backdrop-blur-sm border border-mineral/20 rounded-xl px-4 overflow-hidden">
@@ -510,53 +386,33 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                         />
                         <ListItem
                             icon="medical_services"
-                            label="健康状态标签"
-                            value={healthTags.length > 0 ? healthTags.join(' · ') : '无'}
-                            onClick={() => setActiveModal('HEALTH_TAGS')}
-                        />
-                        <ListItem
-                            icon="no_food"
-                            label="饮食避忌"
-                            value={restrictions}
-                            onClick={() => setActiveModal('RESTRICTIONS')}
+                            label="健康档案管理"
+                            value="慢病 / 过敏"
+                            onClick={() => onViewChange(View.MEDICAL_ARCHIVES)}
                         />
                     </div>
                 </div>
 
-                {/* AI Config Section */}
                 <div>
                     <SectionTitle title="AI 助手配置" />
                     <div className="bg-[#131b1d]/80 backdrop-blur-sm border border-mineral/20 rounded-xl px-4 overflow-hidden">
-                        <div className="flex items-center justify-between py-3 border-b border-white/5">
-                            <div className="flex items-center gap-3">
-                                <span className="material-symbols-outlined text-white/40 text-lg">psychology</span>
-                                <span className="text-white/90 text-sm font-bold tracking-wide font-serif">助手风格</span>
-                            </div>
-                            <div className="flex bg-black/40 rounded-lg p-0.5 border border-white/5">
-                                <button
-                                    onClick={() => setAiStyle('strict')}
-                                    className={`px-3 py-1 rounded-md text-[10px] transition-all font-serif font-bold tracking-wide ${aiStyle === 'strict' ? 'bg-mineral text-background-dark' : 'text-slate-400'}`}
-                                >
-                                    分析师
-                                </button>
-                                <button
-                                    onClick={() => setAiStyle('gentle')}
-                                    className={`px-3 py-1 rounded-md text-[10px] transition-all font-serif font-bold tracking-wide ${aiStyle === 'gentle' ? 'bg-primary text-background-dark' : 'text-slate-400'}`}
-                                >
-                                    教练
-                                </button>
-                            </div>
-                        </div>
+                        <ListItem
+                            icon="psychology"
+                            label="全局助手偏好"
+                            value="请在 AI 页面临时切换"
+                            action={<DisabledBadge />}
+                            disabled
+                        />
                         <ListItem
                             icon="tune"
                             label="干预强度"
-                            value={intervention}
-                            onClick={() => setActiveModal('INTERVENTION')}
+                            value="待后端规则接入"
+                            action={<DisabledBadge />}
+                            disabled
                         />
                     </div>
                 </div>
 
-                {/* Data & IoT Section */}
                 <div>
                     <SectionTitle title="数据与设备" />
                     <div className="bg-[#131b1d]/80 backdrop-blur-sm border border-mineral/20 rounded-xl px-4 overflow-hidden">
@@ -564,31 +420,33 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                             icon="download"
                             label="健康报表导出"
                             value="PDF / CSV"
-                            onClick={() => setActiveModal('EXPORT_DATA')}
+                            action={<DisabledBadge />}
+                            disabled
                         />
                         <ListItem
                             icon="cleaning_services"
-                            label="数据清理"
-                            value={storageSize}
-                            onClick={() => setActiveModal('CLEAN_DATA')}
+                            label="本地离线缓存"
+                            value={cacheStats ? `${cacheStats.estimatedSizeKB} KB` : '无本地缓存'}
+                            onClick={() => {
+                                void loadCacheStats();
+                                setActiveModal('CLEAN_DATA');
+                            }}
                         />
                     </div>
                 </div>
 
-                {/* General Section */}
                 <div>
                     <SectionTitle title="通用设置" />
                     <div className="bg-[#131b1d]/80 backdrop-blur-sm border border-mineral/20 rounded-xl px-4 overflow-hidden">
                         <ListItem
                             icon="info"
-                            label="关于食鉴"
-                            value="v2.4.0"
+                            label={`关于${APP_DISPLAY_NAME}`}
+                            value={appVersionLabel}
                             onClick={() => setActiveModal('ABOUT')}
                         />
                     </div>
                 </div>
 
-                {/* Logout Button */}
                 <div className="pt-4 pb-8">
                     <button
                         onClick={() => setActiveModal('LOGOUT_CONFIRM')}
@@ -601,10 +459,8 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                         Prism Metabolic Console
                     </p>
                 </div>
-
             </div>
 
-            {/* Render Active Modal */}
             {renderModalContent()}
         </div>
     );

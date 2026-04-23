@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { View } from '../../types';
 import { ChatAPI, TokenManager } from '../../services/api';
+import { saveFoodScanResult } from '../../services/sessionState';
 
 interface CameraViewProps {
   onViewChange: (view: View) => void;
@@ -90,8 +91,7 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange }) => {
           const base64 = canvas.toDataURL('image/jpeg').split(',')[1];
           try {
             const result = await ChatAPI.recognizeFood(base64, 'jpeg');
-            // 将结果保存于 sessionStorage，供 ChatView 读取
-            sessionStorage.setItem('PRISM_FOOD_SCAN_RESULT', JSON.stringify(result));
+            saveFoodScanResult(result);
           } catch (err) {
             console.error('食物识别失败:', err);
           }
@@ -118,7 +118,7 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange }) => {
       if (TokenManager.isAuthenticated()) {
         try {
           const result = await ChatAPI.recognizeFoodUpload(file);
-          sessionStorage.setItem('PRISM_FOOD_SCAN_RESULT', JSON.stringify(result));
+          saveFoodScanResult(result);
         } catch (err) {
           console.error('食物识别失败:', err);
         }

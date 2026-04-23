@@ -126,7 +126,7 @@ const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages, onMar
               className="group relative bg-[#162624]/90 border border-white/5 rounded-lg overflow-hidden backdrop-blur-sm shadow-lg transition-transform active:scale-[0.99]"
             >
               {/* Rice Paper Texture Overlay */}
-              <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'url("https://www.transparenttextures.com/patterns/rice-paper.png")' }}></div>
+              <div className="absolute inset-0 opacity-[0.03] pointer-events-none bg-white"></div>
 
               <div className="flex h-full">
                 {/* Left Colored Bar */}
@@ -161,10 +161,17 @@ const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages, onMar
           );
         })}
 
-        {/* End of List Decoration */}
-        <div className="py-8 flex justify-center opacity-30">
-          <span className="text-xs font-serif text-slate-500 tracking-[0.5em]">— 完 —</span>
-        </div>
+        {filteredMessages.length === 0 ? (
+          <div className="py-12 flex flex-col items-center justify-center text-center border border-dashed border-white/10 rounded-2xl bg-white/5">
+            <span className="material-symbols-outlined text-white/20 text-4xl mb-2">mark_email_unread</span>
+            <p className="text-sm text-slate-500 font-serif font-bold tracking-wide">暂无此类消息</p>
+            <p className="text-[11px] text-slate-600 font-serif mt-1">消息仅展示后端真实生成或同步的数据</p>
+          </div>
+        ) : (
+          <div className="py-8 flex justify-center opacity-30">
+            <span className="text-xs font-serif text-slate-500 tracking-[0.5em]">— 完 —</span>
+          </div>
+        )}
       </div>
     </div>
   );

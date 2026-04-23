@@ -3,36 +3,34 @@
  * 封装与后端 API 的通信
  */
 
+import { AUTH_STORAGE_KEYS } from '../constants/storage';
+
 // API 基础配置
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
-
-// Token 存储键
-const ACCESS_TOKEN_KEY = 'prism_access_token';
-const REFRESH_TOKEN_KEY = 'prism_refresh_token';
 
 // ==================== Token 管理 ====================
 
 export const TokenManager = {
     getAccessToken: (): string | null => {
-        return localStorage.getItem(ACCESS_TOKEN_KEY);
+        return localStorage.getItem(AUTH_STORAGE_KEYS.accessToken);
     },
 
     getRefreshToken: (): string | null => {
-        return localStorage.getItem(REFRESH_TOKEN_KEY);
+        return localStorage.getItem(AUTH_STORAGE_KEYS.refreshToken);
     },
 
     setTokens: (accessToken: string, refreshToken: string): void => {
-        localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
-        localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+        localStorage.setItem(AUTH_STORAGE_KEYS.accessToken, accessToken);
+        localStorage.setItem(AUTH_STORAGE_KEYS.refreshToken, refreshToken);
     },
 
     clearTokens: (): void => {
-        localStorage.removeItem(ACCESS_TOKEN_KEY);
-        localStorage.removeItem(REFRESH_TOKEN_KEY);
+        localStorage.removeItem(AUTH_STORAGE_KEYS.accessToken);
+        localStorage.removeItem(AUTH_STORAGE_KEYS.refreshToken);
     },
 
     isAuthenticated: (): boolean => {
-        return !!localStorage.getItem(ACCESS_TOKEN_KEY);
+        return !!localStorage.getItem(AUTH_STORAGE_KEYS.accessToken);
     }
 };
 

@@ -39,6 +39,10 @@ export interface ConditionData {
 }
 
 export interface UserProfile {
+  id?: number;
+  phone?: string;
+  nickname?: string;
+  avatarUrl?: string;
   gender: 'MALE' | 'FEMALE';
   age: number;
   height: number; // cm
