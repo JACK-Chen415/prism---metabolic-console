@@ -4,6 +4,7 @@
  */
 
 import { AUTH_STORAGE_KEYS } from '../constants/storage';
+import { IntakeCandidate, IntakeDraftSession } from '../types';
 
 // API 基础配置
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
@@ -267,6 +268,12 @@ export const MealsAPI = {
         fat?: number;
         fiber?: number;
         ai_recognized?: boolean;
+        source?: 'manual' | 'voice' | 'photo' | 'ai_quick_log';
+        source_detail?: string;
+        confidence?: number;
+        estimated_fields_json?: string[];
+        rule_warnings_json?: string[];
+        recognition_meta_json?: Record<string, unknown>;
     }) => apiClient.post('/meals', meal),
 
     list: (params?: {
@@ -356,6 +363,35 @@ export const ChatAPI = {
         meal_type: mealType,
         food_item: foodItem
     })
+};
+
+export const IntakeAPI = {
+    parseVoice: (transcript: string, mealTimeHint?: string) =>
+        apiClient.post<IntakeDraftSession>('/intake/voice/parse', {
+            transcript,
+            meal_time_hint: mealTimeHint,
+        }),
+
+    parsePhotoResult: (payload: {
+        recognized_foods: unknown[];
+        ai_response?: string;
+        meal_time_hint?: string;
+    }) => apiClient.post<IntakeDraftSession>('/intake/photo/parse-result', payload),
+
+    confirm: (payload: {
+        source: 'voice' | 'photo' | 'ai_quick_log';
+        raw_input_text?: string | null;
+        raw_summary?: string | null;
+        record_date?: string;
+        candidates: IntakeCandidate[];
+    }) => apiClient.post<{
+        meals: unknown[];
+        meal_ids: number[];
+        warning_summary: string[];
+        failed_items: Array<{ draft_id: string; food_name: string; reason: string }>;
+        should_refresh_log: boolean;
+        should_refresh_home: boolean;
+    }>('/intake/confirm', payload),
 };
 
 // 健康档案相关

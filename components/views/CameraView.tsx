@@ -1,13 +1,13 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { View } from '../../types';
-import { ChatAPI, TokenManager } from '../../services/api';
-import { saveFoodScanResult } from '../../services/sessionState';
+import { IntakeDraftSession, View } from '../../types';
+import { ChatAPI, IntakeAPI, TokenManager } from '../../services/api';
 
 interface CameraViewProps {
   onViewChange: (view: View) => void;
+  onPendingIntakeSessionChange: (session: IntakeDraftSession | null) => void;
 }
 
-const CameraView: React.FC<CameraViewProps> = ({ onViewChange }) => {
+const CameraView: React.FC<CameraViewProps> = ({ onViewChange, onPendingIntakeSessionChange }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -90,10 +90,17 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange }) => {
           // 转为base64并调用食物识别API
           const base64 = canvas.toDataURL('image/jpeg').split(',')[1];
           try {
-            const result = await ChatAPI.recognizeFood(base64, 'jpeg');
-            saveFoodScanResult(result);
+            const result = await ChatAPI.recognizeFood(base64, 'jpeg') as any;
+            const session = await IntakeAPI.parsePhotoResult({
+              recognized_foods: result?.foods || [],
+              ai_response: result?.ai_response,
+            });
+            onPendingIntakeSessionChange(session);
+            stopCamera();
+            onViewChange(View.CHAT);
           } catch (err) {
             console.error('食物识别失败:', err);
+            setError('食物识别或结构化失败，请稍后重试');
           }
         }
       }
@@ -101,8 +108,6 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange }) => {
       console.error('拍照失败:', err);
     } finally {
       setIsProcessing(false);
-      stopCamera();
-      onViewChange(View.CHAT);
     }
   };
 
@@ -117,16 +122,21 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange }) => {
 
       if (TokenManager.isAuthenticated()) {
         try {
-          const result = await ChatAPI.recognizeFoodUpload(file);
-          saveFoodScanResult(result);
+          const result = await ChatAPI.recognizeFoodUpload(file) as any;
+          const session = await IntakeAPI.parsePhotoResult({
+            recognized_foods: result?.foods || [],
+            ai_response: result?.ai_response,
+          });
+          onPendingIntakeSessionChange(session);
+          stopCamera();
+          onViewChange(View.CHAT);
         } catch (err) {
           console.error('食物识别失败:', err);
+          setError('食物识别或结构化失败，请稍后重试');
         }
       }
 
       setIsProcessing(false);
-      stopCamera();
-      onViewChange(View.CHAT);
     }
   };
 

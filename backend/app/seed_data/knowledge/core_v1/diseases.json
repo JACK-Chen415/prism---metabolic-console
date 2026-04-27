@@ -1,0 +1,30 @@
+[
+  {
+    "disease_code": "hypertension",
+    "name_zh": "高血压",
+    "aliases_json": ["血压高", "high_blood_pressure"],
+    "summary": "首要原则是限盐、少加工食品、优先全谷蔬果和清淡烹调，整体遵循中国食养指南与平衡膳食原则。",
+    "risk_note": "持续高钠饮食、酒精和高加工食品会增加血压控制难度。"
+  },
+  {
+    "disease_code": "hyperlipidemia",
+    "name_zh": "高脂血症",
+    "aliases_json": ["血脂高", "高胆固醇", "高甘油三酯", "dyslipidemia"],
+    "summary": "首要原则是控制饱和脂肪和反式脂肪、减少高加工高糖零食，优先全谷、豆类、蔬果和适量优质蛋白。",
+    "risk_note": "长期高脂高糖和超加工食品摄入会增加 LDL-C、甘油三酯异常和脂肪肝风险。"
+  },
+  {
+    "disease_code": "gout",
+    "name_zh": "高尿酸/痛风",
+    "aliases_json": ["高尿酸", "高尿酸血症", "痛风", "hyperuricemia"],
+    "summary": "首要原则是限制高嘌呤食物和酒精、减少含糖饮料、足量饮水，并根据急性期或稳定期调整动物性食物份量。",
+    "risk_note": "高嘌呤食物、酒精和高果糖饮料会增加尿酸生成或减少排泄，诱发急性发作。"
+  },
+  {
+    "disease_code": "type2_diabetes",
+    "name_zh": "2型糖尿病",
+    "aliases_json": ["糖尿病", "2型糖尿病", "高血糖", "t2dm"],
+    "summary": "首要原则是规律进餐、主食定量、优先低 GI/全谷搭配高纤维食物，避免含糖饮料和高糖甜点。",
+    "risk_note": "精制主食、含糖饮料和高糖高脂甜点会抬高餐后血糖，增加体重管理难度。"
+  }
+]

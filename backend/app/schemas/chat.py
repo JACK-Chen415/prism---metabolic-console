@@ -77,6 +77,7 @@ class NutritionInfo(BaseModel):
     carbs: Optional[float] = Field(None, description="碳水化合物(g)")
     fat: Optional[float] = Field(None, description="脂肪(g)")
     fiber: Optional[float] = Field(None, description="膳食纤维(g)")
+    sugar: Optional[float] = Field(None, description="糖(g)")
 
 
 class FoodRecognitionResult(BaseModel):
@@ -86,6 +87,10 @@ class FoodRecognitionResult(BaseModel):
     estimated_portion: str = Field(description="估算份量")
     nutrition: NutritionInfo = Field(description="营养成分")
     category: str = Field(description="食物分类")
+    ingredients: List[str] = Field(default_factory=list, description="主要食材")
+    cooking_method: Optional[str] = Field(None, description="烹调方式")
+    allergen_tags: List[str] = Field(default_factory=list, description="过敏原标签")
+    risk_tags: List[str] = Field(default_factory=list, description="风险标签")
     health_tips: Optional[str] = Field(None, description="健康提示")
     warnings: List[str] = Field(default_factory=list, description="针对用户健康状况的警告")
 

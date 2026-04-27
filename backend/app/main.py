@@ -10,7 +10,7 @@ import os
 
 from app.core.config import settings
 from app.core.database import init_db, close_db
-from app.api.routes import auth, meals, chat, conditions, messages
+from app.api.routes import auth, meals, chat, conditions, messages, knowledge, intake
 
 
 @asynccontextmanager
@@ -70,6 +70,8 @@ app.include_router(meals.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(conditions.router, prefix="/api")
 app.include_router(messages.router, prefix="/api")
+app.include_router(knowledge.router, prefix="/api")
+app.include_router(intake.router, prefix="/api")
 
 
 @app.get("/api/health")

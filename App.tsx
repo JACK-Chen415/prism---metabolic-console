@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View } from './types';
+import { IntakeDraftSession, View } from './types';
 import SplashScreen from './components/SplashScreen';
 import AppShell from './components/AppShell';
 import HomeView from './components/views/HomeView';
@@ -23,6 +23,7 @@ import { useAppData } from './hooks/useAppData';
 const App: React.FC = () => {
   const { currentView, setCurrentView, navigate, isTransitioning, setIsTransitioning } = useNavigation();
   const [isAuthChecked, setIsAuthChecked] = useState(false);
+  const [pendingIntakeSession, setPendingIntakeSession] = useState<IntakeDraftSession | null>(null);
   const {
     isGuest,
     currentUserId,
@@ -61,10 +62,12 @@ const App: React.FC = () => {
 
   const handleAuthSuccess = useCallback(async () => {
     const result = await loadUserData();
+    setPendingIntakeSession(null);
     setCurrentView(result.success ? View.HOME : View.LOGIN);
   }, [loadUserData, setCurrentView]);
 
   const handleLogout = useCallback(() => {
+    setPendingIntakeSession(null);
     logout();
     setCurrentView(View.LOGIN);
   }, [logout, setCurrentView]);
@@ -123,6 +126,7 @@ const App: React.FC = () => {
           }}
           onSkipLogin={() => {
             enterGuestMode();
+            setPendingIntakeSession(null);
             setCurrentView(View.HOME);
           }}
           onLoginSuccess={handleAuthSuccess}
@@ -171,6 +175,8 @@ const App: React.FC = () => {
         <ChatView
           onViewChange={handleNavChange}
           onMealLogged={() => refreshMeals()}
+          pendingIntakeSession={pendingIntakeSession}
+          onPendingIntakeSessionChange={setPendingIntakeSession}
         />
       )}
 
@@ -183,7 +189,12 @@ const App: React.FC = () => {
         />
       )}
 
-      {currentView === View.CAMERA && <CameraView onViewChange={handleNavChange} />}
+      {currentView === View.CAMERA && (
+        <CameraView
+          onViewChange={handleNavChange}
+          onPendingIntakeSessionChange={setPendingIntakeSession}
+        />
+      )}
 
       {currentView === View.SETTINGS && (
         <SettingsView

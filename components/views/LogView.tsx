@@ -76,7 +76,10 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
         purine: estimated.purine,
         type: mealInput.type,
         category: mealInput.category,
-        note: mealInput.note
+        note: mealInput.note,
+        source: 'manual',
+        estimatedFields: ['calories', 'sodium', 'purine'],
+        ruleWarnings: [],
     });
     
     setIsAdding(false);
@@ -244,6 +247,9 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
                                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-slate-400 border border-white/5 font-serif font-bold tracking-wide">
                                                 {meal.type === 'BREAKFAST' ? '早餐' : meal.type === 'LUNCH' ? '午餐' : meal.type === 'DINNER' ? '晚餐' : '加餐'}
                                             </span>
+                                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 font-serif font-bold tracking-wide">
+                                                {meal.source === 'voice' ? '语音' : meal.source === 'photo' ? '拍照' : meal.source === 'ai_quick_log' ? 'AI' : '手动'}
+                                            </span>
                                             <p className="text-slate-500 text-xs font-serif font-bold tracking-wide">{meal.portion}</p>
                                         </div>
                                         {/* Display Note if exists */}
@@ -272,14 +278,23 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
                                         <span className="w-1.5 h-1.5 rounded-full bg-purple/50"></span>
                                         <span className="text-[10px] text-slate-400 font-serif font-bold tracking-wide">嘌呤: {meal.purine}mg</span>
                                     </div>
-                                </div>
-                                <span className="text-[9px] text-slate-500/80 bg-white/5 px-1 py-0.5 rounded border border-white/5 font-serif tracking-wide transform scale-90 origin-right">
-                                    估计
-                                </span>
-                            </div>
-                        </div>
-                    );
-                })}
+                                 </div>
+                                 <span className="text-[9px] text-slate-500/80 bg-white/5 px-1 py-0.5 rounded border border-white/5 font-serif tracking-wide transform scale-90 origin-right">
+                                     {meal.estimatedFields && meal.estimatedFields.length > 0 ? '估算' : '已记录'}
+                                 </span>
+                             </div>
+                             {meal.ruleWarnings && meal.ruleWarnings.length > 0 && (
+                                 <div className="ml-[54px] rounded-xl border border-amber-300/20 bg-amber-500/10 px-3 py-2">
+                                     {meal.ruleWarnings.slice(0, 2).map((warning) => (
+                                         <p key={warning} className="text-[10px] text-amber-100 font-serif tracking-wide leading-relaxed">
+                                             {warning}
+                                         </p>
+                                     ))}
+                                 </div>
+                             )}
+                         </div>
+                     );
+                 })}
                 
                 {meals.length === 0 && (
                     <div className="py-8 text-center border border-dashed border-white/10 rounded-xl">

@@ -79,6 +79,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan"
     )
+    knowledge_audit_logs: Mapped[list["KnowledgeAuditLog"]] = relationship(
+        "KnowledgeAuditLog",
+        back_populates="user",
+        cascade="save-update, merge"
+    )
 
 
 # 导入关联模型以避免循环导入问题

@@ -38,6 +38,12 @@ export function mapMeal(apiMeal: any): Meal {
     type: apiMeal.meal_type || 'DINNER',
     category: apiMeal.category || 'STAPLE',
     note: apiMeal.note || '',
+    source: apiMeal.source || 'manual',
+    sourceDetail: apiMeal.source_detail || undefined,
+    confidence: apiMeal.confidence ?? undefined,
+    estimatedFields: Array.isArray(apiMeal.estimated_fields_json) ? apiMeal.estimated_fields_json : [],
+    ruleWarnings: Array.isArray(apiMeal.rule_warnings_json) ? apiMeal.rule_warnings_json : [],
+    recognitionMeta: apiMeal.recognition_meta_json || undefined,
   };
 }
 
@@ -71,4 +77,3 @@ export function mapMessage(apiMessage: any): AppMessage {
     isRead: apiMessage.is_read || false,
   };
 }
-

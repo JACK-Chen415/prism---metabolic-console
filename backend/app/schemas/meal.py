@@ -3,7 +3,7 @@
 """
 
 from datetime import datetime, date
-from typing import Optional, List
+from typing import Optional, List, Any
 from pydantic import BaseModel, Field
 
 from app.models.meal import MealType, FoodCategory, SyncStatus
@@ -29,6 +29,12 @@ class MealCreate(BaseModel):
     note: Optional[str] = Field(None, max_length=500, description="备注")
     image_url: Optional[str] = Field(None, max_length=500, description="食物图片URL")
     ai_recognized: bool = Field(False, description="是否AI识别")
+    source: str = Field("manual", description="记录来源")
+    source_detail: Optional[str] = Field(None, max_length=100, description="来源细节")
+    confidence: Optional[float] = Field(None, ge=0, le=1, description="候选置信度")
+    estimated_fields_json: List[str] = Field(default_factory=list, description="估算字段列表")
+    rule_warnings_json: List[str] = Field(default_factory=list, description="本地规则警示摘要")
+    recognition_meta_json: Optional[dict[str, Any]] = Field(None, description="结构化识别元信息")
 
 
 class MealUpdate(BaseModel):
@@ -45,6 +51,11 @@ class MealUpdate(BaseModel):
     meal_type: Optional[MealType] = None
     category: Optional[FoodCategory] = None
     note: Optional[str] = Field(None, max_length=500)
+    source_detail: Optional[str] = Field(None, max_length=100)
+    confidence: Optional[float] = Field(None, ge=0, le=1)
+    estimated_fields_json: Optional[List[str]] = None
+    rule_warnings_json: Optional[List[str]] = None
+    recognition_meta_json: Optional[dict[str, Any]] = None
 
 
 class MealSyncRequest(BaseModel):
@@ -74,6 +85,12 @@ class MealResponse(BaseModel):
     note: Optional[str] = None
     image_url: Optional[str] = None
     ai_recognized: bool
+    source: str
+    source_detail: Optional[str] = None
+    confidence: Optional[float] = None
+    estimated_fields_json: List[str] = Field(default_factory=list)
+    rule_warnings_json: List[str] = Field(default_factory=list)
+    recognition_meta_json: Optional[dict[str, Any]] = None
     sync_status: SyncStatus
     created_at: datetime
     updated_at: datetime

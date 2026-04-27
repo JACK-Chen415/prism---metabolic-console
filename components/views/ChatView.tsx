@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View } from '../../types';
-import { ChatAPI, TokenManager } from '../../services/api';
+import { IntakeCandidate, IntakeDraftSession, View } from '../../types';
+import { ChatAPI, IntakeAPI, TokenManager } from '../../services/api';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
-import { clearChatSessionId, consumeFoodScanResult, getChatSessionId, setChatSessionId } from '../../services/sessionState';
+import { clearChatSessionId, getChatSessionId, setChatSessionId } from '../../services/sessionState';
+import IntakeConfirmationSheet from '../intake/IntakeConfirmationSheet';
 
 // 配置 marked：启用换行符支持，关闭不需要的功能
 marked.setOptions({
@@ -33,6 +34,8 @@ const escapeText = (text: string): string => {
 interface ChatViewProps {
   onViewChange: (view: View) => void;
   onMealLogged?: () => void;
+  pendingIntakeSession: IntakeDraftSession | null;
+  onPendingIntakeSessionChange: (session: IntakeDraftSession | null) => void;
 }
 
 type MessageRole = 'USER' | 'AI' | 'SYSTEM';
@@ -69,11 +72,19 @@ interface RecognitionResponse {
   ai_response?: string;
 }
 
-const ChatView: React.FC<ChatViewProps> = ({ onViewChange, onMealLogged }) => {
+const ChatView: React.FC<ChatViewProps> = ({
+  onViewChange,
+  onMealLogged,
+  pendingIntakeSession,
+  onPendingIntakeSessionChange,
+}) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isParsingIntake, setIsParsingIntake] = useState(false);
+  const [isSubmittingIntake, setIsSubmittingIntake] = useState(false);
+  const [intakeError, setIntakeError] = useState<string | null>(null);
   const [currentMode, setCurrentMode] = useState<'STRICT' | 'GENTLE'>('STRICT');
   const [sessionId, setSessionId] = useState<number | null>(() => {
     return getChatSessionId();
@@ -157,23 +168,6 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange, onMealLogged }) => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  useEffect(() => {
-    const result = consumeFoodScanResult<RecognitionResponse>();
-    if (!result) return;
-      const foods = result.foods || [];
-      const content = result.ai_response || '已识别食物图片，正在分析营养成分。';
-      const aiMsg: Message = {
-        id: Date.now().toString(),
-        role: 'AI',
-        aiMode: currentMode,
-        aiName: '食鉴AI',
-        content,
-        recognizedFoods: foods,
-        timestamp: Date.now()
-      };
-      setMessages(prev => [...prev, aiMsg]);
-  }, [currentMode]);
-
   const handleGalleryClick = () => {
     fileInputRef.current?.click();
   };
@@ -195,32 +189,26 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange, onMealLogged }) => {
 
       // 调用食物识别API
       if (TokenManager.isAuthenticated()) {
-        setIsSending(true);
+        setIsParsingIntake(true);
+        setIntakeError(null);
         try {
           const result = await ChatAPI.recognizeFoodUpload(file) as RecognitionResponse;
-          const aiMsg: Message = {
+          const session = await IntakeAPI.parsePhotoResult({
+            recognized_foods: result?.foods || [],
+            ai_response: result?.ai_response || '已完成图片识别。',
+          });
+          onPendingIntakeSessionChange(session);
+          setMessages(prev => [...prev, {
             id: (Date.now() + 1).toString(),
-            role: 'AI',
-            aiMode: currentMode,
-            aiName: '食鉴AI',
-            content: result?.ai_response || '已识别食物图片，正在分析营养成分...',
-            recognizedFoods: result?.foods || [],
+            role: 'SYSTEM',
+            content: '已生成拍照候选，请确认后再写入生命日志。',
             timestamp: Date.now()
-          };
-          setMessages(prev => [...prev, aiMsg]);
+          }]);
         } catch (error) {
           console.error('食物识别失败:', error);
-          const errorMsg: Message = {
-            id: (Date.now() + 1).toString(),
-            role: 'AI',
-            aiMode: currentMode,
-            aiName: '食鉴AI',
-            content: '抱歉，食物识别服务暂时不可用。',
-            timestamp: Date.now()
-          };
-          setMessages(prev => [...prev, errorMsg]);
+          setIntakeError(error instanceof Error ? error.message : '抱歉，食物识别服务暂时不可用。');
         } finally {
-          setIsSending(false);
+          setIsParsingIntake(false);
         }
       }
     }
@@ -256,8 +244,36 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange, onMealLogged }) => {
 
       recognition.onresult = (event: any) => {
         const transcript = event.results[0][0].transcript;
-        setInputValue(prev => prev ? prev + ' ' + transcript : transcript);
         setIsListening(false);
+        if (!transcript?.trim()) {
+          return;
+        }
+
+        if (!TokenManager.isAuthenticated()) {
+          setInputValue(prev => prev ? prev + ' ' + transcript : transcript);
+          return;
+        }
+
+        void (async () => {
+          setIsParsingIntake(true);
+          setIntakeError(null);
+          try {
+            const session = await IntakeAPI.parseVoice(transcript);
+            onPendingIntakeSessionChange(session);
+            setMessages(prev => [...prev, {
+              id: Date.now().toString(),
+              role: 'SYSTEM',
+              content: `已解析语音候选：${transcript}`,
+              timestamp: Date.now()
+            }]);
+          } catch (error) {
+            console.error('语音结构化失败', error);
+            setIntakeError(error instanceof Error ? error.message : '语音解析失败，请稍后重试。');
+            setInputValue(transcript);
+          } finally {
+            setIsParsingIntake(false);
+          }
+        })();
       };
 
       recognition.onerror = (event: any) => {
@@ -372,6 +388,121 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange, onMealLogged }) => {
         content: `记日志失败：${error instanceof Error ? error.message : '未知错误'}`,
         timestamp: Date.now()
       }]);
+    }
+  };
+
+  const handlePendingCandidateChange = (draftId: string, patch: Partial<IntakeCandidate>) => {
+    if (!pendingIntakeSession) return;
+    onPendingIntakeSessionChange({
+      ...pendingIntakeSession,
+      candidates: pendingIntakeSession.candidates.map((candidate) => {
+        if (candidate.draft_id !== draftId) return candidate;
+        const nextCandidate = { ...candidate, ...patch };
+        if (patch.normalized_amount !== undefined || patch.unit !== undefined) {
+          const amount = nextCandidate.normalized_amount;
+          const unit = nextCandidate.unit || '份';
+          nextCandidate.amount_text = amount ? `${amount}${unit}` : candidate.amount_text;
+        }
+        return nextCandidate;
+      }),
+    });
+  };
+
+  const handleDeletePendingCandidate = (draftId: string) => {
+    if (!pendingIntakeSession) return;
+    onPendingIntakeSessionChange({
+      ...pendingIntakeSession,
+      candidates: pendingIntakeSession.candidates.filter(candidate => candidate.draft_id !== draftId),
+    });
+  };
+
+  const handleAddPendingCandidate = () => {
+    const fallbackMealType = pendingIntakeSession?.candidates[0]?.meal_type || 'DINNER';
+    const source = pendingIntakeSession?.source || 'voice';
+    const nextCandidate: IntakeCandidate = {
+      draft_id: crypto.randomUUID(),
+      source,
+      meal_type: fallbackMealType,
+      category: 'STAPLE',
+      food_name: '',
+      food_code: null,
+      amount_text: '1份',
+      normalized_amount: 1,
+      unit: '份',
+      time_hint: pendingIntakeSession?.meal_time_hint || null,
+      note: '',
+      confidence: 0.2,
+      ingredients: [],
+      cooking_method: null,
+      calories: null,
+      protein: null,
+      carbs: null,
+      fat: null,
+      fiber: null,
+      sodium: null,
+      sugar: null,
+      purine: null,
+      allergen_tags: [],
+      risk_tags: [],
+      estimated_fields: [],
+      estimated_notes: [],
+      local_rule_hit: false,
+      matched_disease_codes: [],
+      recommendation_level: null,
+      warnings: [],
+      citations: [],
+      origin: 'LOCAL_KNOWLEDGE',
+      fallback_status: 'NO_LOCAL_MATCH_ALLOW_CLOUD',
+      conflict_note: null,
+      caution_note: null,
+    };
+
+    onPendingIntakeSessionChange({
+      source,
+      raw_input_text: pendingIntakeSession?.raw_input_text || null,
+      raw_summary: pendingIntakeSession?.raw_summary || null,
+      record_date: pendingIntakeSession?.record_date || new Date().toISOString().slice(0, 10),
+      meal_time_hint: pendingIntakeSession?.meal_time_hint || null,
+      summary_warning: pendingIntakeSession?.summary_warning || null,
+      candidates: [...(pendingIntakeSession?.candidates || []), nextCandidate],
+    });
+  };
+
+  const handleConfirmIntake = async () => {
+    if (!pendingIntakeSession || isSubmittingIntake) return;
+    setIsSubmittingIntake(true);
+    setIntakeError(null);
+
+    try {
+      const result = await IntakeAPI.confirm({
+        source: pendingIntakeSession.source,
+        raw_input_text: pendingIntakeSession.raw_input_text || null,
+        raw_summary: pendingIntakeSession.raw_summary || null,
+        record_date: pendingIntakeSession.record_date,
+        candidates: pendingIntakeSession.candidates,
+      });
+
+      if (result.failed_items?.length) {
+        setIntakeError(result.failed_items.map(item => `${item.food_name}: ${item.reason}`).join('；'));
+        const failedDraftIds = new Set(result.failed_items.map(item => item.draft_id));
+        onPendingIntakeSessionChange({
+          ...pendingIntakeSession,
+          candidates: pendingIntakeSession.candidates.filter(candidate => failedDraftIds.has(candidate.draft_id)),
+        });
+      }
+
+      if (result.meal_ids?.length && !result.failed_items?.length) {
+        onPendingIntakeSessionChange(null);
+        await onMealLogged?.();
+        onViewChange(View.LOG);
+      } else if (result.meal_ids?.length) {
+        await onMealLogged?.();
+      }
+    } catch (error) {
+      console.error('确认写入失败', error);
+      setIntakeError(error instanceof Error ? error.message : '确认写入失败，请稍后重试。');
+    } finally {
+      setIsSubmittingIntake(false);
     }
   };
 
@@ -533,6 +664,11 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange, onMealLogged }) => {
 
       {/* Input Area */}
       <div className="sticky bottom-24 px-4 pb-2 z-30">
+        {isParsingIntake && (
+          <div className="mb-2 rounded-2xl border border-primary/20 bg-primary/10 px-3 py-2 text-xs text-primary font-serif tracking-wide">
+            正在生成可确认的结构化候选...
+          </div>
+        )}
         <div className="flex items-center justify-start px-1 mb-2 gap-2">
           <button
             onClick={() => setInputValue("请基于我今天已记录的饮食和健康档案，说明当前需要注意的风险点和下一餐原则。")}
@@ -558,6 +694,7 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange, onMealLogged }) => {
         <div className="flex items-end gap-2 p-1.5 bg-surface-dark border border-white/10 rounded-2xl shadow-lg">
           <button
             onClick={handleGalleryClick}
+            disabled={isParsingIntake || isSubmittingIntake}
             className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-white transition-colors shrink-0"
           >
             <span className="material-symbols-outlined">add_photo_alternate</span>
@@ -566,26 +703,42 @@ const ChatView: React.FC<ChatViewProps> = ({ onViewChange, onMealLogged }) => {
             value={inputValue}
             onChange={handleTextareaInput}
             onKeyDown={handleKeyDown}
-            placeholder={isListening ? "正在聆听..." : "咨询关于您的代谢健康..."}
+            placeholder={isListening ? "正在聆听..." : isParsingIntake ? "正在生成待确认候选..." : "咨询关于您的代谢健康..."}
             rows={1}
             className={`flex-1 bg-transparent border-none outline-none text-white placeholder-slate-500 text-sm focus:ring-0 caret-primary font-serif tracking-wide font-bold resize-none max-h-[120px] py-2.5 ${isListening ? 'animate-pulse' : ''}`}
           />
           <button
             onClick={startListening}
-            disabled={isListening}
-            className={`w-10 h-10 flex items-center justify-center transition-all duration-300 ${isListening ? 'text-primary scale-110' : 'text-slate-400 hover:text-white'}`}
+            disabled={isListening || isParsingIntake || isSubmittingIntake}
+            className={`w-10 h-10 flex items-center justify-center transition-all duration-300 ${isListening ? 'text-primary scale-110' : 'text-slate-400 hover:text-white'} ${(isParsingIntake || isSubmittingIntake) ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             <span className="material-symbols-outlined">mic</span>
           </button>
           <button
             onClick={handleSendMessage}
             className={`w-10 h-10 flex items-center justify-center rounded-full font-bold transition-all duration-300 ${inputValue.trim() ? 'bg-primary text-background-dark hover:bg-primary/90' : 'bg-white/10 text-white/20'}`}
-            disabled={!inputValue.trim() || isSending}
+            disabled={!inputValue.trim() || isSending || isParsingIntake || isSubmittingIntake}
           >
             <span className="material-symbols-outlined">arrow_upward</span>
           </button>
         </div>
       </div>
+
+      {pendingIntakeSession && (
+        <IntakeConfirmationSheet
+          session={pendingIntakeSession}
+          isSubmitting={isSubmittingIntake}
+          error={intakeError}
+          onClose={() => {
+            setIntakeError(null);
+            onPendingIntakeSessionChange(null);
+          }}
+          onChangeCandidate={handlePendingCandidateChange}
+          onDeleteCandidate={handleDeletePendingCandidate}
+          onAddCandidate={handleAddPendingCandidate}
+          onConfirm={handleConfirmIntake}
+        />
+      )}
     </div>
   );
 };

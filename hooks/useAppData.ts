@@ -24,6 +24,8 @@ function cachedMealToMeal(item: Awaited<ReturnType<typeof OfflineMealsService.ge
     type: item.mealType || 'DINNER',
     category: item.category || 'STAPLE',
     note: item.note || '',
+    source: 'manual',
+    estimatedFields: ['calories', 'sodium', 'purine'],
   };
 }
 
@@ -187,6 +189,12 @@ export function useAppData() {
         category: meal.category,
         record_date: getTodayDateString(),
         note: meal.note,
+        source: meal.source || 'manual',
+        source_detail: meal.sourceDetail,
+        confidence: meal.confidence,
+        estimated_fields_json: meal.estimatedFields || [],
+        rule_warnings_json: meal.ruleWarnings || [],
+        recognition_meta_json: meal.recognitionMeta,
       });
     } catch (error) {
       console.error('同步饮食记录失败:', error);

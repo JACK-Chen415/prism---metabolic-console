@@ -1,0 +1,24 @@
+[
+  {"mapping_code":"code_hypertension","source_field":"CONDITION_CODE","match_type":"NORMALIZED","match_value":"hypertension","normalized_disease_code":"hypertension","priority":200},
+  {"mapping_code":"code_high_blood_pressure","source_field":"CONDITION_CODE","match_type":"NORMALIZED","match_value":"high_blood_pressure","normalized_disease_code":"hypertension","priority":190},
+  {"mapping_code":"title_hypertension_cn","source_field":"TITLE","match_type":"CONTAINS","match_value":"高血压","normalized_disease_code":"hypertension","priority":180},
+  {"mapping_code":"title_blood_pressure_high","source_field":"TITLE","match_type":"CONTAINS","match_value":"血压高","normalized_disease_code":"hypertension","priority":170},
+
+  {"mapping_code":"code_hyperlipidemia","source_field":"CONDITION_CODE","match_type":"NORMALIZED","match_value":"hyperlipidemia","normalized_disease_code":"hyperlipidemia","priority":200},
+  {"mapping_code":"code_dyslipidemia","source_field":"CONDITION_CODE","match_type":"NORMALIZED","match_value":"dyslipidemia","normalized_disease_code":"hyperlipidemia","priority":190},
+  {"mapping_code":"title_hyperlipidemia_cn","source_field":"TITLE","match_type":"CONTAINS","match_value":"高脂血症","normalized_disease_code":"hyperlipidemia","priority":180},
+  {"mapping_code":"title_high_lipids_cn","source_field":"TITLE","match_type":"CONTAINS","match_value":"血脂高","normalized_disease_code":"hyperlipidemia","priority":170},
+  {"mapping_code":"title_high_cholesterol_cn","source_field":"TITLE","match_type":"CONTAINS","match_value":"高胆固醇","normalized_disease_code":"hyperlipidemia","priority":160},
+  {"mapping_code":"title_high_triglyceride_cn","source_field":"TITLE","match_type":"CONTAINS","match_value":"高甘油三酯","normalized_disease_code":"hyperlipidemia","priority":150},
+
+  {"mapping_code":"code_gout","source_field":"CONDITION_CODE","match_type":"NORMALIZED","match_value":"gout","normalized_disease_code":"gout","priority":200},
+  {"mapping_code":"code_hyperuricemia","source_field":"CONDITION_CODE","match_type":"NORMALIZED","match_value":"hyperuricemia","normalized_disease_code":"gout","priority":190},
+  {"mapping_code":"title_gout_cn","source_field":"TITLE","match_type":"CONTAINS","match_value":"痛风","normalized_disease_code":"gout","priority":180},
+  {"mapping_code":"title_high_uric_acid_cn","source_field":"TITLE","match_type":"CONTAINS","match_value":"高尿酸","normalized_disease_code":"gout","priority":170},
+
+  {"mapping_code":"code_type2_diabetes","source_field":"CONDITION_CODE","match_type":"NORMALIZED","match_value":"type2_diabetes","normalized_disease_code":"type2_diabetes","priority":200},
+  {"mapping_code":"code_t2dm","source_field":"CONDITION_CODE","match_type":"NORMALIZED","match_value":"t2dm","normalized_disease_code":"type2_diabetes","priority":190},
+  {"mapping_code":"title_diabetes_cn","source_field":"TITLE","match_type":"CONTAINS","match_value":"糖尿病","normalized_disease_code":"type2_diabetes","priority":180},
+  {"mapping_code":"title_type2_diabetes_cn","source_field":"TITLE","match_type":"CONTAINS","match_value":"2型糖尿病","normalized_disease_code":"type2_diabetes","priority":170},
+  {"mapping_code":"title_high_glucose_cn","source_field":"TITLE","match_type":"CONTAINS","match_value":"高血糖","normalized_disease_code":"type2_diabetes","priority":160}
+]

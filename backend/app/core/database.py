@@ -1,10 +1,8 @@
-"""
-数据库连接与会话管理
-使用 SQLAlchemy 2.0 异步引擎
-"""
+"""数据库连接与会话管理。"""
 
 from typing import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -58,9 +56,12 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """初始化数据库表"""
+    """初始化数据库连接。
+
+    Schema 变更统一由 Alembic 管理，这里只做连接预热与健康校验。
+    """
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("SELECT 1"))
 
 
 async def close_db() -> None:

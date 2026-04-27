@@ -329,7 +329,8 @@ class DoubaoAIService:
         messages: List[Dict[str, str]],
         user: User,
         conditions: List[HealthCondition],
-        stream: bool = False
+        stream: bool = False,
+        local_guardrail: Optional[str] = None,
     ) -> Union[AsyncGenerator[str, None], str]:
         """
         与豆包对话
@@ -346,10 +347,16 @@ class DoubaoAIService:
         await self._ensure_initialized()
         
         user_context = self._build_user_context(user, conditions)
-        system_message = {
-            "role": "system",
-            "content": SYSTEM_PROMPT.format(user_context=user_context)
-        }
+        prompt = SYSTEM_PROMPT.format(user_context=user_context)
+        if local_guardrail:
+            prompt = (
+                f"{prompt}\n\n"
+                "## 七、本地规则与知识库优先约束\n"
+                f"{local_guardrail}\n"
+                "- 若本地命中 LIMIT 或 AVOID，绝不可放宽结论。\n"
+                "- 你只能解释原因、补充替代建议或说明适用条件。"
+            )
+        system_message = {"role": "system", "content": prompt}
         
         full_messages = [system_message] + messages
         
@@ -427,6 +434,8 @@ class DoubaoAIService:
             "food_name": "食物名称",
             "confidence": 0.95,
             "estimated_portion": "估算份量（如：约150g）",
+            "ingredients": ["主要食材1", "主要食材2"],
+            "cooking_method": "烹调方式，如清炒/红烧/油炸/清蒸",
             "nutrition": {{
                 "calories": 热量(kcal),
                 "sodium": 钠含量(mg),
@@ -434,9 +443,12 @@ class DoubaoAIService:
                 "protein": 蛋白质(g),
                 "carbs": 碳水化合物(g),
                 "fat": 脂肪(g),
-                "fiber": 膳食纤维(g)
+                "fiber": 膳食纤维(g),
+                "sugar": 糖(g，可为空)
             }},
             "category": "STAPLE/MEAT/VEG/DRINK/SNACK",
+            "allergen_tags": ["过敏原标签，可为空"],
+            "risk_tags": ["风险标签，如high_sugar/high_sodium"],
             "health_tips": "针对用户健康状况的建议",
             "warnings": ["警告信息列表，如过敏警告"]
         }}
@@ -489,8 +501,12 @@ class DoubaoAIService:
                         food_name=f["food_name"],
                         confidence=f.get("confidence", 0.8),
                         estimated_portion=f["estimated_portion"],
+                        ingredients=f.get("ingredients", []),
+                        cooking_method=f.get("cooking_method"),
                         nutrition=NutritionInfo(**f["nutrition"]),
                         category=f["category"],
+                        allergen_tags=f.get("allergen_tags", []),
+                        risk_tags=f.get("risk_tags", []),
                         health_tips=f.get("health_tips"),
                         warnings=f.get("warnings", [])
                     )

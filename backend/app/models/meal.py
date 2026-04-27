@@ -4,7 +4,7 @@
 
 from datetime import datetime, date
 from typing import Optional
-from sqlalchemy import String, Float, Integer, DateTime, Date, Text, ForeignKey, Enum as SQLEnum
+from sqlalchemy import String, Float, Integer, DateTime, Date, Text, ForeignKey, Enum as SQLEnum, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 import enum
@@ -34,6 +34,14 @@ class SyncStatus(str, enum.Enum):
     PENDING = "PENDING"    # 待同步
     SYNCED = "SYNCED"      # 已同步
     CONFLICT = "CONFLICT"  # 冲突
+
+
+class MealSource(str, enum.Enum):
+    """饮食记录来源"""
+    MANUAL = "manual"
+    VOICE = "voice"
+    PHOTO = "photo"
+    AI_QUICK_LOG = "ai_quick_log"
 
 
 class Meal(Base):
@@ -79,6 +87,14 @@ class Meal(Base):
     # AI 识别来源
     image_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     ai_recognized: Mapped[bool] = mapped_column(default=False)
+
+    # 录入来源与估算元信息
+    source: Mapped[str] = mapped_column(String(20), default=MealSource.MANUAL.value, nullable=False)
+    source_detail: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    estimated_fields_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    rule_warnings_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    recognition_meta_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     
     # 同步状态
     sync_status: Mapped[SyncStatus] = mapped_column(
