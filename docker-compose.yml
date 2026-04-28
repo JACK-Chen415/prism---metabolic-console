@@ -34,8 +34,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://postgres:${DB_PASSWORD:-prism_secure_password}@db:5432/prism_db
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-in-production}
       ARK_API_KEY: ${ARK_API_KEY}
-      DOUBAO_ENDPOINT_ID: ${DOUBAO_ENDPOINT_ID}
-      DOUBAO_VISION_ENDPOINT_ID: ${DOUBAO_VISION_ENDPOINT_ID}
+      DOUBAO_MODEL: ${DOUBAO_MODEL}
       CORS_ORIGINS: '["http://localhost:5173","http://localhost:3000","http://127.0.0.1:5173","http://127.0.0.1:3000","https://prism-metabolic-console.vercel.app"]'
     volumes:
       - uploads_data:/app/uploads

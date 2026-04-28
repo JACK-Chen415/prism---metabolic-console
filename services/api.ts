@@ -35,6 +35,21 @@ export const TokenManager = {
     }
 };
 
+type MealUpdatePayload = Partial<{
+    name: string;
+    portion: string;
+    calories: number;
+    sodium: number;
+    purine: number;
+    protein: number;
+    carbs: number;
+    fat: number;
+    fiber: number;
+    meal_type: 'BREAKFAST' | 'LUNCH' | 'DINNER' | 'SNACK';
+    category: 'STAPLE' | 'MEAT' | 'VEG' | 'DRINK' | 'SNACK';
+    note: string;
+}>;
+
 // ==================== HTTP 请求封装 ====================
 
 interface ApiResponse<T> {
@@ -300,16 +315,13 @@ export const MealsAPI = {
 
     get: (id: number) => apiClient.get(`/meals/${id}`),
 
-    update: (id: number, data: Partial<{
-        name: string;
-        portion: string;
-        calories: number;
-        sodium: number;
-        purine: number;
-        note: string;
-    }>) => apiClient.put(`/meals/${id}`, data),
+    update: (id: number, data: MealUpdatePayload) => apiClient.put(`/meals/${id}`, data),
+
+    updateMeal: (id: number, data: MealUpdatePayload) => apiClient.put(`/meals/${id}`, data),
 
     delete: (id: number) => apiClient.delete(`/meals/${id}`),
+
+    deleteMeal: (id: number) => apiClient.delete(`/meals/${id}`),
 
     sync: (meals: unknown[], lastSyncAt?: string) =>
         apiClient.post('/meals/sync', { meals, last_sync_at: lastSyncAt })

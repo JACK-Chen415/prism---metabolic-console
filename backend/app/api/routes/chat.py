@@ -343,7 +343,8 @@ async def recognize_food(
     foods, ai_response = await doubao_service.recognize_food(
         image_base64=data.image_base64,
         user=current_user,
-        conditions=conditions
+        conditions=conditions,
+        image_type=data.image_type,
     )
     
     matched_disease_codes: list[str] = []
@@ -382,7 +383,7 @@ async def recognize_food(
         matched_food_codes=_dedupe(matched_food_codes),
         local_decision_level=strictest_level,
         called_cloud=True,
-        cloud_call_reason="视觉识别依赖云端模型，本地规则在识别后补充校验。",
+        cloud_call_reason="图片识别依赖主多模态模型，本地规则在识别后补充校验。",
     )
 
     return FoodRecognitionResponse(
@@ -429,7 +430,8 @@ async def recognize_food_upload(
     foods, ai_response = await doubao_service.recognize_food(
         image_base64=image_base64,
         user=current_user,
-        conditions=conditions
+        conditions=conditions,
+        image_type=file.content_type.split("/", 1)[1] if file.content_type else "jpeg",
     )
     
     matched_disease_codes: list[str] = []
@@ -468,7 +470,7 @@ async def recognize_food_upload(
         matched_food_codes=_dedupe(matched_food_codes),
         local_decision_level=strictest_level,
         called_cloud=True,
-        cloud_call_reason="视觉识别依赖云端模型，本地规则在识别后补充校验。",
+        cloud_call_reason="图片识别依赖主多模态模型，本地规则在识别后补充校验。",
     )
 
     return FoodRecognitionResponse(

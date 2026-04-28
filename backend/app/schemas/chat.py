@@ -85,6 +85,7 @@ class FoodRecognitionResult(BaseModel):
     food_name: str = Field(description="识别出的食物名称")
     confidence: float = Field(description="识别置信度(0-1)")
     estimated_portion: str = Field(description="估算份量")
+    amount_text: Optional[str] = Field(None, description="结构化录入使用的份量文本")
     nutrition: NutritionInfo = Field(description="营养成分")
     category: str = Field(description="食物分类")
     ingredients: List[str] = Field(default_factory=list, description="主要食材")

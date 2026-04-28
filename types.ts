@@ -49,10 +49,26 @@ export interface UserProfile {
   weight: number; // kg
 }
 
+export interface CalorieRange {
+  min: number;
+  max: number;
+}
+
 export interface DailyTargets {
-  calories: number; // kcal
+  calories: number; // 推荐摄入热量目标(kcal)，兼容旧字段
   sodium: number;   // mg
   purine: number;   // mg
+  bmi?: number | null;
+  bmi_category?: 'underweight' | 'normal' | 'overweight' | 'obese' | string | null;
+  bmr?: number | null;
+  bmr_range?: CalorieRange | null;
+  activity_factor?: number;
+  estimated_tdee?: number | null;
+  recommended_calorie_target?: number;
+  target_strategy?: string;
+  target_explanation?: string;
+  is_estimated?: boolean;
+  has_complete_profile?: boolean;
 }
 
 export type FoodCategory = 'STAPLE' | 'MEAT' | 'VEG' | 'DRINK' | 'SNACK';
@@ -66,6 +82,10 @@ export interface Meal {
   calories: number;
   sodium: number; // mg
   purine: number; // mg
+  protein?: number; // g
+  carbs?: number; // g
+  fat?: number; // g
+  fiber?: number; // g
   type: 'BREAKFAST' | 'LUNCH' | 'DINNER' | 'SNACK';
   category: FoodCategory;
   note?: string; // Added note field
@@ -76,6 +96,11 @@ export interface Meal {
   ruleWarnings?: string[];
   recognitionMeta?: Record<string, unknown>;
 }
+
+export type MealUpdateInput = Partial<Pick<
+  Meal,
+  'name' | 'portion' | 'calories' | 'sodium' | 'purine' | 'protein' | 'carbs' | 'fat' | 'fiber' | 'type' | 'category' | 'note'
+>>;
 
 export interface AppMessage {
   id: number;

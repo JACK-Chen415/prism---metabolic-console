@@ -1,11 +1,11 @@
 import { useCallback, useState } from 'react';
-import { AppMessage, ConditionData, DailyTargets, Meal, UserProfile } from '../types';
+import { AppMessage, ConditionData, DailyTargets, Meal, MealUpdateInput, UserProfile } from '../types';
 import { DEFAULT_DAILY_TARGETS, DEFAULT_USER_PROFILE } from '../constants/app';
 import { GUEST_APP_MESSAGES, GUEST_MEALS, GUEST_MEDICAL_DATA, GUEST_USER_PROFILE } from '../data/demoData';
 import { AuthAPI, ConditionsAPI, MealsAPI, MessagesAPI, TokenManager } from '../services/api';
 import { CacheCleanupService, OfflineMealsService, getTodayDateString, syncScheduler } from '../services/offline';
 import { clearSensitiveSessionState } from '../services/sessionState';
-import { mapCondition, mapMeal, mapMessage, mapProfile } from '../services/mappers/appMappers';
+import { mapCondition, mapDailyTargets, mapMeal, mapMessage, mapProfile } from '../services/mappers/appMappers';
 
 type LoadUserDataResult = {
   success: boolean;
@@ -21,12 +21,24 @@ function cachedMealToMeal(item: Awaited<ReturnType<typeof OfflineMealsService.ge
     calories: item.calories || 0,
     sodium: item.sodium || 0,
     purine: item.purine || 0,
+    protein: item.protein,
+    carbs: item.carbs,
+    fat: item.fat,
+    fiber: item.fiber,
     type: item.mealType || 'DINNER',
     category: item.category || 'STAPLE',
     note: item.note || '',
     source: 'manual',
     estimatedFields: ['calories', 'sodium', 'purine'],
   };
+}
+
+function parseServerMealId(mealId: string): number {
+  const parsed = Number(mealId);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error('这条记录仍在离线待同步状态，暂不支持编辑或删除。请联网同步后再操作。');
+  }
+  return parsed;
 }
 
 export function useAppData() {
@@ -37,6 +49,21 @@ export function useAppData() {
   const [meals, setMeals] = useState<Meal[]>([]);
   const [appMessages, setAppMessages] = useState<AppMessage[]>([]);
   const [dailyTargets, setDailyTargets] = useState<DailyTargets>(DEFAULT_DAILY_TARGETS);
+
+  const refreshDailyTargets = useCallback(async (): Promise<void> => {
+    if (!TokenManager.isAuthenticated()) {
+      setDailyTargets(DEFAULT_DAILY_TARGETS);
+      return;
+    }
+
+    try {
+      const targets = await AuthAPI.getDailyTargets();
+      setDailyTargets(mapDailyTargets(targets));
+    } catch (error) {
+      console.error('刷新每日目标失败:', error);
+      setDailyTargets(DEFAULT_DAILY_TARGETS);
+    }
+  }, []);
 
   const refreshMeals = useCallback(async (userId: number = currentUserId ?? 0): Promise<void> => {
     if (!userId) return;
@@ -85,7 +112,7 @@ export function useAppData() {
       setUserProfile(profile);
 
       if (targetsRes.status === 'fulfilled') {
-        setDailyTargets(targetsRes.value as DailyTargets);
+        setDailyTargets(mapDailyTargets(targetsRes.value));
       } else {
         setDailyTargets(DEFAULT_DAILY_TARGETS);
       }
@@ -185,6 +212,10 @@ export function useAppData() {
         calories: meal.calories,
         sodium: meal.sodium,
         purine: meal.purine,
+        protein: meal.protein,
+        carbs: meal.carbs,
+        fat: meal.fat,
+        fiber: meal.fiber,
         meal_type: meal.type,
         category: meal.category,
         record_date: getTodayDateString(),
@@ -196,6 +227,7 @@ export function useAppData() {
         rule_warnings_json: meal.ruleWarnings || [],
         recognition_meta_json: meal.recognitionMeta,
       });
+      await refreshMeals(currentUserId);
     } catch (error) {
       console.error('同步饮食记录失败:', error);
       await OfflineMealsService.add(currentUserId, {
@@ -206,6 +238,10 @@ export function useAppData() {
         calories: meal.calories || 0,
         sodium: meal.sodium || 0,
         purine: meal.purine || 0,
+        protein: meal.protein,
+        carbs: meal.carbs,
+        fat: meal.fat,
+        fiber: meal.fiber,
         mealType: meal.type,
         category: meal.category,
         recordDate: getTodayDateString(),
@@ -213,11 +249,54 @@ export function useAppData() {
         aiRecognized: false,
       });
     }
-  }, [currentUserId]);
+  }, [currentUserId, refreshMeals]);
 
-  const updateProfile = useCallback((profile: UserProfile) => {
+  const updateMeal = useCallback(async (mealId: string, changes: MealUpdateInput): Promise<void> => {
+    if (!TokenManager.isAuthenticated()) {
+      throw new Error('请先登录后再编辑饮食记录。');
+    }
+
+    const serverMealId = parseServerMealId(mealId);
+    await MealsAPI.updateMeal(serverMealId, {
+      name: changes.name,
+      portion: changes.portion,
+      calories: changes.calories,
+      sodium: changes.sodium,
+      purine: changes.purine,
+      protein: changes.protein,
+      carbs: changes.carbs,
+      fat: changes.fat,
+      fiber: changes.fiber,
+      meal_type: changes.type,
+      category: changes.category,
+      note: changes.note,
+    });
+    await refreshMeals();
+  }, [refreshMeals]);
+
+  const deleteMeal = useCallback(async (mealId: string): Promise<void> => {
+    if (!TokenManager.isAuthenticated()) {
+      throw new Error('请先登录后再删除饮食记录。');
+    }
+
+    const serverMealId = parseServerMealId(mealId);
+    await MealsAPI.deleteMeal(serverMealId);
+    await refreshMeals();
+  }, [refreshMeals]);
+
+  const updateProfile = useCallback(async (profile: UserProfile) => {
     setUserProfile(profile);
-  }, []);
+    if (!TokenManager.isAuthenticated()) return;
+
+    const updatedProfile = await AuthAPI.updateProfile({
+      gender: profile.gender,
+      age: profile.age,
+      height: profile.height,
+      weight: profile.weight,
+    });
+    setUserProfile(mapProfile(updatedProfile as any));
+    await refreshDailyTargets();
+  }, [refreshDailyTargets]);
 
   const updateNickname = useCallback(async (nickname: string) => {
     const trimmed = nickname.trim();
@@ -247,7 +326,10 @@ export function useAppData() {
     logout,
     markAllMessagesRead,
     addMeal,
+    updateMeal,
+    deleteMeal,
     refreshMeals,
+    refreshDailyTargets,
     updateProfile,
     updateNickname,
   };

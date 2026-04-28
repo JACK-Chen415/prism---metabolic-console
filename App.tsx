@@ -38,6 +38,8 @@ const App: React.FC = () => {
     logout,
     markAllMessagesRead,
     addMeal,
+    updateMeal,
+    deleteMeal,
     refreshMeals,
     updateProfile,
     updateNickname,
@@ -168,6 +170,8 @@ const App: React.FC = () => {
           meals={meals}
           dailyTargets={dailyTargets}
           onAddMeal={addMeal}
+          onUpdateMeal={updateMeal}
+          onDeleteMeal={deleteMeal}
         />
       )}
 

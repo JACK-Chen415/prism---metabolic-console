@@ -32,3 +32,41 @@ def test_daily_targets_use_normalized_condition_title():
 
     targets = calculate_daily_targets(user, [condition])
     assert targets.sodium == 1500
+
+
+def test_daily_targets_distinguish_bmr_and_recommended_target():
+    user = User(
+        phone="13800138001",
+        password_hash="hashed",
+        gender=Gender.MALE,
+        age=32,
+        height=175,
+        weight=70,
+    )
+
+    targets = calculate_daily_targets(user, [])
+
+    assert targets.bmr == 1639
+    assert targets.estimated_tdee == 2254
+    assert targets.recommended_calorie_target == 2250
+    assert targets.calories == targets.recommended_calorie_target
+    assert targets.bmi_category == "normal"
+    assert targets.target_strategy == "maintain"
+
+
+def test_daily_targets_apply_bmi_loss_strategy_and_safety_floor():
+    user = User(
+        phone="13800138002",
+        password_hash="hashed",
+        gender=Gender.FEMALE,
+        age=40,
+        height=160,
+        weight=82,
+    )
+
+    targets = calculate_daily_targets(user, [])
+
+    assert targets.bmi_category == "obese"
+    assert targets.target_strategy == "loss"
+    assert targets.recommended_calorie_target < (targets.estimated_tdee or 0)
+    assert targets.recommended_calorie_target >= 1200

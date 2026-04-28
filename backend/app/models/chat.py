@@ -72,7 +72,14 @@ class ChatMessage(Base):
     )
     
     # 消息内容
-    role: Mapped[MessageRole] = mapped_column(SQLEnum(MessageRole), nullable=False)
+    role: Mapped[MessageRole] = mapped_column(
+        SQLEnum(
+            MessageRole,
+            name="messagerole",
+            values_callable=lambda enum_cls: [item.value for item in enum_cls],
+        ),
+        nullable=False,
+    )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     
     # 附件（图片识别时的图片URL等）

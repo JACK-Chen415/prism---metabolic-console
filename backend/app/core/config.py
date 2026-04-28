@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     
     # 豆包 AI 配置 (Volcengine ARK)
     ark_api_key: Optional[str] = None  # ARK API Key
-    doubao_endpoint_id: Optional[str] = None  # 豆包对话模型 endpoint
-    doubao_vision_endpoint_id: Optional[str] = None  # 豆包视觉模型 endpoint
+    doubao_model: Optional[str] = None  # 主多模态模型 endpoint/model
+    doubao_endpoint_id: Optional[str] = None  # Deprecated: use DOUBAO_MODEL
     
     # 文件存储配置
     upload_dir: str = "./uploads"
@@ -63,6 +63,14 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3005",
         "https://prism-metabolic-console.vercel.app"
     ]
+
+    @property
+    def main_doubao_model(self) -> str:
+        """Return the single multimodal Doubao model used by all AI calls."""
+        model = self.doubao_model or self.doubao_endpoint_id
+        if not model:
+            raise RuntimeError("豆包主模型未配置，请设置 DOUBAO_MODEL 环境变量")
+        return model
 
 
 @lru_cache

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, UserProfile } from '../../types';
-import { AuthAPI, TokenManager } from '../../services/api';
+import { TokenManager } from '../../services/api';
 import { APP_BUILD, APP_DISPLAY_NAME, APP_VERSION } from '../../constants/app';
 import { CacheCleanupService } from '../../services/offline';
 
@@ -8,7 +8,7 @@ interface SettingsViewProps {
     onViewChange: (view: View) => void;
     userProfile: UserProfile;
     currentUserId: number | null;
-    onUpdateProfile: (profile: UserProfile) => void;
+    onUpdateProfile: (profile: UserProfile) => Promise<void> | void;
     onLogout?: () => void;
 }
 
@@ -60,6 +60,8 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
     const [editProfile, setEditProfile] = useState<UserProfile>(userProfile);
     const [activeModal, setActiveModal] = useState<ModalType>(null);
     const [isCleaning, setIsCleaning] = useState(false);
+    const [isSavingProfile, setIsSavingProfile] = useState(false);
+    const [profileError, setProfileError] = useState<string | null>(null);
     const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
 
     const appVersionLabel = `v${APP_VERSION}${APP_BUILD !== 'local' ? ` (${APP_BUILD})` : ''}`;
@@ -87,29 +89,27 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
 
     const openBodyParamsModal = () => {
         setEditProfile(userProfile);
+        setProfileError(null);
         setActiveModal('BODY_PARAMS');
     };
 
     const openGenderModal = () => {
         setEditProfile(userProfile);
+        setProfileError(null);
         setActiveModal('GENDER_SELECT');
     };
 
     const saveProfileChanges = async () => {
-        onUpdateProfile(editProfile);
-        setActiveModal(null);
-
-        if (TokenManager.isAuthenticated()) {
-            try {
-                await AuthAPI.updateProfile({
-                    gender: editProfile.gender,
-                    age: editProfile.age,
-                    height: editProfile.height,
-                    weight: editProfile.weight
-                });
-            } catch (error) {
-                console.error('保存个人资料失败:', error);
-            }
+        setIsSavingProfile(true);
+        setProfileError(null);
+        try {
+            await onUpdateProfile(editProfile);
+            setActiveModal(null);
+        } catch (error) {
+            console.error('保存个人资料失败:', error);
+            setProfileError(error instanceof Error ? error.message : '保存个人资料失败，请稍后再试。');
+        } finally {
+            setIsSavingProfile(false);
         }
     };
 
@@ -204,11 +204,18 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                                 />
                             </div>
 
+                            {profileError && (
+                                <p className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg p-2 font-serif tracking-wide">
+                                    {profileError}
+                                </p>
+                            )}
+
                             <button
                                 onClick={saveProfileChanges}
-                                className="w-full bg-primary/20 text-primary py-3 rounded-xl font-bold mt-2 border border-primary/20 hover:bg-primary/30 transition-colors font-serif tracking-wide"
+                                disabled={isSavingProfile}
+                                className="w-full bg-primary/20 text-primary py-3 rounded-xl font-bold mt-2 border border-primary/20 hover:bg-primary/30 transition-colors font-serif tracking-wide disabled:opacity-50"
                             >
-                                保存
+                                {isSavingProfile ? '保存中...' : '保存'}
                             </button>
                         </div>
                     </Modal>
@@ -231,11 +238,17 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                                     女
                                 </button>
                             </div>
+                            {profileError && (
+                                <p className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg p-2 font-serif tracking-wide">
+                                    {profileError}
+                                </p>
+                            )}
                             <button
                                 onClick={saveProfileChanges}
-                                className="w-full bg-primary/20 text-primary py-3 rounded-xl font-bold mt-2 border border-primary/20 hover:bg-primary/30 transition-colors font-serif tracking-wide"
+                                disabled={isSavingProfile}
+                                className="w-full bg-primary/20 text-primary py-3 rounded-xl font-bold mt-2 border border-primary/20 hover:bg-primary/30 transition-colors font-serif tracking-wide disabled:opacity-50"
                             >
-                                保存
+                                {isSavingProfile ? '保存中...' : '保存'}
                             </button>
                         </div>
                     </Modal>

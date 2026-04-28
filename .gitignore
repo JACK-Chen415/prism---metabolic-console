@@ -38,3 +38,6 @@ backend/venv/
 backend/.venv/
 *.egg-info/
 uploads/
+.runtime/
+backend/.runtime/
+*.pid

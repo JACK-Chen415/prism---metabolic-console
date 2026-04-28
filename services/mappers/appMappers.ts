@@ -1,5 +1,5 @@
-import { AppMessage, ConditionData, Meal, UserProfile } from '../../types';
-import { DEFAULT_USER_PROFILE } from '../../constants/app';
+import { AppMessage, ConditionData, DailyTargets, Meal, UserProfile } from '../../types';
+import { DEFAULT_DAILY_TARGETS, DEFAULT_USER_PROFILE } from '../../constants/app';
 
 type ApiProfile = {
   id?: number;
@@ -35,6 +35,10 @@ export function mapMeal(apiMeal: any): Meal {
     calories: Math.round(apiMeal.calories || 0),
     sodium: Math.round(apiMeal.sodium || 0),
     purine: Math.round(apiMeal.purine || 0),
+    protein: apiMeal.protein ?? undefined,
+    carbs: apiMeal.carbs ?? undefined,
+    fat: apiMeal.fat ?? undefined,
+    fiber: apiMeal.fiber ?? undefined,
     type: apiMeal.meal_type || 'DINNER',
     category: apiMeal.category || 'STAPLE',
     note: apiMeal.note || '',
@@ -44,6 +48,25 @@ export function mapMeal(apiMeal: any): Meal {
     estimatedFields: Array.isArray(apiMeal.estimated_fields_json) ? apiMeal.estimated_fields_json : [],
     ruleWarnings: Array.isArray(apiMeal.rule_warnings_json) ? apiMeal.rule_warnings_json : [],
     recognitionMeta: apiMeal.recognition_meta_json || undefined,
+  };
+}
+
+export function mapDailyTargets(apiTargets: any): DailyTargets {
+  const recommendedCalories = Math.round(
+    apiTargets?.recommended_calorie_target ?? apiTargets?.calories ?? DEFAULT_DAILY_TARGETS.recommended_calorie_target ?? 0
+  );
+
+  return {
+    ...DEFAULT_DAILY_TARGETS,
+    ...apiTargets,
+    calories: recommendedCalories,
+    recommended_calorie_target: recommendedCalories,
+    sodium: Math.round(apiTargets?.sodium ?? DEFAULT_DAILY_TARGETS.sodium),
+    purine: Math.round(apiTargets?.purine ?? DEFAULT_DAILY_TARGETS.purine),
+    bmi: apiTargets?.bmi ?? null,
+    bmr: apiTargets?.bmr ?? null,
+    bmr_range: apiTargets?.bmr_range ?? null,
+    estimated_tdee: apiTargets?.estimated_tdee ?? null,
   };
 }
 

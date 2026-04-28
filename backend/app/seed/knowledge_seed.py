@@ -11,7 +11,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.core.database import async_session_maker
+from app.core.database import async_session_maker, close_db
 from app.models.knowledge import (
     Disease,
     DiseaseFoodRule,
@@ -165,6 +165,9 @@ async def upsert_seed(dataset: dict[str, Any], *, dry_run: bool, disable_missing
                 summary=summary["mappings"],
                 defaults={"seed_version": seed_version, "is_enabled": True},
             )
+            # Flush parent tables before child rules so a fresh database can
+            # satisfy the foreign keys from rule -> disease/food/source.
+            await session.flush()
 
             source_versions = {
                 item["source_code"]: item.get("source_version")
@@ -224,6 +227,8 @@ async def upsert_seed(dataset: dict[str, Any], *, dry_run: bool, disable_missing
                 summary=summary["rules"],
                 defaults={"seed_version": seed_version, "is_enabled": True},
             )
+            # Flush rule rows before rule_source_maps references them.
+            await session.flush()
             await _upsert_rows(
                 session,
                 model=RuleSourceMap,
@@ -232,6 +237,7 @@ async def upsert_seed(dataset: dict[str, Any], *, dry_run: bool, disable_missing
                 summary=summary["rule_source_maps"],
                 defaults={"seed_version": seed_version, "is_enabled": True},
             )
+            await session.flush()
 
             if disable_missing:
                 await _disable_missing_records(
@@ -390,16 +396,19 @@ async def async_main() -> None:
         print(f"Dataset '{args.dataset}' validation passed.")
         return
 
-    summary = await upsert_seed(
-        dataset,
-        dry_run=args.dry_run,
-        disable_missing=args.disable_missing_in_dataset,
-    )
-    if args.dry_run:
-        print(f"Dry-run completed for dataset '{args.dataset}'. No changes were committed.")
-    else:
-        print(f"Seed completed for dataset '{args.dataset}'.")
-    print_summary(summary)
+    try:
+        summary = await upsert_seed(
+            dataset,
+            dry_run=args.dry_run,
+            disable_missing=args.disable_missing_in_dataset,
+        )
+        if args.dry_run:
+            print(f"Dry-run completed for dataset '{args.dataset}'. No changes were committed.")
+        else:
+            print(f"Seed completed for dataset '{args.dataset}'.")
+        print_summary(summary)
+    finally:
+        await close_db()
 
 
 def main() -> None:

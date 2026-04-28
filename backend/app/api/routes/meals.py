@@ -24,6 +24,25 @@ from app.schemas.common import PaginatedResponse
 router = APIRouter(prefix="/meals", tags=["饮食记录"])
 
 
+async def _get_meal_or_404(meal_id: int, current_user: CurrentUser, db: DbSession) -> Meal:
+    result = await db.execute(select(Meal).where(Meal.id == meal_id))
+    meal = result.scalar_one_or_none()
+
+    if not meal:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="记录不存在"
+        )
+
+    if meal.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="无权操作该饮食记录"
+        )
+
+    return meal
+
+
 @router.post("", response_model=MealResponse, status_code=status.HTTP_201_CREATED)
 async def create_meal(
     data: MealCreate,
@@ -154,20 +173,7 @@ async def get_daily_summary(
 @router.get("/{meal_id}", response_model=MealResponse)
 async def get_meal(meal_id: int, current_user: CurrentUser, db: DbSession):
     """获取单条饮食记录"""
-    result = await db.execute(
-        select(Meal).where(
-            Meal.id == meal_id,
-            Meal.user_id == current_user.id
-        )
-    )
-    meal = result.scalar_one_or_none()
-    
-    if not meal:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="记录不存在"
-        )
-    
+    meal = await _get_meal_or_404(meal_id, current_user, db)
     return MealResponse.model_validate(meal)
 
 
@@ -179,19 +185,7 @@ async def update_meal(
     db: DbSession
 ):
     """更新饮食记录"""
-    result = await db.execute(
-        select(Meal).where(
-            Meal.id == meal_id,
-            Meal.user_id == current_user.id
-        )
-    )
-    meal = result.scalar_one_or_none()
-    
-    if not meal:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="记录不存在"
-        )
+    meal = await _get_meal_or_404(meal_id, current_user, db)
     
     update_data = data.model_dump(exclude_unset=True)
     for field, value in update_data.items():
@@ -206,19 +200,7 @@ async def update_meal(
 @router.delete("/{meal_id}")
 async def delete_meal(meal_id: int, current_user: CurrentUser, db: DbSession):
     """删除饮食记录"""
-    result = await db.execute(
-        select(Meal).where(
-            Meal.id == meal_id,
-            Meal.user_id == current_user.id
-        )
-    )
-    meal = result.scalar_one_or_none()
-    
-    if not meal:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="记录不存在"
-        )
+    meal = await _get_meal_or_404(meal_id, current_user, db)
     
     await db.delete(meal)
     await db.flush()

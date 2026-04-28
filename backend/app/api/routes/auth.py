@@ -35,6 +35,7 @@ from app.schemas.user import (
 )
 from app.services.verification_service import verification_service
 from app.services.target_service import calculate_daily_targets
+from app.models.health_condition import ConditionStatus
 
 router = APIRouter(prefix="/auth", tags=["认证"])
 

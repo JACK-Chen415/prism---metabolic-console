@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:local": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-local.ps1",
+    "dev:local:stop": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/stop-local.ps1",
     "build": "vite build",
     "preview": "vite preview"
   },

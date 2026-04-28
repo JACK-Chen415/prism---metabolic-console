@@ -1,11 +1,11 @@
 """
 豆包 AI 服务封装
-包含对话和视觉识别功能
+统一主多模态模型调用，支持文本、图片和图文混合输入
 """
 
 import json
-import base64
 import asyncio
+import logging
 from typing import Optional, List, Dict, Any, AsyncGenerator, Union
 
 from app.core.config import settings
@@ -13,6 +13,8 @@ from app.models.user import User
 from app.models.health_condition import HealthCondition
 from app.schemas.chat import NutritionInfo, FoodRecognitionResult
 from app.services.target_service import calculate_bmi, calculate_daily_targets
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -280,6 +282,116 @@ class DoubaoAIService:
                 self._initialized = True
             except ImportError:
                 raise RuntimeError("请安装 volcengine-python-sdk[ark]")
+
+    @staticmethod
+    def _enum_value(value: Any) -> Any:
+        return getattr(value, "value", value)
+
+    @staticmethod
+    def _format_cloud_error(error: Exception) -> str:
+        detail = str(error).strip() or error.__class__.__name__
+        lowered = detail.lower()
+        if "403" in lowered or "accessdenied" in lowered or "forbidden" in lowered:
+            return f"抱歉，AI 服务当前无访问权限，请检查豆包 endpoint 绑定、账号权限或 API key 所属项目。详细：{detail}"
+        if "connection error" in lowered or "timed out" in lowered or "timeout" in lowered:
+            return f"抱歉，AI 云端服务当前不可达，请检查网络连通性或豆包 endpoint 配置。详细：{detail}"
+        if "unauthorized" in lowered or "authentication" in lowered or "api key" in lowered:
+            return f"抱歉，AI 服务认证失败，请检查 ARK_API_KEY 或 endpoint 配置。详细：{detail}"
+        return f"抱歉，服务暂时不可用：{detail}"
+
+    @staticmethod
+    def _normalize_image_type(image_type: Optional[str]) -> str:
+        raw_type = (image_type or "jpeg").strip().lower()
+        if raw_type in {"jpg", "jpeg"}:
+            return "jpeg"
+        if raw_type in {"png", "webp", "gif"}:
+            return raw_type
+        return "jpeg"
+
+    @classmethod
+    def _image_data_url(cls, image_base64: str, image_type: Optional[str] = None) -> str:
+        cleaned = image_base64.strip()
+        if cleaned.startswith("data:image/"):
+            return cleaned
+        return f"data:image/{cls._normalize_image_type(image_type)};base64,{cleaned}"
+
+    def _create_chat_completion(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        temperature: float,
+        max_tokens: int,
+        stream: bool = False,
+    ):
+        """Create a chat completion through the single main multimodal model."""
+        return self.client.chat.completions.create(
+            model=settings.main_doubao_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=stream,
+        )
+
+    async def generate_text(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+    ) -> str:
+        """Generate text with the main multimodal model."""
+        await self._ensure_initialized()
+        try:
+            response = self._create_chat_completion(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.exception("Doubao text generation request failed")
+            return self._format_cloud_error(e)
+
+    async def generate_with_image(
+        self,
+        *,
+        prompt: str,
+        image_base64: Optional[str] = None,
+        image_type: Optional[str] = None,
+        image_url: Optional[str] = None,
+        temperature: float = 0.3,
+        max_tokens: int = 2000,
+    ) -> str:
+        """Generate text from image or mixed text-image input through the main model."""
+        await self._ensure_initialized()
+        if not image_base64 and not image_url:
+            raise ValueError("image_base64 或 image_url 至少需要提供一个")
+
+        image_payload_url = image_url or self._image_data_url(image_base64 or "", image_type)
+        try:
+            response = self._create_chat_completion(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": image_payload_url},
+                            },
+                            {
+                                "type": "text",
+                                "text": prompt,
+                            },
+                        ],
+                    }
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.exception("Doubao image generation request failed")
+            return self._format_cloud_error(e)
     
     def _build_user_context(
         self,
@@ -291,7 +403,7 @@ class DoubaoAIService:
         
         # 基本信息 + 每日目标。目标计算统一由 target_service 提供。
         if user.gender and user.age and user.height and user.weight:
-            gender_str = "男" if user.gender.value == "MALE" else "女"
+            gender_str = "男" if self._enum_value(user.gender) == "MALE" else "女"
             bmi = calculate_bmi(user)
             targets = calculate_daily_targets(user, conditions)
             
@@ -300,21 +412,29 @@ class DoubaoAIService:
             )
             if bmi is not None:
                 context_parts.append(f"- BMI：{bmi}（{'偏瘦' if bmi < 18.5 else '正常' if bmi < 24 else '偏胖' if bmi < 28 else '肥胖'}）")
-            context_parts.append(f"- 每日目标：热量 {targets.calories}kcal，钠 <{targets.sodium}mg，嘌呤 <{targets.purine}mg")
+            context_parts.append(
+                f"- 推荐摄入目标：热量 {targets.recommended_calorie_target}kcal，钠 <{targets.sodium}mg，嘌呤 <{targets.purine}mg"
+            )
         
         # 慢性病（含状态和具体指标）
-        chronic_conditions = [c for c in conditions if c.condition_type.value == "CHRONIC"]
+        chronic_conditions = [
+            c for c in conditions if self._enum_value(c.condition_type) == "CHRONIC"
+        ]
         if chronic_conditions:
             context_parts.append("- 慢性病史：")
             for c in chronic_conditions:
-                status_str = {"ACTIVE": "活跃期", "MONITORING": "监测中", "STABLE": "稳定期"}.get(c.status.value if c.status else "", "未知")
+                status_str = {
+                    "ACTIVE": "活跃期",
+                    "MONITORING": "监测中",
+                    "STABLE": "稳定期",
+                }.get(self._enum_value(c.status) if c.status else "", "未知")
                 detail = f"  · {c.title}（{status_str}）"
                 if c.value and c.unit:
                     detail += f" — 最近值：{c.value}{c.unit}"
                 context_parts.append(detail)
         
         # 过敏源（高优先级警告）
-        allergies = [c for c in conditions if c.condition_type.value == "ALLERGY"]
+        allergies = [c for c in conditions if self._enum_value(c.condition_type) == "ALLERGY"]
         if allergies:
             allergy_str = "、".join([f"**{c.title}**" for c in allergies])
             context_parts.append(f"- 🚫 过敏源（绝对禁止）：{allergy_str}")
@@ -326,7 +446,7 @@ class DoubaoAIService:
     
     async def chat(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         user: User,
         conditions: List[HealthCondition],
         stream: bool = False,
@@ -365,27 +485,17 @@ class DoubaoAIService:
         else:
             return await self._sync_chat(full_messages)
     
-    async def _sync_chat(self, messages: List[Dict[str, str]]) -> str:
+    async def _sync_chat(self, messages: List[Dict[str, Any]]) -> str:
         """同步对话"""
-        try:
-            response = self.client.chat.completions.create(
-                model=settings.doubao_endpoint_id,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=2000
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            return f"抱歉，服务暂时不可用：{str(e)}"
+        return await self.generate_text(messages, temperature=0.7, max_tokens=2000)
     
     async def _stream_chat(
         self,
-        messages: List[Dict[str, str]]
+        messages: List[Dict[str, Any]]
     ) -> AsyncGenerator[str, None]:
         """流式对话"""
         try:
-            stream = self.client.chat.completions.create(
-                model=settings.doubao_endpoint_id,
+            stream = self._create_chat_completion(
                 messages=messages,
                 temperature=0.7,
                 max_tokens=2000,
@@ -396,19 +506,41 @@ class DoubaoAIService:
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
         except Exception as e:
-            yield f"抱歉，服务暂时不可用：{str(e)}"
+            logger.exception("Doubao streaming chat request failed")
+            yield self._format_cloud_error(e)
+
+    @staticmethod
+    def _extract_json_object(content: str) -> Dict[str, Any]:
+        """Parse a JSON object from plain text or a markdown fenced block."""
+        raw = content.strip()
+        if "```json" in raw:
+            raw = raw.split("```json", 1)[1].split("```", 1)[0]
+        elif "```" in raw:
+            raw = raw.split("```", 1)[1].split("```", 1)[0]
+
+        raw = raw.strip()
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start >= 0 and end > start:
+                return json.loads(raw[start : end + 1])
+            raise
     
     async def recognize_food(
         self,
         image_base64: str,
         user: User,
-        conditions: List[HealthCondition]
+        conditions: List[HealthCondition],
+        image_type: str = "jpeg",
     ) -> tuple[List[FoodRecognitionResult], str]:
         """
         识别食物图片
         
         Args:
             image_base64: Base64 编码的图片
+            image_type: 图片类型，如 jpeg/png/webp
             user: 当前用户
             conditions: 用户健康状况
         
@@ -420,7 +552,7 @@ class DoubaoAIService:
         user_context = self._build_user_context(user, conditions)
         
         # 获取过敏源列表用于警告
-        allergies = [c.title for c in conditions if c.condition_type.value == "ALLERGY"]
+        allergies = [c.title for c in conditions if self._enum_value(c.condition_type) == "ALLERGY"]
         allergy_warning = f"用户对以下食物过敏：{', '.join(allergies)}" if allergies else ""
         
         recognition_prompt = f"""请仔细分析这张食物图片，识别其中的所有食物，并提供详细的营养分析。
@@ -434,6 +566,7 @@ class DoubaoAIService:
             "food_name": "食物名称",
             "confidence": 0.95,
             "estimated_portion": "估算份量（如：约150g）",
+            "amount_text": "结构化录入使用的份量文本（如：约150g）",
             "ingredients": ["主要食材1", "主要食材2"],
             "cooking_method": "烹调方式，如清炒/红烧/油炸/清蒸",
             "nutrition": {{
@@ -461,57 +594,50 @@ class DoubaoAIService:
 """
         
         try:
-            response = self.client.chat.completions.create(
-                model=settings.doubao_vision_endpoint_id,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{image_base64}"
-                                }
-                            },
-                            {
-                                "type": "text",
-                                "text": recognition_prompt
-                            }
-                        ]
-                    }
-                ],
+            content = await self.generate_with_image(
+                prompt=recognition_prompt,
+                image_base64=image_base64,
+                image_type=image_type,
                 temperature=0.3,
-                max_tokens=2000
+                max_tokens=2000,
             )
-            
-            content = response.choices[0].message.content
             
             # 尝试解析 JSON
             try:
-                # 移除可能的 markdown 代码块标记
-                if "```json" in content:
-                    content = content.split("```json")[1].split("```")[0]
-                elif "```" in content:
-                    content = content.split("```")[1].split("```")[0]
+                result = self._extract_json_object(content)
                 
-                result = json.loads(content.strip())
-                
-                foods = [
-                    FoodRecognitionResult(
-                        food_name=f["food_name"],
-                        confidence=f.get("confidence", 0.8),
-                        estimated_portion=f["estimated_portion"],
-                        ingredients=f.get("ingredients", []),
-                        cooking_method=f.get("cooking_method"),
-                        nutrition=NutritionInfo(**f["nutrition"]),
-                        category=f["category"],
-                        allergen_tags=f.get("allergen_tags", []),
-                        risk_tags=f.get("risk_tags", []),
-                        health_tips=f.get("health_tips"),
-                        warnings=f.get("warnings", [])
+                foods = []
+                for f in result.get("foods", []):
+                    nutrition_payload = f.get("nutrition") or {
+                        "calories": f.get("calories", 0),
+                        "sodium": f.get("sodium", 0),
+                        "purine": f.get("purine", 0),
+                        "protein": f.get("protein"),
+                        "carbs": f.get("carbs"),
+                        "fat": f.get("fat"),
+                        "fiber": f.get("fiber"),
+                        "sugar": f.get("sugar"),
+                    }
+                    nutrition_payload.setdefault("calories", 0)
+                    nutrition_payload.setdefault("sodium", 0)
+                    nutrition_payload.setdefault("purine", 0)
+                    portion = f.get("estimated_portion") or f.get("amount_text") or "1份"
+                    foods.append(
+                        FoodRecognitionResult(
+                            food_name=f.get("food_name", "未命名食物"),
+                            confidence=f.get("confidence", 0.8),
+                            estimated_portion=portion,
+                            amount_text=f.get("amount_text") or portion,
+                            ingredients=f.get("ingredients", []),
+                            cooking_method=f.get("cooking_method"),
+                            nutrition=NutritionInfo(**nutrition_payload),
+                            category=f.get("category", "STAPLE"),
+                            allergen_tags=f.get("allergen_tags", []),
+                            risk_tags=f.get("risk_tags", []),
+                            health_tips=f.get("health_tips"),
+                            warnings=f.get("warnings", [])
+                        )
                     )
-                    for f in result.get("foods", [])
-                ]
                 
                 ai_response = result.get("ai_response", "识别完成，请查看营养分析。")
                 
@@ -522,7 +648,8 @@ class DoubaoAIService:
                 return [], content
                 
         except Exception as e:
-            return [], f"食物识别失败：{str(e)}"
+            logger.exception("Doubao food recognition request failed")
+            return [], f"食物识别失败：{self._format_cloud_error(e)}"
 
 
 # 单例实例

@@ -57,8 +57,7 @@
    | `DATABASE_URL` | `postgresql+asyncpg://...?ssl=require`（第一步获取的 Neon 连接字符串） |
    | `JWT_SECRET_KEY` | 一个随机强密码（如用 `openssl rand -hex 32` 生成） |
    | `ARK_API_KEY` | 你的豆包 AI API Key |
-   | `DOUBAO_ENDPOINT_ID` | 你的豆包对话模型 endpoint |
-   | `DOUBAO_VISION_ENDPOINT_ID` | 你的豆包视觉模型 endpoint |
+   | `DOUBAO_MODEL` | 你的豆包主多模态模型 endpoint，文本和图片共用 |
    | `CORS_ORIGINS` | `["https://prism-metabolic-console.vercel.app","http://localhost:3000"]` |
    | `DEBUG` | `false` |
 

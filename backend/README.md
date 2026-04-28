@@ -5,7 +5,7 @@
 - **框架**: FastAPI (Python 3.9+)
 - **数据库**: PostgreSQL 16 + SQLAlchemy 2.0 (异步)
 - **认证**: JWT (python-jose + passlib + bcrypt)
-- **AI服务**: 豆包大模型 (Volcengine ARK SDK)
+- **AI服务**: 豆包主多模态大模型 (Volcengine ARK SDK)
 - **PDF生成**: WeasyPrint
 - **部署**: Docker + Docker Compose
 
@@ -23,6 +23,26 @@ cp .env.example .env
 
 ### 2. 本地开发
 
+推荐直接从仓库根目录运行一键脚本：
+
+```bash
+npm run dev:local
+```
+
+这会自动完成：
+- 启动工作区内隔离 PostgreSQL（端口 `5433`）
+- 执行 `alembic upgrade head`
+- 执行知识库 seed
+- 启动后端和前端
+
+停止：
+
+```bash
+npm run dev:local:stop
+```
+
+如果你只想手动跑后端，再使用下面的方式。
+
 ```bash
 # 创建虚拟环境
 python -m venv venv
@@ -36,12 +56,11 @@ source venv/bin/activate
 # 安装依赖
 pip install -r requirements.txt
 
-# 启动本地 PostgreSQL (使用 Docker)
-docker run -d --name prism-postgres -p 5432:5432 \
-  -e POSTGRES_USER=prism \
-  -e POSTGRES_PASSWORD=prism123 \
-  -e POSTGRES_DB=prism_metabolic \
-  postgres:16-alpine
+# 执行迁移
+python -m alembic upgrade head
+
+# 执行知识库 seed
+python -m app.seed.knowledge_seed --dataset core_v1
 
 # 启动开发服务器
 uvicorn app.main:app --reload --port 8000
@@ -110,11 +129,12 @@ backend/
 1. 访问 [火山引擎控制台](https://console.volcengine.com/)
 2. 开通「火山方舟」服务
 3. 创建 API Key
-4. 创建模型端点 (Endpoint)，获取 Endpoint ID
+4. 创建支持文本和图片输入的主多模态模型端点 (Endpoint)，获取 Endpoint ID
 5. 填入 `.env` 文件对应字段：
    - `ARK_API_KEY`
-   - `DOUBAO_ENDPOINT_ID`
-   - `DOUBAO_VISION_ENDPOINT_ID`
+   - `DOUBAO_MODEL`
+
+`DOUBAO_MODEL` 同时用于 AI 对话、饮食建议和拍照识别；不再单独配置图片识别 endpoint。
 
 ## 常用命令
 

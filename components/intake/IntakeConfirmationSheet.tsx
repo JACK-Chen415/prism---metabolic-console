@@ -51,9 +51,9 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
   const sourceLabel = session.source === 'voice' ? '语音候选' : session.source === 'photo' ? '拍照候选' : 'AI候选';
 
   return (
-    <div className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm p-4 flex items-end justify-center">
-      <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#101719] shadow-2xl overflow-hidden max-h-[92vh] flex flex-col">
-        <div className="sticky top-0 z-10 px-5 py-4 border-b border-white/10 bg-[#101719]/95 backdrop-blur flex items-start justify-between">
+    <div className="fixed inset-x-0 top-0 bottom-[calc(96px_+_env(safe-area-inset-bottom))] z-[70] bg-black/80 backdrop-blur-sm px-4 pt-8 pb-4 flex items-end justify-center">
+      <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#101719] shadow-2xl overflow-hidden max-h-[calc(100dvh_-_144px_-_env(safe-area-inset-bottom))] min-h-0 flex flex-col">
+        <div className="shrink-0 px-5 py-4 border-b border-white/10 bg-[#101719]/95 backdrop-blur flex items-start justify-between">
           <div>
             <div className="text-[11px] uppercase tracking-[0.25em] text-primary/80 font-bold">{sourceLabel}</div>
             <h3 className="text-white text-lg font-serif font-bold tracking-wide mt-1">确认后写入生命日志</h3>
@@ -69,7 +69,7 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-4">
           {session.summary_warning && (
             <div className="rounded-2xl border border-amber-300/20 bg-amber-500/10 px-4 py-3 text-xs text-amber-100 leading-relaxed font-serif tracking-wide">
               {session.summary_warning}
@@ -259,7 +259,7 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
           )}
         </div>
 
-        <div className="border-t border-white/10 px-4 py-4 bg-[#101719] space-y-3">
+        <div className="shrink-0 border-t border-white/10 px-4 py-4 bg-[#101719] space-y-3">
           <button
             onClick={onAddCandidate}
             className="w-full h-11 rounded-2xl border border-white/10 bg-white/5 text-slate-200 text-sm font-serif font-bold tracking-wide hover:bg-white/10 transition-colors"

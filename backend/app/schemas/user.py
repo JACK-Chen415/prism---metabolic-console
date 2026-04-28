@@ -113,6 +113,12 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 
+class CalorieRange(BaseModel):
+    """估算热量范围。"""
+    min: int = Field(description="下限(kcal/day)")
+    max: int = Field(description="上限(kcal/day)")
+
+
 class TokenResponse(BaseModel):
     """Token响应"""
     access_token: str
@@ -128,7 +134,18 @@ class LoginResponse(BaseModel):
 
 
 class DailyTargets(BaseModel):
-    """每日目标值（基于用户身体参数计算）"""
-    calories: int = Field(description="热量目标(kcal)")
+    """每日目标值（基于用户身体参数计算）。"""
+    calories: int = Field(description="推荐摄入热量目标(kcal)，保留给旧前端兼容")
     sodium: int = Field(description="钠摄入上限(mg)")
     purine: int = Field(description="嘌呤摄入上限(mg)")
+    bmi: Optional[float] = Field(None, description="BMI")
+    bmi_category: Optional[str] = Field(None, description="BMI 分层")
+    bmr: Optional[int] = Field(None, description="基础代谢估算(kcal/day)")
+    bmr_range: Optional[CalorieRange] = Field(None, description="基础代谢估算范围(kcal/day)")
+    activity_factor: float = Field(1.375, description="活动系数")
+    estimated_tdee: Optional[int] = Field(None, description="每日总消耗估算(kcal/day)")
+    recommended_calorie_target: int = Field(0, description="推荐每日摄入热量目标(kcal/day)")
+    target_strategy: str = Field("insufficient_data", description="目标策略")
+    target_explanation: str = Field("请先完善身高、体重、年龄、性别，以获得更准确估算。", description="目标解释")
+    is_estimated: bool = Field(True, description="是否为估算值")
+    has_complete_profile: bool = Field(False, description="是否具备完整目标计算资料")

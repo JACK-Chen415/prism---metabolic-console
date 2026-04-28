@@ -61,7 +61,7 @@
 
 - Node.js 18+
 - Python 3.9+
-- Docker Desktop
+- Windows 本机已安装 PostgreSQL 16 命令行工具
 - 豆包 API Key ([火山引擎](https://console.volcengine.com/))
 
 ### 1. 克隆项目
@@ -71,72 +71,58 @@ git clone https://github.com/YOUR_USERNAME/prism---metabolic-console.git
 cd prism---metabolic-console
 ```
 
-### 2. 启动数据库
+### 2. 配置环境变量
 
 ```bash
-docker run -d --name prism-postgres \
-  -e POSTGRES_USER=prism \
-  -e POSTGRES_PASSWORD=prism123 \
-  -e POSTGRES_DB=prism_metabolic \
-  -p 5432:5432 \
-  postgres:16-alpine
+# 后端
+copy backend\.env.example backend\.env
+# 编辑 backend/.env 填入你的豆包 API Key
+
+# 前端
+copy .env.example .env.local
 ```
 
-### 3. 启动后端
+### 3. 本地一键运行（推荐）
+
+```bash
+npm install
+npm run dev:local
+```
+
+这条命令会自动完成：
+- 初始化工作区内隔离 PostgreSQL 数据目录 `backend/.runtime/postgres-data`
+- 在本机 `5433` 端口启动本地开发数据库
+- 执行 `alembic upgrade head`
+- 执行知识库 seed：`python -m app.seed.knowledge_seed --dataset core_v1`
+- 后台启动 FastAPI
+- 后台启动 Vite 前端
+
+默认访问：
+- 前端：`http://localhost:5173`
+- 后端健康检查：`http://localhost:8000/api/health`
+- API 文档：`http://localhost:8000/api/docs`
+
+### 4. 停止本地环境
+
+```bash
+npm run dev:local:stop
+```
+
+### 5. 手动方式（保留）
 
 ```bash
 cd backend
-
-# 创建虚拟环境
 python -m venv venv
-.\venv\Scripts\activate  # Windows
-# source venv/bin/activate  # Linux/Mac
-
-# 安装依赖
+.\venv\Scripts\activate
 pip install -r requirements.txt
-
-# 配置环境变量
-cp .env.example .env
-# 编辑 .env 填入你的豆包 API Key
-
-# 启动服务
+python -m alembic upgrade head
+python -m app.seed.knowledge_seed --dataset core_v1
 uvicorn app.main:app --reload --port 8000
-```
 
-### 4. 启动前端
-
-```bash
-cd ..  # 返回项目根目录
-
-# 安装依赖
-npm install
-
-# 启动开发服务器
-npm run dev
-```
-
-### 5. 访问应用
-
-- **前端**: http://localhost:3000
-- **API 文档**: http://localhost:8000/api/docs
-
----
-
-## 🧪 本地一键运行（推荐）
-
-```bash
-# 1) 启动数据库与后端（Docker）
-docker compose up -d db backend
-
-# 2) 启动前端（本机）
+cd ..
 npm install
 npm run dev
 ```
-
-默认访问：
-- 前端：`http://localhost:3000`
-- 后端健康检查：`http://localhost:8000/api/health`
-- API 文档：`http://localhost:8000/api/docs`
 
 ---
 
@@ -207,15 +193,19 @@ prism---metabolic-console/
 DATABASE_URL=postgresql+asyncpg://prism:prism123@localhost:5432/prism_metabolic
 JWT_SECRET_KEY=your-secret-key
 ARK_API_KEY=your-volcengine-api-key
-DOUBAO_ENDPOINT_ID=your-endpoint-id
-DOUBAO_VISION_ENDPOINT_ID=your-vision-endpoint-id
+DOUBAO_MODEL=your-multimodal-endpoint-id
 ```
+
+`DOUBAO_MODEL` 是主豆包多模态模型配置，文本聊天和拍照识别共用同一个模型入口。
 
 ### 前端 (`.env.local`)
 
 ```env
 VITE_API_URL=http://localhost:8000/api
 ```
+
+> `npm run dev:local` 会把数据库连接临时覆盖到 `localhost:5433/prism_metabolic`，
+> 避免和你机器上已有的 `5432` PostgreSQL 实例冲突。
 
 ---
 

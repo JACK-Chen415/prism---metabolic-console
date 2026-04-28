@@ -18,9 +18,7 @@ services:
       # 豆包 AI 配置
       - key: ARK_API_KEY
         sync: false
-      - key: DOUBAO_ENDPOINT_ID
-        sync: false
-      - key: DOUBAO_VISION_ENDPOINT_ID
+      - key: DOUBAO_MODEL
         sync: false
       # CORS
       - key: CORS_ORIGINS

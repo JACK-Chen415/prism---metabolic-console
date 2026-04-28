@@ -17,16 +17,18 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
     purine: acc.purine + meal.purine
   }), { calories: 0, sodium: 0, purine: 0 });
 
+  const calorieTarget = dailyTargets.recommended_calorie_target || dailyTargets.calories || 0;
+
   // Calculate Remaining
   const remaining = {
-    calories: dailyTargets.calories - totalConsumed.calories,
+    calories: calorieTarget > 0 ? calorieTarget - totalConsumed.calories : 0,
     sodium: dailyTargets.sodium - totalConsumed.sodium,
     purine: dailyTargets.purine - totalConsumed.purine
   };
 
   // Helper for progress percentage (for the ring visual)
   const getProgressStyle = (current: number, target: number, colorStart: string, colorEnd: string) => {
-    const percentage = Math.min(Math.max((current / target) * 100, 0), 100);
+    const percentage = target > 0 ? Math.min(Math.max((current / target) * 100, 0), 100) : 0;
     return `conic-gradient(${colorStart} ${percentage}%, ${colorEnd} 0)`;
   };
 
@@ -108,7 +110,7 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
           <div className="flex flex-col items-center gap-3 flex-1">
             <div
               className="relative w-20 h-20 rounded-full flex items-center justify-center shadow-glow-ochre transition-all duration-1000"
-              style={{ background: getProgressStyle(totalConsumed.calories, dailyTargets.calories, '#d9a441', '#1f292b') }}
+              style={{ background: getProgressStyle(totalConsumed.calories, calorieTarget, '#d9a441', '#1f292b') }}
             >
               <div className="absolute inset-[6px] bg-background-dark rounded-full z-10"></div>
               <div className="relative z-20 flex flex-col items-center">
