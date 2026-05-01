@@ -1,5 +1,9 @@
+from types import SimpleNamespace
+
 from app.models.chat import ChatMessage, MessageRole
+from app.models.knowledge import RecommendationLevel
 from app.core.config import Settings
+from app.services.knowledge.severity import pick_strictest_recommendation_level
 from app.services.ai_service import DoubaoAIService
 
 
@@ -38,3 +42,19 @@ def test_image_data_url_uses_input_media_type() -> None:
 def test_extract_json_object_accepts_markdown_fence() -> None:
     payload = DoubaoAIService._extract_json_object('```json\n{"foods": []}\n```')
     assert payload == {"foods": []}
+
+
+def test_pick_strictest_recommendation_level_handles_empty_levels() -> None:
+    assert pick_strictest_recommendation_level([]) is None
+    assert pick_strictest_recommendation_level([SimpleNamespace(recommendation_level=None)]) is None
+
+
+def test_pick_strictest_recommendation_level_uses_highest_severity() -> None:
+    decisions = [
+        SimpleNamespace(recommendation_level=RecommendationLevel.RECOMMEND),
+        SimpleNamespace(recommendation_level=None),
+        SimpleNamespace(recommendation_level=RecommendationLevel.LIMIT),
+        SimpleNamespace(recommendation_level=RecommendationLevel.MODERATE),
+    ]
+
+    assert pick_strictest_recommendation_level(decisions) == RecommendationLevel.LIMIT

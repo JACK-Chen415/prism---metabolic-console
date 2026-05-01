@@ -27,6 +27,7 @@ from app.schemas.common import PaginatedResponse
 from app.schemas.meal import MealResponse
 from app.services.ai_service import doubao_service
 from app.services.knowledge import KnowledgeService, write_knowledge_audit_log
+from app.services.knowledge.severity import pick_strictest_recommendation_level
 from app.models.knowledge import FallbackStatus, KnowledgeOrigin, RecommendationLevel
 from datetime import date
 import uuid
@@ -275,25 +276,7 @@ async def send_message(
         matched_disease_codes=summary.matched_disease_codes,
         matched_food_codes=summary.matched_food_codes,
         unmapped_conditions=summary.unmapped_conditions,
-        local_decision_level=(
-            max(
-                (
-                    decision.recommendation_level
-                    for decision in summary.local_decisions
-                    if decision.recommendation_level is not None
-                ),
-                key=lambda level: {
-                    RecommendationLevel.RECOMMEND: 0,
-                    RecommendationLevel.MODERATE: 1,
-                    RecommendationLevel.CONDITIONAL: 2,
-                    RecommendationLevel.INSUFFICIENT: 3,
-                    RecommendationLevel.LIMIT: 4,
-                    RecommendationLevel.AVOID: 5,
-                }[level],
-            )
-            if summary.local_decisions
-            else None
-        ),
+        local_decision_level=pick_strictest_recommendation_level(summary.local_decisions),
         called_cloud=called_cloud,
         cloud_call_reason=cloud_call_reason,
         cloud_blocked_reason=cloud_blocked_reason,
