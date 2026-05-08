@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { IntakeDraftSession, View } from '../../types';
-import { ChatAPI, IntakeAPI, TokenManager } from '../../services/api';
+import { IntakeAPI, TokenManager } from '../../services/api';
+import { optimizeCanvasImage, optimizeImageFile } from '../../services/imageOptimization';
 
 interface CameraViewProps {
   onViewChange: (view: View) => void;
@@ -26,8 +27,8 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange, onPendingIntakeSe
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: 'environment',
-          width: { ideal: 1920 },
-          height: { ideal: 1080 }
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
         }
       });
       setStream(mediaStream);
@@ -35,11 +36,8 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange, onPendingIntakeSe
         videoRef.current.srcObject = mediaStream;
       }
 
-      // Check for torch capability
       const track = mediaStream.getVideoTracks()[0];
       const capabilities = track.getCapabilities() as any;
-      // Some browsers might support torch but not report it in standard way, 
-      // but if 'torch' is in capabilities, we can control it.
       if (capabilities.torch) {
         setHasTorch(true);
       }
@@ -68,7 +66,6 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange, onPendingIntakeSe
         setTorchActive(!torchActive);
       } catch (e) {
         console.error("Error toggling torch", e);
-        // Fallback or ignore if unsupported at runtime
       }
     }
   };
@@ -78,23 +75,18 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange, onPendingIntakeSe
     setIsProcessing(true);
 
     try {
-      // 捕获视频帧
       const canvas = document.createElement('canvas');
       canvas.width = videoRef.current.videoWidth;
       canvas.height = videoRef.current.videoHeight;
       const ctx = canvas.getContext('2d');
+
       if (ctx) {
         ctx.drawImage(videoRef.current, 0, 0);
 
         if (TokenManager.isAuthenticated()) {
-          // 转为base64并调用食物识别API
-          const base64 = canvas.toDataURL('image/jpeg').split(',')[1];
           try {
-            const result = await ChatAPI.recognizeFood(base64, 'jpeg') as any;
-            const session = await IntakeAPI.parsePhotoResult({
-              recognized_foods: result?.foods || [],
-              ai_response: result?.ai_response,
-            });
+            const optimizedFile = await optimizeCanvasImage(canvas);
+            const session = await IntakeAPI.recognizeAndParsePhotoUpload(optimizedFile);
             onPendingIntakeSessionChange(session);
             stopCamera();
             onViewChange(View.CHAT);
@@ -122,11 +114,8 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange, onPendingIntakeSe
 
       if (TokenManager.isAuthenticated()) {
         try {
-          const result = await ChatAPI.recognizeFoodUpload(file) as any;
-          const session = await IntakeAPI.parsePhotoResult({
-            recognized_foods: result?.foods || [],
-            ai_response: result?.ai_response,
-          });
+          const optimizedFile = await optimizeImageFile(file);
+          const session = await IntakeAPI.recognizeAndParsePhotoUpload(optimizedFile);
           onPendingIntakeSessionChange(session);
           stopCamera();
           onViewChange(View.CHAT);
@@ -142,7 +131,6 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange, onPendingIntakeSe
 
   return (
     <div className="fixed inset-0 z-[60] bg-black flex flex-col items-center justify-between">
-      {/* Hidden File Input */}
       <input
         type="file"
         accept="image/*"
@@ -151,13 +139,17 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange, onPendingIntakeSe
         onChange={handleFileChange}
       />
 
-      {/* Camera Preview */}
       <div className="relative w-full h-full flex items-center justify-center overflow-hidden">
         {error ? (
           <div className="text-white/60 text-center px-6">
             <span className="material-symbols-outlined text-4xl mb-2">videocam_off</span>
             <p>{error}</p>
-            <button onClick={() => onViewChange(View.HOME)} className="mt-4 px-4 py-2 bg-white/10 rounded-full text-sm">返回首页</button>
+            <button
+              onClick={() => onViewChange(View.HOME)}
+              className="mt-4 px-4 py-2 bg-white/10 rounded-full text-sm"
+            >
+              返回首页
+            </button>
           </div>
         ) : (
           <video
@@ -168,7 +160,6 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange, onPendingIntakeSe
           />
         )}
 
-        {/* Top Overlay */}
         <div className="absolute top-0 left-0 right-0 p-4 flex items-center justify-between bg-gradient-to-b from-black/60 to-transparent pt-6">
           <button
             onClick={() => { stopCamera(); onViewChange(View.HOME); }}
@@ -177,10 +168,9 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange, onPendingIntakeSe
             <span className="material-symbols-outlined">close</span>
           </button>
           <h2 className="text-white font-serif tracking-widest text-sm shadow-sm">食物扫描</h2>
-          <div className="w-10"></div> {/* Spacer */}
+          <div className="w-10"></div>
         </div>
 
-        {/* Scan Frame Overlay */}
         {!error && (
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
             <div className="w-64 h-64 border border-white/30 rounded-3xl relative">
@@ -196,9 +186,7 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange, onPendingIntakeSe
         )}
       </div>
 
-      {/* Bottom Controls */}
       <div className="absolute bottom-0 left-0 right-0 h-32 bg-gradient-to-t from-black/90 to-transparent flex items-center justify-around px-8 pb-8">
-        {/* Flashlight */}
         <button
           onClick={toggleTorch}
           disabled={!hasTorch}
@@ -207,18 +195,18 @@ const CameraView: React.FC<CameraViewProps> = ({ onViewChange, onPendingIntakeSe
           <span className="material-symbols-outlined">{torchActive ? 'flash_on' : 'flash_off'}</span>
         </button>
 
-        {/* Shutter */}
         <button
           onClick={handleCapture}
-          className="w-20 h-20 rounded-full border-4 border-white flex items-center justify-center bg-white/10 active:scale-95 transition-transform"
+          disabled={isProcessing}
+          className="w-20 h-20 rounded-full border-4 border-white flex items-center justify-center bg-white/10 active:scale-95 transition-transform disabled:opacity-60"
         >
           <div className="w-16 h-16 rounded-full bg-white shadow-[0_0_15px_rgba(255,255,255,0.5)]"></div>
         </button>
 
-        {/* Gallery */}
         <button
           onClick={handleGalleryClick}
-          className="w-12 h-12 rounded-full flex items-center justify-center bg-white/10 text-white backdrop-blur-md hover:bg-white/20 transition-colors"
+          disabled={isProcessing}
+          className="w-12 h-12 rounded-full flex items-center justify-center bg-white/10 text-white backdrop-blur-md hover:bg-white/20 transition-colors disabled:opacity-60"
         >
           <span className="material-symbols-outlined">photo_library</span>
         </button>

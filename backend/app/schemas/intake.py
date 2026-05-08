@@ -26,6 +26,13 @@ class VoiceParseRequest(BaseModel):
     record_date: Optional[date] = None
 
 
+class VoiceAutoLogRequest(BaseModel):
+    transcript: str = Field(..., min_length=1, max_length=1000)
+    meal_time_hint: Optional[str] = Field(None, max_length=50)
+    record_date: Optional[date] = None
+    auto_confirm: bool = True
+
+
 class PhotoParseRequest(BaseModel):
     recognized_foods: list[FoodRecognitionResult] = Field(default_factory=list)
     ai_response: Optional[str] = Field(None, max_length=4000)
