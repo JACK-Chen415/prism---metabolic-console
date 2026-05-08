@@ -26,6 +26,7 @@ class FoodRecognitionRequest(BaseModel):
     """食物识别请求"""
     image_base64: str = Field(..., description="Base64编码的图片")
     image_type: str = Field("jpeg", description="图片类型(jpeg/png)")
+    prompt: Optional[str] = Field(None, max_length=1000, description="用户随图片一起提交的提示词")
 
 
 # ==================== 响应 Schema ====================
