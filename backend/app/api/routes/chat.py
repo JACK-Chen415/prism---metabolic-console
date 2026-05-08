@@ -2,9 +2,9 @@
 AI 对话 API 路由
 """
 
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, HTTPException, status, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 import base64
@@ -328,6 +328,7 @@ async def recognize_food(
         user=current_user,
         conditions=conditions,
         image_type=data.image_type,
+        user_prompt=data.prompt,
     )
     
     matched_disease_codes: list[str] = []
@@ -379,6 +380,7 @@ async def recognize_food(
 @router.post("/recognize-food/upload", response_model=FoodRecognitionResponse)
 async def recognize_food_upload(
     file: UploadFile = File(...),
+    prompt: Optional[str] = Form(None),
     current_user: CurrentUser = None,
     db: DbSession = None
 ):
@@ -415,6 +417,7 @@ async def recognize_food_upload(
         user=current_user,
         conditions=conditions,
         image_type=file.content_type.split("/", 1)[1] if file.content_type else "jpeg",
+        user_prompt=prompt,
     )
     
     matched_disease_codes: list[str] = []

@@ -15,26 +15,33 @@ function Write-Step([string]$Message) {
 }
 
 function Resolve-PostgresBin {
-    $root = "C:\Program Files\PostgreSQL"
-    if (-not (Test-Path $root)) {
-        throw "PostgreSQL bin directory not found under '$root'."
+    $pgBin = "D:\SQL\bin"
+
+    if (-not (Test-Path $pgBin)) {
+        throw "PostgreSQL bin directory not found at '$pgBin'."
     }
 
-    $versions = Get-ChildItem $root -Directory | Sort-Object Name -Descending
-    foreach ($version in $versions) {
-        $candidate = Join-Path $version.FullName "bin"
-        if (
-            (Test-Path (Join-Path $candidate "initdb.exe")) -and
-            (Test-Path (Join-Path $candidate "pg_ctl.exe")) -and
-            (Test-Path (Join-Path $candidate "pg_isready.exe")) -and
-            (Test-Path (Join-Path $candidate "createdb.exe")) -and
-            (Test-Path (Join-Path $candidate "psql.exe"))
-        ) {
-            return $candidate
-        }
+    if (-not (Test-Path (Join-Path $pgBin "initdb.exe"))) {
+        throw "initdb.exe not found at '$pgBin'."
     }
 
-    throw "No usable PostgreSQL bin directory was found."
+    if (-not (Test-Path (Join-Path $pgBin "pg_ctl.exe"))) {
+        throw "pg_ctl.exe not found at '$pgBin'."
+    }
+
+    if (-not (Test-Path (Join-Path $pgBin "pg_isready.exe"))) {
+        throw "pg_isready.exe not found at '$pgBin'."
+    }
+
+    if (-not (Test-Path (Join-Path $pgBin "createdb.exe"))) {
+        throw "createdb.exe not found at '$pgBin'."
+    }
+
+    if (-not (Test-Path (Join-Path $pgBin "psql.exe"))) {
+        throw "psql.exe not found at '$pgBin'."
+    }
+
+    return $pgBin
 }
 
 function Resolve-NpmCmd {

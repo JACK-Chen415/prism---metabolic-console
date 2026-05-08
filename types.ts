@@ -1,4 +1,3 @@
-
 export enum View {
   SPLASH = 'SPLASH',
   LOGIN = 'LOGIN',
@@ -45,8 +44,8 @@ export interface UserProfile {
   avatarUrl?: string;
   gender: 'MALE' | 'FEMALE';
   age: number;
-  height: number; // cm
-  weight: number; // kg
+  height: number;
+  weight: number;
 }
 
 export interface CalorieRange {
@@ -55,9 +54,9 @@ export interface CalorieRange {
 }
 
 export interface DailyTargets {
-  calories: number; // 推荐摄入热量目标(kcal)，兼容旧字段
-  sodium: number;   // mg
-  purine: number;   // mg
+  calories: number;
+  sodium: number;
+  purine: number;
   bmi?: number | null;
   bmi_category?: 'underweight' | 'normal' | 'overweight' | 'obese' | string | null;
   bmr?: number | null;
@@ -80,15 +79,15 @@ export interface Meal {
   name: string;
   portion: string;
   calories: number;
-  sodium: number; // mg
-  purine: number; // mg
-  protein?: number; // g
-  carbs?: number; // g
-  fat?: number; // g
-  fiber?: number; // g
+  sodium: number;
+  purine: number;
+  protein?: number;
+  carbs?: number;
+  fat?: number;
+  fiber?: number;
   type: 'BREAKFAST' | 'LUNCH' | 'DINNER' | 'SNACK';
   category: FoodCategory;
-  note?: string; // Added note field
+  note?: string;
   source?: MealSource;
   sourceDetail?: string;
   confidence?: number;
@@ -172,3 +171,27 @@ export interface IntakeDraftSession {
   candidates: IntakeCandidate[];
   summary_warning?: string | null;
 }
+
+export interface VoiceAutoLogRequest {
+  transcript: string;
+  meal_time_hint?: string | null;
+  record_date?: string | null;
+  auto_confirm?: boolean;
+}
+
+export interface IntakeConfirmFailure {
+  draft_id: string;
+  food_name: string;
+  reason: string;
+}
+
+export interface IntakeConfirmResponse {
+  meals: unknown[];
+  meal_ids: number[];
+  warning_summary: string[];
+  failed_items: IntakeConfirmFailure[];
+  should_refresh_log: boolean;
+  should_refresh_home: boolean;
+}
+
+export type VoiceAutoLogResponse = IntakeConfirmResponse;
