@@ -1,0 +1,2 @@
+scenario,model,max_tokens,temperature,prompt_chars,runs,successes,first_chunk_avg_ms,first_chunk_min_ms,first_chunk_max_ms,first_chunk_p50_ms,first_chunk_p90_ms,total_avg_ms,response_chars_avg
+long_current,ep-20260428104424-hsw26,800,0.5,7011,3,3,15671.7,15072.89,16757.3,15184.9,16757.3,17827.73,215.33

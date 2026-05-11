@@ -116,7 +116,7 @@ def _recommended_target(user: User, bmi_category: Optional[str], estimated_tdee:
 def _condition_limits(conditions: Iterable[HealthCondition]) -> tuple[int, int]:
     active_codes = set()
     for condition in conditions:
-        if condition.status not in {ConditionStatus.ACTIVE, ConditionStatus.MONITORING}:
+        if condition.status not in {ConditionStatus.ACTIVE, ConditionStatus.MONITORING, ConditionStatus.ALERT}:
             continue
         active_codes.add(
             match_default_disease_code(condition.condition_code, condition.title) or condition.condition_code

@@ -76,6 +76,7 @@ export type MealSource = 'manual' | 'voice' | 'photo' | 'ai_quick_log';
 export interface Meal {
   id: string;
   clientId?: string;
+  recordDate?: string;
   name: string;
   portion: string;
   calories: number;
@@ -124,6 +125,31 @@ export interface KnowledgeCitation {
   is_primary: boolean;
 }
 
+export type KnowledgeOrigin = 'LOCAL_RULE' | 'LOCAL_KNOWLEDGE' | 'CLOUD_SUPPLEMENT' | 'MIXED';
+
+export type KnowledgeFallbackStatus =
+  | 'LOCAL_COMPLETE'
+  | 'LOCAL_PARTIAL_ALLOW_CLOUD'
+  | 'LOCAL_BLOCKED_NO_CLOUD'
+  | 'NO_LOCAL_MATCH_ALLOW_CLOUD';
+
+export interface ChatStreamEvent {
+  event: 'meta' | 'status' | 'delta' | 'done' | 'error' | string;
+  data: {
+    request_id?: string;
+    session_id?: number;
+    fallback?: boolean;
+    interrupted?: boolean;
+    stage?: string;
+    message?: string;
+    content?: string;
+    message_id?: number;
+    attachments?: Record<string, unknown>;
+    origin?: KnowledgeOrigin;
+    fallback_status?: KnowledgeFallbackStatus;
+  };
+}
+
 export interface IntakeCandidate {
   draft_id: string;
   source: Extract<MealSource, 'voice' | 'photo' | 'ai_quick_log'>;
@@ -156,8 +182,8 @@ export interface IntakeCandidate {
   recommendation_level?: 'RECOMMEND' | 'MODERATE' | 'LIMIT' | 'AVOID' | 'CONDITIONAL' | 'INSUFFICIENT' | null;
   warnings: string[];
   citations: KnowledgeCitation[];
-  origin: 'LOCAL_RULE' | 'LOCAL_KNOWLEDGE' | 'CLOUD_SUPPLEMENT' | 'MIXED';
-  fallback_status: 'LOCAL_COMPLETE' | 'LOCAL_PARTIAL_ALLOW_CLOUD' | 'LOCAL_BLOCKED_NO_CLOUD' | 'NO_LOCAL_MATCH_ALLOW_CLOUD';
+  origin: KnowledgeOrigin;
+  fallback_status: KnowledgeFallbackStatus;
   conflict_note?: string | null;
   caution_note?: string | null;
 }

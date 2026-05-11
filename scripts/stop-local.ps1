@@ -9,20 +9,36 @@ function Write-Step([string]$Message) {
 }
 
 function Resolve-PostgresBin {
-    $root = "C:\Program Files\PostgreSQL"
-    if (-not (Test-Path $root)) {
-        throw "PostgreSQL bin directory not found under '$root'."
+    $candidates = @()
+    if ($env:POSTGRES_BIN) {
+        $candidates += $env:POSTGRES_BIN
+    }
+    foreach ($commandName in @("pg_ctl.exe", "pg_ctl")) {
+        $command = Get-Command $commandName -ErrorAction SilentlyContinue
+        if ($command) {
+            $candidates += (Split-Path -Parent $command.Source)
+        }
+    }
+    foreach ($root in @("C:\Program Files\PostgreSQL", "C:\PostgreSQL", "D:\PostgreSQL", "D:\SQL")) {
+        if (Test-Path $root) {
+            $versions = Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+            foreach ($version in $versions) {
+                $candidates += (Join-Path $version.FullName "bin")
+            }
+            $candidates += (Join-Path $root "bin")
+        }
     }
 
-    $versions = Get-ChildItem $root -Directory | Sort-Object Name -Descending
-    foreach ($version in $versions) {
-        $candidate = Join-Path $version.FullName "bin"
-        if ((Test-Path (Join-Path $candidate "pg_ctl.exe")) -and (Test-Path (Join-Path $candidate "pg_isready.exe"))) {
+    foreach ($candidate in ($candidates | Where-Object { $_ } | Select-Object -Unique)) {
+        if (
+            (Test-Path (Join-Path $candidate "pg_ctl.exe")) -and
+            (Test-Path (Join-Path $candidate "pg_isready.exe"))
+        ) {
             return $candidate
         }
     }
 
-    throw "No usable PostgreSQL bin directory was found."
+    throw "PostgreSQL command-line tools were not found. Set POSTGRES_BIN if you need to stop the script-managed local database."
 }
 
 function Stop-ProcessFromPidFile([string]$PidFile, [string]$Label) {

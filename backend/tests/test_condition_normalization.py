@@ -34,6 +34,29 @@ def test_daily_targets_use_normalized_condition_title():
     assert targets.sodium == 1500
 
 
+def test_daily_targets_include_alert_conditions():
+    user = User(
+        phone="13800138003",
+        password_hash="hashed",
+        gender=Gender.MALE,
+        age=45,
+        height=172,
+        weight=76,
+    )
+    condition = HealthCondition(
+        user_id=1,
+        condition_code="gout",
+        title="痛风",
+        icon="monitor_heart",
+        condition_type=ConditionType.CHRONIC,
+        status=ConditionStatus.ALERT,
+        trend=TrendType.WORSENING,
+    )
+
+    targets = calculate_daily_targets(user, [condition])
+    assert targets.purine == 300
+
+
 def test_daily_targets_distinguish_bmr_and_recommended_target():
     user = User(
         phone="13800138001",

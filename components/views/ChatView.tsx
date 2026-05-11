@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { IntakeCandidate, IntakeDraftSession, View } from '../../types';
+import { ChatStreamEvent, IntakeCandidate, IntakeDraftSession, KnowledgeFallbackStatus, KnowledgeOrigin, View } from '../../types';
 import { ChatAPI, IntakeAPI, TokenManager } from '../../services/api';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -24,7 +24,7 @@ const renderMarkdown = (content: string): string => {
 
 interface ChatViewProps {
   onViewChange: (view: View) => void;
-  onMealLogged?: () => void;
+  onMealLogged?: (recordDate?: string) => void | Promise<void>;
   pendingIntakeSession: IntakeDraftSession | null;
   onPendingIntakeSessionChange: (session: IntakeDraftSession | null) => void;
 }
@@ -33,12 +33,18 @@ type MessageRole = 'USER' | 'AI' | 'SYSTEM';
 
 interface Message {
   id: string;
+  serverId?: number;
   role: MessageRole;
   content: string;
   image?: string;
   aiMode?: 'GENTLE' | 'STRICT';
   aiName?: string;
   recognizedFoods?: RecognizedFood[];
+  attachments?: Record<string, unknown>;
+  origin?: KnowledgeOrigin;
+  fallbackStatus?: KnowledgeFallbackStatus;
+  statusText?: string;
+  isStreaming?: boolean;
   timestamp: number;
 }
 
@@ -81,6 +87,8 @@ const ChatView: React.FC<ChatViewProps> = ({
   const [isParsingIntake, setIsParsingIntake] = useState(false);
   const [isSubmittingIntake, setIsSubmittingIntake] = useState(false);
   const [intakeError, setIntakeError] = useState<string | null>(null);
+  const [reevaluatingDraftIds, setReevaluatingDraftIds] = useState<string[]>([]);
+  const [staleEvaluationDraftIds, setStaleEvaluationDraftIds] = useState<string[]>([]);
   const [currentMode, setCurrentMode] = useState<'STRICT' | 'GENTLE'>('STRICT');
   const [sessionId, setSessionId] = useState<number | null>(() => {
     return getChatSessionId();
@@ -88,6 +96,26 @@ const ChatView: React.FC<ChatViewProps> = ({
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const pendingIntakeSessionRef = useRef<IntakeDraftSession | null>(pendingIntakeSession);
+
+  useEffect(() => {
+    pendingIntakeSessionRef.current = pendingIntakeSession;
+
+    if (!pendingIntakeSession) {
+      setReevaluatingDraftIds([]);
+      setStaleEvaluationDraftIds([]);
+      return;
+    }
+
+    const activeDraftIds = new Set(pendingIntakeSession.candidates.map(candidate => candidate.draft_id));
+    const keepActiveIds = (ids: string[]) => {
+      const nextIds = ids.filter(id => activeDraftIds.has(id));
+      return nextIds.length === ids.length ? ids : nextIds;
+    };
+
+    setReevaluatingDraftIds(keepActiveIds);
+    setStaleEvaluationDraftIds(keepActiveIds);
+  }, [pendingIntakeSession]);
 
   // 创建或恢复会话，加载历史消息
   useEffect(() => {
@@ -106,10 +134,14 @@ const ChatView: React.FC<ChatViewProps> = ({
             const isUser = role === 'USER';
             return {
               id: m.id.toString(),
+              serverId: m.id,
               role: isUser ? 'USER' as MessageRole : 'AI' as MessageRole,
               content: m.content,
               aiMode: !isUser ? 'STRICT' as const : undefined,
               aiName: !isUser ? '食鉴AI' : undefined,
+              attachments: m.attachments,
+              origin: m.attachments?.knowledge?.origin,
+              fallbackStatus: m.attachments?.knowledge?.fallback_status,
               timestamp: new Date(m.created_at).getTime(),
             };
           });
@@ -274,7 +306,7 @@ const ChatView: React.FC<ChatViewProps> = ({
       }
 
       if (result.meal_ids?.length) {
-        await onMealLogged?.();
+        await onMealLogged?.(session.record_date);
 
         const loggedNames = session.candidates
           .filter(candidate => !result.failed_items?.some(item => item.draft_id === candidate.draft_id))
@@ -351,9 +383,63 @@ const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
+  const updateMessage = (messageId: string, patch: Partial<Message> | ((message: Message) => Partial<Message>)) => {
+    setMessages(prev => prev.map(message => {
+      if (message.id !== messageId) return message;
+      const nextPatch = typeof patch === 'function' ? patch(message) : patch;
+      return { ...message, ...nextPatch };
+    }));
+  };
+
+  const shouldFallbackToJson = (error: unknown): boolean => {
+    const message = error instanceof Error ? error.message : String(error);
+    return (
+      message.includes('404') ||
+      message.includes('405') ||
+      message.includes('不支持流式响应') ||
+      message.includes('Failed to fetch')
+    );
+  };
+
+  const sendJsonFallback = async (assistantMessageId: string, sessionIdValue: number, content: string) => {
+    updateMessage(assistantMessageId, {
+      statusText: '正在使用普通模式生成回复...',
+      isStreaming: true,
+    });
+
+    const response = await ChatAPI.sendMessage(sessionIdValue, content) as any;
+    const knowledge = response?.attachments?.knowledge;
+    const aiContent = response?.ai_message?.content || response?.content || `已收到您的消息："${content}"。`;
+
+    updateMessage(assistantMessageId, {
+      serverId: response?.id,
+      content: aiContent,
+      attachments: response?.attachments,
+      origin: knowledge?.origin,
+      fallbackStatus: knowledge?.fallback_status,
+      statusText: '回复完成',
+      isStreaming: false,
+      timestamp: Date.now(),
+    });
+  };
+
+  const logStreamPerf = (metrics: Record<string, unknown>) => {
+    console.info('chat_stream_perf', metrics);
+  };
+
+  const appendStreamDelta = (assistantMessageId: string, chunk: string) => {
+    updateMessage(assistantMessageId, message => ({
+      content: `${message.content}${chunk}`,
+      statusText: '正在生成回复...',
+      isStreaming: true,
+      timestamp: Date.now(),
+    }));
+  };
+
   const handleSendMessage = async () => {
     if ((!inputValue.trim() && !pendingImage) || isSending || isParsingIntake) return;
 
+    const clickAt = performance.now();
     const currentInput = inputValue.trim();
 
     if (pendingImage) {
@@ -435,33 +521,140 @@ const ChatView: React.FC<ChatViewProps> = ({
     setIsSending(true);
 
     if (TokenManager.isAuthenticated() && sessionId) {
+      const assistantMessageId = (Date.now() + 1).toString();
+      let streamStarted = false;
+      let serverStreamError: string | null = null;
+      let requestId: string | undefined;
+      let requestStartAt = 0;
+      let firstDeltaAt: number | null = null;
+      let fallbackUsed = false;
+      let streamInterrupted = false;
+
+      const streamingMessage: Message = {
+        id: assistantMessageId,
+        role: 'AI',
+        aiMode: currentMode,
+        aiName: '食鉴AI',
+        content: '',
+        statusText: '正在检查本地规则...',
+        isStreaming: true,
+        timestamp: Date.now(),
+      };
+
+      setMessages(prev => [...prev, streamingMessage]);
+
       try {
-        const response = await ChatAPI.sendMessage(sessionId, currentInput) as any;
-        const aiContent = response?.ai_message?.content || response?.content || `已收到您的消息："${currentInput}"。`;
+        requestStartAt = performance.now();
+        await ChatAPI.sendMessageStream(
+          sessionId,
+          currentInput,
+          undefined,
+          (event: ChatStreamEvent) => {
+            streamStarted = true;
+            if (event.event === 'meta') {
+              requestId = event.data.request_id;
+              logStreamPerf({
+                request_id: requestId,
+                session_id: event.data.session_id,
+                send_click_to_request_ms: Math.round((requestStartAt - clickAt) * 100) / 100,
+              });
+              return;
+            }
 
-        const newAiMsg: Message = {
-          id: (Date.now() + 1).toString(),
-          role: 'AI',
-          aiMode: currentMode,
-          aiName: '食鉴AI',
-          content: aiContent,
-          timestamp: Date.now(),
-        };
+            if (event.event === 'status') {
+              updateMessage(assistantMessageId, {
+                statusText: event.data.message || '正在生成回复...',
+                isStreaming: true,
+              });
+              return;
+            }
 
-        setMessages(prev => [...prev, newAiMsg]);
+            if (event.event === 'delta' && event.data.content) {
+              if (firstDeltaAt === null) {
+                firstDeltaAt = performance.now();
+                logStreamPerf({
+                  request_id: requestId,
+                  request_to_first_delta_ms: Math.round((firstDeltaAt - requestStartAt) * 100) / 100,
+                  fallback: false,
+                  interrupted: false,
+                });
+              }
+              appendStreamDelta(assistantMessageId, event.data.content);
+              return;
+            }
+
+            if (event.event === 'done') {
+              const doneAt = performance.now();
+              updateMessage(assistantMessageId, {
+                serverId: event.data.message_id,
+                attachments: event.data.attachments,
+                origin: event.data.origin,
+                fallbackStatus: event.data.fallback_status,
+                statusText: '回复完成',
+                isStreaming: false,
+                timestamp: Date.now(),
+              });
+              window.requestAnimationFrame(() => {
+                logStreamPerf({
+                  request_id: event.data.request_id || requestId,
+                  request_to_done_ms: Math.round((doneAt - requestStartAt) * 100) / 100,
+                  render_done_ms: Math.round((performance.now() - requestStartAt) * 100) / 100,
+                  fallback: fallbackUsed,
+                  interrupted: streamInterrupted,
+                  origin: event.data.origin,
+                  fallback_status: event.data.fallback_status,
+                });
+              });
+              return;
+            }
+
+            if (event.event === 'error') {
+              serverStreamError = event.data.message || '生成失败，请重试。';
+              streamInterrupted = true;
+              updateMessage(assistantMessageId, {
+                content: serverStreamError || '生成失败，请重试。',
+                statusText: '生成失败，请重试',
+                isStreaming: false,
+                timestamp: Date.now(),
+              });
+            }
+          }
+        );
+
+        if (serverStreamError) {
+          console.warn('流式消息返回错误:', serverStreamError);
+        }
       } catch (error) {
-        console.error('发送消息失败:', error);
+        console.error('流式发送失败:', error);
 
-        const errorMsg: Message = {
-          id: (Date.now() + 1).toString(),
-          role: 'AI',
-          aiMode: currentMode,
-          aiName: '食鉴AI',
-          content: '抱歉，AI服务暂时不可用，请稍后重试。',
-          timestamp: Date.now(),
-        };
-
-        setMessages(prev => [...prev, errorMsg]);
+        if (!streamStarted && shouldFallbackToJson(error)) {
+          try {
+            fallbackUsed = true;
+            const fallbackStartAt = performance.now();
+            await sendJsonFallback(assistantMessageId, sessionId, currentInput);
+            logStreamPerf({
+              request_id: requestId,
+              request_to_done_ms: Math.round((performance.now() - fallbackStartAt) * 100) / 100,
+              fallback: true,
+              interrupted: false,
+            });
+          } catch (fallbackError) {
+            console.error('普通消息 fallback 失败:', fallbackError);
+            updateMessage(assistantMessageId, {
+              content: '抱歉，AI服务暂时不可用，请稍后重试。',
+              statusText: '生成失败，请重试',
+              isStreaming: false,
+              timestamp: Date.now(),
+            });
+          }
+        } else {
+          updateMessage(assistantMessageId, {
+            content: '抱歉，AI服务暂时不可用，请稍后重试。',
+            statusText: '生成失败，请重试',
+            isStreaming: false,
+            timestamp: Date.now(),
+          });
+        }
       } finally {
         setIsSending(false);
       }
@@ -525,6 +718,16 @@ const ChatView: React.FC<ChatViewProps> = ({
   const handlePendingCandidateChange = (draftId: string, patch: Partial<IntakeCandidate>) => {
     if (!pendingIntakeSession) return;
 
+    if (
+      Object.prototype.hasOwnProperty.call(patch, 'food_name') ||
+      Object.prototype.hasOwnProperty.call(patch, 'food_code') ||
+      Object.prototype.hasOwnProperty.call(patch, 'category') ||
+      Object.prototype.hasOwnProperty.call(patch, 'normalized_amount') ||
+      Object.prototype.hasOwnProperty.call(patch, 'unit')
+    ) {
+      setStaleEvaluationDraftIds(prev => prev.includes(draftId) ? prev : [...prev, draftId]);
+    }
+
     onPendingIntakeSessionChange({
       ...pendingIntakeSession,
       candidates: pendingIntakeSession.candidates.map((candidate) => {
@@ -546,10 +749,52 @@ const ChatView: React.FC<ChatViewProps> = ({
   const handleDeletePendingCandidate = (draftId: string) => {
     if (!pendingIntakeSession) return;
 
+    setReevaluatingDraftIds(prev => prev.filter(id => id !== draftId));
+    setStaleEvaluationDraftIds(prev => prev.filter(id => id !== draftId));
+
     onPendingIntakeSessionChange({
       ...pendingIntakeSession,
       candidates: pendingIntakeSession.candidates.filter(candidate => candidate.draft_id !== draftId),
     });
+  };
+
+  const handleReevaluatePendingCandidate = async (draftId: string) => {
+    const session = pendingIntakeSessionRef.current;
+    if (!session || reevaluatingDraftIds.includes(draftId)) return;
+
+    const candidate = session.candidates.find(item => item.draft_id === draftId);
+    const foodName = candidate?.food_name.trim();
+    if (!candidate || !foodName) return;
+
+    setReevaluatingDraftIds(prev => prev.includes(draftId) ? prev : [...prev, draftId]);
+    setIntakeError(null);
+
+    try {
+      const reevaluatedCandidate = await IntakeAPI.reevaluateCandidate(candidate);
+
+      const latestSession = pendingIntakeSessionRef.current;
+      if (!latestSession) return;
+
+      onPendingIntakeSessionChange({
+        ...latestSession,
+        candidates: latestSession.candidates.map((item) => {
+          if (item.draft_id !== draftId) return item;
+
+          return {
+            ...item,
+            ...reevaluatedCandidate,
+            draft_id: item.draft_id,
+          };
+        }),
+      });
+
+      setStaleEvaluationDraftIds(prev => prev.filter(id => id !== draftId));
+    } catch (error) {
+      console.error('候选重新评估失败', error);
+      setIntakeError(`${candidate.food_name}: ${error instanceof Error ? error.message : '重新评估失败，请稍后重试。'}`);
+    } finally {
+      setReevaluatingDraftIds(prev => prev.filter(id => id !== draftId));
+    }
   };
 
   const handleAddPendingCandidate = () => {
@@ -607,6 +852,10 @@ const ChatView: React.FC<ChatViewProps> = ({
 
   const handleConfirmIntake = async () => {
     if (!pendingIntakeSession || isSubmittingIntake) return;
+    if (staleEvaluationDraftIds.length > 0) {
+      setIntakeError('候选项已修改，请先点击“重新评估”，再确认写入日志。');
+      return;
+    }
 
     setIsSubmittingIntake(true);
     setIntakeError(null);
@@ -633,10 +882,10 @@ const ChatView: React.FC<ChatViewProps> = ({
 
       if (result.meal_ids?.length && !result.failed_items?.length) {
         onPendingIntakeSessionChange(null);
-        await onMealLogged?.();
+        await onMealLogged?.(pendingIntakeSession.record_date);
         onViewChange(View.LOG);
       } else if (result.meal_ids?.length) {
-        await onMealLogged?.();
+        await onMealLogged?.(pendingIntakeSession.record_date);
       }
     } catch (error) {
       console.error('确认写入失败', error);
@@ -757,15 +1006,32 @@ const ChatView: React.FC<ChatViewProps> = ({
                       {msg.aiName}
                     </span>
 
-                    <div
-                      className={`rounded-xl rounded-tl-none px-3.5 py-2.5 text-white text-sm leading-relaxed shadow-sm font-serif tracking-wide ${msg.aiMode === 'STRICT'
-                        ? 'bg-[#0f282d] border border-primary/20'
-                        : 'bg-surface-dark border border-white/5'
-                        }`}
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
-                    />
+                    {msg.content ? (
+                      <div
+                        className={`rounded-xl rounded-tl-none px-3.5 py-2.5 text-white text-sm leading-relaxed shadow-sm font-serif tracking-wide ${msg.aiMode === 'STRICT'
+                          ? 'bg-[#0f282d] border border-primary/20'
+                          : 'bg-surface-dark border border-white/5'
+                          }`}
+                        dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
+                      />
+                    ) : (
+                      <div className={`rounded-xl rounded-tl-none px-4 py-3 text-sm leading-relaxed shadow-sm font-serif tracking-wide flex items-center gap-2 ${msg.aiMode === 'STRICT' ? 'bg-[#0f282d] border border-primary/20' : 'bg-surface-dark border border-white/5'}`}>
+                        <div className="flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-primary/80 animate-bounce" style={{ animationDelay: '0ms', animationDuration: '1.2s' }}></span>
+                          <span className="w-1.5 h-1.5 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '200ms', animationDuration: '1.2s' }}></span>
+                          <span className="w-1.5 h-1.5 rounded-full bg-primary/40 animate-bounce" style={{ animationDelay: '400ms', animationDuration: '1.2s' }}></span>
+                        </div>
+                        <span className="text-white/50 text-xs tracking-wider">{msg.statusText || '正在生成回复...'}</span>
+                      </div>
+                    )}
 
-                    {msg.recognizedFoods && msg.recognizedFoods.length > 0 && (
+                    {msg.content && msg.isStreaming && (
+                      <span className="ml-1 text-[11px] text-primary/70 font-serif tracking-wide">
+                        {msg.statusText || '正在生成回复...'}
+                      </span>
+                    )}
+
+                    {msg.recognizedFoods && msg.recognizedFoods.length > 0 && !pendingIntakeSession && (
                       <div className="flex flex-wrap gap-2 mt-2">
                         {msg.recognizedFoods.slice(0, 3).map((food, idx) => (
                           <button
@@ -785,7 +1051,7 @@ const ChatView: React.FC<ChatViewProps> = ({
           );
         })}
 
-        {isSending && (
+        {isSending && !messages.some(message => message.isStreaming) && (
           <div className="flex gap-2.5 animate-fade-in">
             <div className={`w-8 h-8 rounded-full bg-surface-dark flex items-center justify-center shrink-0 mt-0.5 ${currentMode === 'STRICT' ? 'border border-white/10 shadow-[0_0_10px_rgba(17,196,212,0.5)]' : 'border border-white/10 shadow-glow-cyan'}`}>
               {currentMode === 'STRICT' ? (
@@ -922,13 +1188,18 @@ const ChatView: React.FC<ChatViewProps> = ({
           session={pendingIntakeSession}
           isSubmitting={isSubmittingIntake}
           error={intakeError}
+          reevaluatingDraftIds={reevaluatingDraftIds}
+          staleEvaluationDraftIds={staleEvaluationDraftIds}
           onClose={() => {
             setIntakeError(null);
+            setReevaluatingDraftIds([]);
+            setStaleEvaluationDraftIds([]);
             onPendingIntakeSessionChange(null);
           }}
           onChangeCandidate={handlePendingCandidateChange}
           onDeleteCandidate={handleDeletePendingCandidate}
           onAddCandidate={handleAddPendingCandidate}
+          onReevaluateCandidate={handleReevaluatePendingCandidate}
           onConfirm={handleConfirmIntake}
         />
       )}

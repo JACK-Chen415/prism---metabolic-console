@@ -6,6 +6,7 @@
 import json
 import asyncio
 import logging
+import time
 from typing import Optional, List, Dict, Any, AsyncGenerator, Union
 
 from app.core.config import settings
@@ -277,8 +278,17 @@ class DoubaoAIService:
 
             try:
                 from volcenginesdkarkruntime import Ark
+                import httpx
 
-                self.client = Ark(api_key=settings.ark_api_key)
+                timeout = httpx.Timeout(
+                    timeout=settings.doubao_timeout_seconds,
+                    connect=settings.doubao_connect_timeout_seconds,
+                )
+                self.client = Ark(
+                    api_key=settings.ark_api_key,
+                    timeout=timeout,
+                    max_retries=settings.doubao_max_retries,
+                )
                 self._initialized = True
             except ImportError:
                 raise RuntimeError("请安装 volcengine-python-sdk[ark]")
@@ -338,19 +348,31 @@ class DoubaoAIService:
         *,
         temperature: float = 0.7,
         max_tokens: int = 2000,
+        metrics: Optional[dict[str, Any]] = None,
     ) -> str:
         """Generate text with the main multimodal model."""
         await self._ensure_initialized()
+        start = time.perf_counter()
         try:
-            response = self._create_chat_completion(
+            response = await asyncio.to_thread(
+                self._create_chat_completion,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            return response.choices[0].message.content
+            content = response.choices[0].message.content
+            if metrics is not None:
+                metrics["doubao_total_ms"] = round((time.perf_counter() - start) * 1000, 2)
+                metrics["response_chars"] = len(content or "")
+            return content
         except Exception as e:
             logger.exception("Doubao text generation request failed")
-            return self._format_cloud_error(e)
+            message = self._format_cloud_error(e)
+            if metrics is not None:
+                metrics["doubao_total_ms"] = round((time.perf_counter() - start) * 1000, 2)
+                metrics["response_chars"] = len(message)
+                metrics["doubao_error"] = e.__class__.__name__
+            return message
 
     async def generate_with_image(
         self,
@@ -445,6 +467,47 @@ class DoubaoAIService:
 
         return "\n".join(context_parts)
 
+    @staticmethod
+    def _message_content_chars(message: Dict[str, Any]) -> int:
+        content = message.get("content")
+        if isinstance(content, str):
+            return len(content)
+        if isinstance(content, list):
+            total = 0
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        total += len(text)
+            return total
+        return len(str(content or ""))
+
+    def _trim_messages_to_prompt_budget(
+        self,
+        system_message: Dict[str, Any],
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        prompt_limit = max(settings.chat_prompt_max_chars, len(system_message["content"]))
+        remaining = prompt_limit - len(system_message["content"])
+        if remaining <= 0:
+            return []
+
+        kept: list[Dict[str, Any]] = []
+        used = 0
+        for message in reversed(messages):
+            chars = self._message_content_chars(message)
+            if kept and used + chars > remaining:
+                break
+            if chars > remaining and not kept:
+                content = str(message.get("content") or "")
+                kept.append({**message, "content": content[-remaining:]})
+                used = remaining
+                break
+            kept.append(message)
+            used += chars
+        kept.reverse()
+        return kept
+
     async def chat(
         self,
         messages: List[Dict[str, Any]],
@@ -452,6 +515,7 @@ class DoubaoAIService:
         conditions: List[HealthCondition],
         stream: bool = False,
         local_guardrail: Optional[str] = None,
+        metrics: Optional[dict[str, Any]] = None,
     ) -> Union[AsyncGenerator[str, None], str]:
         """
         与豆包对话
@@ -467,6 +531,7 @@ class DoubaoAIService:
         """
         await self._ensure_initialized()
 
+        prompt_start = time.perf_counter()
         user_context = self._build_user_context(user, conditions)
         prompt = SYSTEM_PROMPT.format(user_context=user_context)
         if local_guardrail:
@@ -479,36 +544,85 @@ class DoubaoAIService:
             )
         system_message = {"role": "system", "content": prompt}
 
-        full_messages = [system_message] + messages
+        trimmed_messages = self._trim_messages_to_prompt_budget(system_message, messages)
+        full_messages = [system_message] + trimmed_messages
+        if metrics is not None:
+            metrics["prompt_build_ms"] = round((time.perf_counter() - prompt_start) * 1000, 2)
+            metrics["prompt_chars"] = sum(self._message_content_chars(message) for message in full_messages)
+            metrics["message_count"] = len(full_messages)
 
         if stream:
-            return self._stream_chat(full_messages)
+            return self._stream_chat(full_messages, metrics=metrics)
         else:
-            return await self._sync_chat(full_messages)
+            return await self._sync_chat(full_messages, metrics=metrics)
 
-    async def _sync_chat(self, messages: List[Dict[str, Any]]) -> str:
+    async def _sync_chat(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        metrics: Optional[dict[str, Any]] = None,
+    ) -> str:
         """同步对话"""
-        return await self.generate_text(messages, temperature=0.7, max_tokens=2000)
+        return await self.generate_text(
+            messages,
+            temperature=0.7,
+            max_tokens=settings.doubao_chat_max_tokens,
+            metrics=metrics,
+        )
 
     async def _stream_chat(
         self,
-        messages: List[Dict[str, Any]]
+        messages: List[Dict[str, Any]],
+        *,
+        metrics: Optional[dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """流式对话"""
+        start = time.perf_counter()
+        response_chars = 0
+        first_chunk_seen = False
         try:
-            stream = self._create_chat_completion(
+            stream = await asyncio.to_thread(
+                self._create_chat_completion,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=2000,
+                max_tokens=settings.doubao_chat_max_tokens,
                 stream=True
             )
 
-            for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
+            while True:
+                content = await asyncio.to_thread(self._next_stream_content, stream)
+                if content is None:
+                    break
+                if not content:
+                    continue
+                response_chars += len(content)
+                if content and not first_chunk_seen:
+                    first_chunk_seen = True
+                    if metrics is not None:
+                        metrics["doubao_first_chunk_ms"] = round((time.perf_counter() - start) * 1000, 2)
+                yield content
+            if metrics is not None:
+                metrics.setdefault("doubao_first_chunk_ms", None)
+                metrics["doubao_total_ms"] = round((time.perf_counter() - start) * 1000, 2)
+                metrics["response_chars"] = response_chars
         except Exception as e:
             logger.exception("Doubao streaming chat request failed")
-            yield self._format_cloud_error(e)
+            if metrics is not None:
+                metrics.setdefault("doubao_first_chunk_ms", None)
+                metrics["doubao_total_ms"] = round((time.perf_counter() - start) * 1000, 2)
+                metrics["response_chars"] = response_chars
+                metrics["doubao_error"] = e.__class__.__name__
+            raise RuntimeError(self._format_cloud_error(e)) from e
+
+    @staticmethod
+    def _next_stream_content(stream) -> Optional[str]:
+        try:
+            chunk = next(stream)
+        except StopIteration:
+            return None
+        if chunk.choices and chunk.choices[0].delta.content:
+            return chunk.choices[0].delta.content
+        return ""
 
     @staticmethod
     def _extract_json_object(content: str) -> Dict[str, Any]:
@@ -643,7 +757,7 @@ JSON 格式：
                 image_base64=image_base64,
                 image_type=image_type,
                 temperature=0.2 if fast else 0.3,
-                max_tokens=900 if fast else 2000,
+                max_tokens=settings.doubao_vision_fast_max_tokens if fast else settings.doubao_vision_max_tokens,
             )
 
             # 尝试解析 JSON

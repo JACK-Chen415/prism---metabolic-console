@@ -58,6 +58,10 @@
    | `JWT_SECRET_KEY` | 一个随机强密码（如用 `openssl rand -hex 32` 生成） |
    | `ARK_API_KEY` | 你的豆包 AI API Key |
    | `DOUBAO_MODEL` | 你的豆包主多模态模型 endpoint，文本和图片共用 |
+   | `DOUBAO_TIMEOUT_SECONDS` | 可选，豆包业务级超时，默认 `60` |
+   | `DOUBAO_MAX_RETRIES` | 可选，豆包请求重试次数，默认 `1` |
+   | `DOUBAO_CHAT_MAX_TOKENS` | 可选，普通聊天输出上限，默认 `800` |
+   | `CHAT_HISTORY_LIMIT` | 可选，普通聊天最近历史消息数，默认 `12` |
    | `CORS_ORIGINS` | `["https://prism-metabolic-console.vercel.app","http://localhost:3000"]` |
    | `DEBUG` | `false` |
 
@@ -91,6 +95,12 @@
 ---
 
 ## ⚠️ 注意事项
+
+### 本地开发数据库
+- 本地一键脚本不再依赖固定的 `D:\SQL\bin` 路径。
+- 如果 PostgreSQL 命令行工具不在 `PATH`，请设置 `POSTGRES_BIN` 或使用 `scripts/start-local.ps1 -PostgresBin "C:\Program Files\PostgreSQL\16\bin"`。
+- 也可以使用现有数据库：`scripts/start-local.ps1 -DatabaseUrl "postgresql+asyncpg://..."`。
+- 默认统一使用本机 `localhost:5433/prism_metabolic`。`scripts/start-local.ps1 -UseDockerDb` 只用于旧 Docker 库迁移/恢复。
 
 ### Render 免费版限制
 - 服务会在 **15 分钟无活动后自动休眠**

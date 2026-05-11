@@ -1,0 +1,88 @@
+{
+  "started_at": "2026-05-10T14:01:51.187748+00:00",
+  "finished_at": "2026-05-10T14:02:45.886006+00:00",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "region": "cn-beijing",
+  "runs_per_case": 3,
+  "results": [
+    {
+      "request_id": "5c99b8b3d2ee",
+      "scenario": "long_current",
+      "model": "ep-20260428104424-hsw26",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "region": "cn-beijing",
+      "max_tokens": 800,
+      "temperature": 0.5,
+      "prompt_chars": 7011,
+      "message_count": 14,
+      "first_chunk_ms": 16757.3,
+      "total_ms": 19015.45,
+      "response_chars": 229,
+      "success": true,
+      "error_type": null,
+      "error_message": null,
+      "created_at": "2026-05-10T14:01:52.402568+00:00",
+      "run_index": 1
+    },
+    {
+      "request_id": "599c7ec7e97e",
+      "scenario": "long_current",
+      "model": "ep-20260428104424-hsw26",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "region": "cn-beijing",
+      "max_tokens": 800,
+      "temperature": 0.5,
+      "prompt_chars": 7011,
+      "message_count": 14,
+      "first_chunk_ms": 15184.9,
+      "total_ms": 16810.59,
+      "response_chars": 184,
+      "success": true,
+      "error_type": null,
+      "error_message": null,
+      "created_at": "2026-05-10T14:02:11.417971+00:00",
+      "run_index": 2
+    },
+    {
+      "request_id": "ff411c5de175",
+      "scenario": "long_current",
+      "model": "ep-20260428104424-hsw26",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "region": "cn-beijing",
+      "max_tokens": 800,
+      "temperature": 0.5,
+      "prompt_chars": 7011,
+      "message_count": 14,
+      "first_chunk_ms": 15072.89,
+      "total_ms": 17657.14,
+      "response_chars": 233,
+      "success": true,
+      "error_type": null,
+      "error_message": null,
+      "created_at": "2026-05-10T14:02:28.228370+00:00",
+      "run_index": 3
+    }
+  ],
+  "summary": [
+    {
+      "scenario": "long_current",
+      "model": "ep-20260428104424-hsw26",
+      "max_tokens": 800,
+      "temperature": 0.5,
+      "prompt_chars": 7011,
+      "runs": 3,
+      "successes": 3,
+      "first_chunk_avg_ms": 15671.7,
+      "first_chunk_min_ms": 15072.89,
+      "first_chunk_max_ms": 16757.3,
+      "first_chunk_p50_ms": 15184.9,
+      "first_chunk_p90_ms": 16757.3,
+      "total_avg_ms": 17827.73,
+      "response_chars_avg": 215.33
+    }
+  ],
+  "notes": [
+    "No API key, full prompt, health profile, or image payload is stored.",
+    "Prompt metrics include only character count and message count."
+  ]
+}

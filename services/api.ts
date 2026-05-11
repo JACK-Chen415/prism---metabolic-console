@@ -4,7 +4,7 @@
  */
 
 import { AUTH_STORAGE_KEYS } from '../constants/storage';
-import { IntakeCandidate, IntakeDraftSession } from '../types';
+import { ChatStreamEvent, IntakeCandidate, IntakeDraftSession } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
 
@@ -145,6 +145,91 @@ class ApiClient {
         return text ? JSON.parse(text) : {} as T;
     }
 
+    async streamSse(
+        endpoint: string,
+        data: unknown,
+        onEvent: (event: ChatStreamEvent) => void,
+        requiresAuth: boolean = true
+    ): Promise<void> {
+        const url = `${this.baseUrl}${endpoint}`;
+        const fetchStream = async () => {
+            const headers = await this.getHeaders(requiresAuth);
+            return fetch(url, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(data)
+            });
+        };
+
+        let response = await fetchStream();
+
+        if (response.status === 401 && requiresAuth) {
+            if (!this.isRefreshing) {
+                this.isRefreshing = true;
+                this.refreshPromise = this.refreshAccessToken();
+            }
+
+            const refreshed = await this.refreshPromise;
+            this.isRefreshing = false;
+            this.refreshPromise = null;
+
+            if (!refreshed) {
+                window.dispatchEvent(new CustomEvent('auth:logout'));
+                throw new Error('登录已过期，请重新登录');
+            }
+
+            response = await fetchStream();
+        }
+
+        if (!response.ok) {
+            throw new Error(await this.parseError(response));
+        }
+
+        if (!response.body) {
+            throw new Error('当前浏览器不支持流式响应');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+
+        const dispatchBlock = (block: string) => {
+            const lines = block.split(/\r?\n/);
+            let eventName = 'message';
+            const dataLines: string[] = [];
+
+            for (const line of lines) {
+                if (line.startsWith('event:')) {
+                    eventName = line.slice(6).trim();
+                } else if (line.startsWith('data:')) {
+                    dataLines.push(line.slice(5).trimStart());
+                }
+            }
+
+            if (!dataLines.length) return;
+            const rawData = dataLines.join('\n');
+            try {
+                onEvent({ event: eventName, data: JSON.parse(rawData) });
+            } catch {
+                onEvent({ event: eventName, data: { message: rawData } });
+            }
+        };
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const blocks = buffer.split(/\r?\n\r?\n/);
+            buffer = blocks.pop() || '';
+            blocks.forEach(dispatchBlock);
+        }
+
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+            dispatchBlock(buffer);
+        }
+    }
+
     private async parseError(response: Response): Promise<string> {
         try {
             const data = await response.json();
@@ -182,29 +267,55 @@ class ApiClient {
         fieldName = 'file',
         fields?: Record<string, string | number | boolean | null | undefined>
     ): Promise<T> {
-        const formData = new FormData();
-        formData.append(fieldName, file);
+        const buildFormData = () => {
+            const formData = new FormData();
+            formData.append(fieldName, file);
 
-        if (fields) {
-            Object.entries(fields).forEach(([key, value]) => {
-                if (value !== undefined && value !== null) {
-                    formData.append(key, String(value));
-                }
+            if (fields) {
+                Object.entries(fields).forEach(([key, value]) => {
+                    if (value !== undefined && value !== null) {
+                        formData.append(key, String(value));
+                    }
+                });
+            }
+
+            return formData;
+        };
+
+        const fetchUpload = async () => {
+            const token = TokenManager.getAccessToken();
+            const headers: HeadersInit = {};
+
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+            }
+
+            return fetch(`${this.baseUrl}${endpoint}`, {
+                method: 'POST',
+                headers,
+                body: buildFormData()
             });
+        };
+
+        let response = await fetchUpload();
+
+        if (response.status === 401) {
+            if (!this.isRefreshing) {
+                this.isRefreshing = true;
+                this.refreshPromise = this.refreshAccessToken();
+            }
+
+            const refreshed = await this.refreshPromise;
+            this.isRefreshing = false;
+            this.refreshPromise = null;
+
+            if (!refreshed) {
+                window.dispatchEvent(new CustomEvent('auth:logout'));
+                throw new Error('登录已过期，请重新登录');
+            }
+
+            response = await fetchUpload();
         }
-
-        const token = TokenManager.getAccessToken();
-        const headers: HeadersInit = {};
-
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`;
-        }
-
-        const response = await fetch(`${this.baseUrl}${endpoint}`, {
-            method: 'POST',
-            headers,
-            body: formData
-        });
 
         if (!response.ok) {
             throw new Error(await this.parseError(response));
@@ -330,6 +441,13 @@ export const ChatAPI = {
     sendMessage: (sessionId: number, content: string, attachments?: Record<string, unknown>) =>
         apiClient.post(`/chat/sessions/${sessionId}/messages`, { content, attachments }),
 
+    sendMessageStream: (
+        sessionId: number,
+        content: string,
+        attachments: Record<string, unknown> | undefined,
+        onEvent: (event: ChatStreamEvent) => void
+    ) => apiClient.streamSse(`/chat/sessions/${sessionId}/messages/stream`, { content, attachments }, onEvent),
+
     deleteSession: (sessionId: number) =>
         apiClient.delete(`/chat/sessions/${sessionId}`),
 
@@ -426,6 +544,9 @@ export const IntakeAPI = {
         should_refresh_log: boolean;
         should_refresh_home: boolean;
     }>('/intake/confirm', payload),
+
+    reevaluateCandidate: (candidate: IntakeCandidate) =>
+        apiClient.post<IntakeCandidate>('/intake/candidate/reevaluate', candidate),
 };
 
 export const ConditionsAPI = {

@@ -16,6 +16,7 @@ import RegisterView from './components/views/RegisterView';
 import ForgotPasswordView from './components/views/ForgotPasswordView';
 import { TokenManager } from './services/api';
 import { syncScheduler } from './services/offline';
+import { getLocalDateString } from './services/date';
 import { SPLASH_DURATION_MS, VIEW_TRANSITION_MS } from './constants/app';
 import { useNavigation } from './hooks/useNavigation';
 import { useAppData } from './hooks/useAppData';
@@ -30,11 +31,13 @@ const App: React.FC = () => {
     userProfile,
     medicalConditions,
     meals,
+    currentMealDate,
     appMessages,
     dailyTargets,
     setMedicalConditions,
     loadUserData,
     enterGuestMode,
+    exitGuestMode,
     logout,
     markAllMessagesRead,
     addMeal,
@@ -54,13 +57,13 @@ const App: React.FC = () => {
       view !== View.FORGOT_PASSWORD &&
       view !== View.SPLASH
     ) {
-      logout();
+      exitGuestMode();
       setCurrentView(View.LOGIN);
       return;
     }
 
     navigate(view);
-  }, [isGuest, logout, navigate, setCurrentView]);
+  }, [exitGuestMode, isGuest, navigate, setCurrentView]);
 
   const handleAuthSuccess = useCallback(async () => {
     const result = await loadUserData();
@@ -168,17 +171,19 @@ const App: React.FC = () => {
         <LogView
           userProfile={userProfile}
           meals={meals}
+          currentDate={currentMealDate}
           dailyTargets={dailyTargets}
           onAddMeal={addMeal}
           onUpdateMeal={updateMeal}
           onDeleteMeal={deleteMeal}
+          onDateChange={refreshMeals}
         />
       )}
 
       {currentView === View.CHAT && (
         <ChatView
           onViewChange={handleNavChange}
-          onMealLogged={() => refreshMeals()}
+          onMealLogged={(recordDate) => refreshMeals(recordDate || getLocalDateString())}
           pendingIntakeSession={pendingIntakeSession}
           onPendingIntakeSessionChange={setPendingIntakeSession}
         />

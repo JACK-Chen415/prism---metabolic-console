@@ -9,6 +9,8 @@ from sqlalchemy import select
 from app.api.deps import CurrentUser, DbSession
 from app.models.health_condition import HealthCondition
 from app.schemas.intake import (
+    IntakeCandidate,
+    IntakeConfirmItem,
     IntakeConfirmRequest,
     IntakeConfirmResponse,
     IntakeDraftSessionResponse,
@@ -58,6 +60,25 @@ async def auto_log_voice_intake(
             user=current_user,
             conditions=conditions,
             data=data,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/candidate/reevaluate", response_model=IntakeCandidate)
+async def reevaluate_intake_candidate(
+    data: IntakeConfirmItem,
+    current_user: CurrentUser,
+    db: DbSession,
+):
+    conditions = await get_user_conditions(current_user.id, db)
+
+    try:
+        return await intake_service.reevaluate_confirm_item(
+            db,
+            user=current_user,
+            conditions=conditions,
+            item=data,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
