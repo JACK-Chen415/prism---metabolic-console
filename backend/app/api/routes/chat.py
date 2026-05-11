@@ -2,17 +2,21 @@
 AI 对话 API 路由
 """
 
-from typing import List, Optional
+from typing import Any, AsyncGenerator, List, Optional
 
-from fastapi import APIRouter, HTTPException, status, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Response, status, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 import base64
+import json
+import logging
+import time
 
 from app.api.deps import DbSession, CurrentUser
+from app.core.config import settings
 from app.models.chat import ChatSession, ChatMessage, MessageRole
 from app.models.health_condition import HealthCondition
-from app.models.meal import Meal, MealType, FoodCategory, SyncStatus
+from app.models.meal import MealType, FoodCategory
 from app.schemas.chat import (
     ChatMessageCreate,
     ChatSessionCreate,
@@ -25,15 +29,18 @@ from app.schemas.chat import (
 )
 from app.schemas.common import PaginatedResponse
 from app.schemas.meal import MealResponse
+from app.schemas.intake import IntakeConfirmItem, IntakeConfirmRequest, IntakeSource
 from app.services.ai_service import doubao_service
+from app.services.intake import IntakeService
 from app.services.knowledge import KnowledgeService, write_knowledge_audit_log
 from app.services.knowledge.severity import pick_strictest_recommendation_level
 from app.models.knowledge import FallbackStatus, KnowledgeOrigin, RecommendationLevel
-from datetime import date
 import uuid
 
 router = APIRouter(prefix="/chat", tags=["AI对话"])
 knowledge_service = KnowledgeService()
+intake_service = IntakeService()
+logger = logging.getLogger(__name__)
 
 
 async def get_user_conditions(user_id: int, db) -> List[HealthCondition]:
@@ -42,6 +49,97 @@ async def get_user_conditions(user_id: int, db) -> List[HealthCondition]:
         select(HealthCondition).where(HealthCondition.user_id == user_id)
     )
     return list(result.scalars().all())
+
+
+def _new_request_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def _elapsed_ms(start: float) -> float:
+    return round((time.perf_counter() - start) * 1000, 2)
+
+
+def _truncate_text(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[-max_chars:]
+
+
+async def _load_recent_history(db, session_id: int) -> list[ChatMessage]:
+    result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .limit(settings.chat_history_limit)
+    )
+    history = list(result.scalars().all())
+    history.reverse()
+    return history
+
+
+def _history_to_prompt_messages(history: list[ChatMessage]) -> tuple[list[dict[str, str]], int]:
+    max_chars = settings.chat_history_message_max_chars
+    messages = []
+    history_chars = 0
+    for msg in history:
+        content = _truncate_text(msg.content or "", max_chars)
+        history_chars += len(content)
+        messages.append({"role": msg.role.value, "content": content})
+    return messages, history_chars
+
+
+def _is_local_direct_response(summary) -> bool:
+    return (
+        summary.fallback_status in {FallbackStatus.LOCAL_BLOCKED_NO_CLOUD, FallbackStatus.LOCAL_COMPLETE}
+        and bool(summary.local_decisions)
+    )
+
+
+def _knowledge_attachment(
+    *,
+    response_origin: KnowledgeOrigin,
+    summary,
+    called_cloud: bool,
+    cloud_call_reason: Optional[str],
+    cloud_blocked_reason: Optional[str],
+) -> dict[str, Any]:
+    return {
+        "knowledge": {
+            "origin": response_origin.value,
+            "fallback_status": summary.fallback_status.value,
+            "matched_disease_codes": summary.matched_disease_codes,
+            "matched_food_codes": summary.matched_food_codes,
+            "citations": [citation.model_dump() for citation in summary.citations],
+            "unmapped_conditions": summary.unmapped_conditions,
+            "called_cloud": called_cloud,
+            "cloud_call_reason": cloud_call_reason,
+            "cloud_blocked_reason": cloud_blocked_reason,
+        }
+    }
+
+
+def _sse_event(event: str, data: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _log_chat_timing(request_id: str, timings: dict[str, Any]) -> None:
+    safe_timings = {"request_id": request_id, **timings}
+    logging.getLogger("uvicorn.error").info(
+        "chat_timing %s",
+        json.dumps(safe_timings, ensure_ascii=False, sort_keys=True),
+    )
+
+
+async def _commit_if_supported(db) -> None:
+    commit = getattr(db, "commit", None)
+    if commit:
+        await commit()
+
+
+async def _rollback_if_supported(db) -> None:
+    rollback = getattr(db, "rollback", None)
+    if rollback:
+        await rollback()
 
 
 @router.post("/sessions", response_model=ChatSessionResponse, status_code=status.HTTP_201_CREATED)
@@ -159,13 +257,23 @@ async def get_session(session_id: int, current_user: CurrentUser, db: DbSession)
 async def send_message(
     session_id: int,
     data: ChatMessageCreate,
+    response: Response,
     current_user: CurrentUser,
     db: DbSession
 ):
     """
     发送消息并获取 AI 回复
     """
+    request_id = _new_request_id()
+    response.headers["X-Request-ID"] = request_id
+    total_start = time.perf_counter()
+    timings: dict[str, Any] = {
+        "cloud_called": False,
+        "request_type": "json",
+    }
+
     # 验证会话存在
+    stage_start = time.perf_counter()
     result = await db.execute(
         select(ChatSession).where(
             ChatSession.id == session_id,
@@ -173,6 +281,7 @@ async def send_message(
         )
     )
     session = result.scalar_one_or_none()
+    timings["session_lookup_ms"] = _elapsed_ms(stage_start)
     
     if not session:
         raise HTTPException(
@@ -181,6 +290,7 @@ async def send_message(
         )
     
     # 保存用户消息
+    stage_start = time.perf_counter()
     user_message = ChatMessage(
         session_id=session_id,
         role=MessageRole.USER,
@@ -189,44 +299,51 @@ async def send_message(
     )
     db.add(user_message)
     await db.flush()
+    timings["user_message_flush_ms"] = _elapsed_ms(stage_start)
     
     # 获取历史消息
-    history_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .order_by(ChatMessage.created_at)
-        .limit(20)  # 限制上下文长度
-    )
-    history = history_result.scalars().all()
+    stage_start = time.perf_counter()
+    history = await _load_recent_history(db, session_id)
+    timings["history_query_ms"] = _elapsed_ms(stage_start)
+    timings["history_message_count"] = len(history)
     
     # 构建消息列表
-    messages = [
-        {"role": msg.role.value, "content": msg.content}
-        for msg in history
-    ]
+    messages, history_chars = _history_to_prompt_messages(history)
+    timings["history_chars"] = history_chars
     
     # 获取用户健康状况
+    stage_start = time.perf_counter()
     conditions = await get_user_conditions(current_user.id, db)
+    timings["conditions_query_ms"] = _elapsed_ms(stage_start)
     
+    stage_start = time.perf_counter()
     summary = await knowledge_service.summarize_query_for_user(
         db,
         user=current_user,
         conditions=conditions,
         query=data.content,
     )
+    timings["knowledge_summary_ms"] = _elapsed_ms(stage_start)
 
     called_cloud = False
     cloud_call_reason = None
     cloud_blocked_reason = None
-    if summary.fallback_status in {FallbackStatus.LOCAL_BLOCKED_NO_CLOUD, FallbackStatus.LOCAL_COMPLETE} and summary.local_decisions:
+    ai_metrics: dict[str, Any] = {}
+    if _is_local_direct_response(summary):
         ai_response = knowledge_service.render_local_markdown(summary)
         if summary.fallback_status == FallbackStatus.LOCAL_BLOCKED_NO_CLOUD:
             cloud_blocked_reason = "本地命中过敏、AVOID 或 LIMIT 约束，云端不得放宽。"
         else:
             cloud_blocked_reason = "本地知识已足够回答当前问题，无需调用云端。"
         response_origin = summary.origin
+        timings["prompt_build_ms"] = 0
+        timings["prompt_chars"] = 0
+        timings["message_count"] = len(messages)
+        timings["doubao_total_ms"] = 0
+        timings["response_chars"] = len(ai_response)
     else:
         called_cloud = True
+        timings["cloud_called"] = True
         cloud_call_reason = {
             FallbackStatus.LOCAL_PARTIAL_ALLOW_CLOUD: "本地已命中部分知识，调用云端补充解释与替代建议。",
             FallbackStatus.NO_LOCAL_MATCH_ALLOW_CLOUD: "本地知识未命中，调用云端兜底。",
@@ -237,33 +354,34 @@ async def send_message(
             conditions=conditions,
             stream=False,
             local_guardrail=knowledge_service.build_local_guardrail(summary),
+            metrics=ai_metrics,
         )
+        timings.update(ai_metrics)
         response_origin = KnowledgeOrigin.MIXED if summary.origin != KnowledgeOrigin.CLOUD_SUPPLEMENT else KnowledgeOrigin.CLOUD_SUPPLEMENT
+        timings.setdefault("response_chars", len(ai_response or ""))
 
     # 保存 AI 回复
+    stage_start = time.perf_counter()
+    attachments = _knowledge_attachment(
+        response_origin=response_origin,
+        summary=summary,
+        called_cloud=called_cloud,
+        cloud_call_reason=cloud_call_reason,
+        cloud_blocked_reason=cloud_blocked_reason,
+    )
     assistant_message = ChatMessage(
         session_id=session_id,
         role=MessageRole.ASSISTANT,
         content=ai_response,
-        attachments={
-            "knowledge": {
-                "origin": response_origin.value,
-                "fallback_status": summary.fallback_status.value,
-                "matched_disease_codes": summary.matched_disease_codes,
-                "matched_food_codes": summary.matched_food_codes,
-                "citations": [citation.model_dump() for citation in summary.citations],
-                "unmapped_conditions": summary.unmapped_conditions,
-                "called_cloud": called_cloud,
-                "cloud_call_reason": cloud_call_reason,
-                "cloud_blocked_reason": cloud_blocked_reason,
-            }
-        },
+        attachments=attachments,
         model="doubao"
     )
     db.add(assistant_message)
     await db.flush()
     await db.refresh(assistant_message)
+    timings["assistant_flush_ms"] = _elapsed_ms(stage_start)
 
+    stage_start = time.perf_counter()
     await write_knowledge_audit_log(
         db,
         user_id=current_user.id,
@@ -281,8 +399,235 @@ async def send_message(
         cloud_call_reason=cloud_call_reason,
         cloud_blocked_reason=cloud_blocked_reason,
     )
+    timings["audit_flush_ms"] = _elapsed_ms(stage_start)
+    timings["fallback_status"] = summary.fallback_status.value
+    timings["origin"] = response_origin.value
+    timings["chat_total_ms"] = _elapsed_ms(total_start)
+    _log_chat_timing(request_id, timings)
     
     return ChatMessageResponse.model_validate(assistant_message)
+
+
+@router.post("/sessions/{session_id}/messages/stream")
+async def send_message_stream(
+    session_id: int,
+    data: ChatMessageCreate,
+    current_user: CurrentUser,
+    db: DbSession
+):
+    """
+    流式发送消息并获取 AI 回复。
+
+    使用 SSE-like 事件格式，前端通过 fetch stream 读取。
+    """
+    request_id = _new_request_id()
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        total_start = time.perf_counter()
+        timings: dict[str, Any] = {
+            "cloud_called": False,
+            "request_type": "stream",
+        }
+        summary = None
+        response_origin = KnowledgeOrigin.CLOUD_SUPPLEMENT
+        called_cloud = False
+        cloud_call_reason = None
+        cloud_blocked_reason = None
+        assistant_message = None
+        response_parts: list[str] = []
+
+        yield _sse_event("meta", {"request_id": request_id, "session_id": session_id})
+
+        try:
+            yield _sse_event("status", {"stage": "session_lookup", "message": "正在确认会话..."})
+            stage_start = time.perf_counter()
+            result = await db.execute(
+                select(ChatSession).where(
+                    ChatSession.id == session_id,
+                    ChatSession.user_id == current_user.id
+                )
+            )
+            session = result.scalar_one_or_none()
+            timings["session_lookup_ms"] = _elapsed_ms(stage_start)
+            if not session:
+                yield _sse_event("error", {"message": "会话不存在", "request_id": request_id})
+                return
+
+            stage_start = time.perf_counter()
+            user_message = ChatMessage(
+                session_id=session_id,
+                role=MessageRole.USER,
+                content=data.content,
+                attachments=data.attachments,
+            )
+            db.add(user_message)
+            await db.flush()
+            timings["user_message_flush_ms"] = _elapsed_ms(stage_start)
+
+            stage_start = time.perf_counter()
+            history = await _load_recent_history(db, session_id)
+            timings["history_query_ms"] = _elapsed_ms(stage_start)
+            timings["history_message_count"] = len(history)
+            messages, history_chars = _history_to_prompt_messages(history)
+            timings["history_chars"] = history_chars
+
+            yield _sse_event("status", {"stage": "knowledge_check", "message": "正在检查本地饮食规则..."})
+            stage_start = time.perf_counter()
+            conditions = await get_user_conditions(current_user.id, db)
+            timings["conditions_query_ms"] = _elapsed_ms(stage_start)
+
+            stage_start = time.perf_counter()
+            summary = await knowledge_service.summarize_query_for_user(
+                db,
+                user=current_user,
+                conditions=conditions,
+                query=data.content,
+            )
+            timings["knowledge_summary_ms"] = _elapsed_ms(stage_start)
+
+            if _is_local_direct_response(summary):
+                ai_response = knowledge_service.render_local_markdown(summary)
+                response_parts.append(ai_response)
+                if summary.fallback_status == FallbackStatus.LOCAL_BLOCKED_NO_CLOUD:
+                    cloud_blocked_reason = "本地命中过敏、AVOID 或 LIMIT 约束，云端不得放宽。"
+                else:
+                    cloud_blocked_reason = "本地知识已足够回答当前问题，无需调用云端。"
+                response_origin = summary.origin
+                timings["prompt_build_ms"] = 0
+                timings["prompt_chars"] = 0
+                timings["message_count"] = len(messages)
+                timings["doubao_first_chunk_ms"] = 0
+                timings["doubao_total_ms"] = 0
+                timings["response_chars"] = len(ai_response)
+                yield _sse_event("status", {"stage": "local_answer", "message": "已命中本地规则，正在生成回复..."})
+                timings["stream_first_chunk_ms"] = _elapsed_ms(total_start)
+                yield _sse_event("delta", {"content": ai_response})
+            else:
+                called_cloud = True
+                timings["cloud_called"] = True
+                cloud_call_reason = {
+                    FallbackStatus.LOCAL_PARTIAL_ALLOW_CLOUD: "本地已命中部分知识，调用云端补充解释与替代建议。",
+                    FallbackStatus.NO_LOCAL_MATCH_ALLOW_CLOUD: "本地知识未命中，调用云端兜底。",
+                }.get(summary.fallback_status, "调用云端补充说明。")
+                yield _sse_event("status", {"stage": "model_connect", "message": "正在连接模型..."})
+                ai_metrics: dict[str, Any] = {}
+                stream = await doubao_service.chat(
+                    messages=messages,
+                    user=current_user,
+                    conditions=conditions,
+                    stream=True,
+                    local_guardrail=knowledge_service.build_local_guardrail(summary),
+                    metrics=ai_metrics,
+                )
+                yield _sse_event("status", {"stage": "model_generate", "message": "正在生成回复..."})
+                async for chunk in stream:
+                    if not chunk:
+                        continue
+                    response_parts.append(chunk)
+                    timings.setdefault("stream_first_chunk_ms", _elapsed_ms(total_start))
+                    yield _sse_event("delta", {"content": chunk})
+                timings.update(ai_metrics)
+                response_origin = KnowledgeOrigin.MIXED if summary.origin != KnowledgeOrigin.CLOUD_SUPPLEMENT else KnowledgeOrigin.CLOUD_SUPPLEMENT
+
+            ai_response = "".join(response_parts)
+            timings.setdefault("stream_first_chunk_ms", None)
+            timings.setdefault("response_chars", len(ai_response))
+
+            stage_start = time.perf_counter()
+            attachments = _knowledge_attachment(
+                response_origin=response_origin,
+                summary=summary,
+                called_cloud=called_cloud,
+                cloud_call_reason=cloud_call_reason,
+                cloud_blocked_reason=cloud_blocked_reason,
+            )
+            assistant_message = ChatMessage(
+                session_id=session_id,
+                role=MessageRole.ASSISTANT,
+                content=ai_response,
+                attachments=attachments,
+                model="doubao",
+            )
+            db.add(assistant_message)
+            await db.flush()
+            await db.refresh(assistant_message)
+            timings["assistant_flush_ms"] = _elapsed_ms(stage_start)
+
+            stage_start = time.perf_counter()
+            await _commit_if_supported(db)
+            timings["assistant_commit_ms"] = _elapsed_ms(stage_start)
+
+            timings["stream_done_ms"] = _elapsed_ms(total_start)
+            yield _sse_event(
+                "done",
+                {
+                    "request_id": request_id,
+                    "message_id": assistant_message.id,
+                    "origin": response_origin.value,
+                    "fallback_status": summary.fallback_status.value,
+                    "attachments": attachments,
+                },
+            )
+
+            try:
+                stage_start = time.perf_counter()
+                await write_knowledge_audit_log(
+                    db,
+                    user_id=current_user.id,
+                    route_name="/api/chat/sessions/{session_id}/messages/stream",
+                    chat_session_id=session_id,
+                    chat_message_id=assistant_message.id,
+                    query_excerpt=data.content,
+                    origin=response_origin,
+                    fallback_status=summary.fallback_status,
+                    matched_disease_codes=summary.matched_disease_codes,
+                    matched_food_codes=summary.matched_food_codes,
+                    unmapped_conditions=summary.unmapped_conditions,
+                    local_decision_level=pick_strictest_recommendation_level(summary.local_decisions),
+                    called_cloud=called_cloud,
+                    cloud_call_reason=cloud_call_reason,
+                    cloud_blocked_reason=cloud_blocked_reason,
+                )
+                timings["audit_flush_ms"] = _elapsed_ms(stage_start)
+                stage_start = time.perf_counter()
+                await _commit_if_supported(db)
+                timings["audit_commit_ms"] = _elapsed_ms(stage_start)
+            except Exception as audit_exc:
+                await _rollback_if_supported(db)
+                timings["audit_flush_ms"] = None
+                timings["audit_error"] = audit_exc.__class__.__name__
+                logger.warning("Streaming chat audit write failed", extra={"request_id": request_id})
+            timings["fallback_status"] = summary.fallback_status.value
+            timings["origin"] = response_origin.value
+            timings["chat_total_ms"] = _elapsed_ms(total_start)
+            _log_chat_timing(request_id, timings)
+        except Exception as exc:
+            await _rollback_if_supported(db)
+            logger.exception("Streaming chat failed", extra={"request_id": request_id})
+            timings.setdefault("assistant_flush_ms", 0)
+            timings.setdefault("audit_flush_ms", 0)
+            timings["fallback_status"] = summary.fallback_status.value if summary else None
+            timings["origin"] = response_origin.value if response_origin else None
+            timings["chat_total_ms"] = _elapsed_ms(total_start)
+            timings["error"] = exc.__class__.__name__
+            _log_chat_timing(request_id, timings)
+            yield _sse_event(
+                "error",
+                {
+                    "request_id": request_id,
+                    "message": str(exc) or "生成失败，请稍后重试。",
+                },
+            )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Request-ID": request_id,
+        },
+    )
 
 
 @router.delete("/sessions/{session_id}")
@@ -525,31 +870,50 @@ async def quick_log_from_recognition(
         category = FoodCategory.STAPLE
 
     nutrition = data.food_item.nutrition
-    meal = Meal(
-        user_id=current_user.id,
-        client_id=str(uuid.uuid4()),
-        name=data.food_item.food_name,
-        portion=data.food_item.estimated_portion or "1份",
-        calories=nutrition.calories or 0,
-        sodium=nutrition.sodium or 0,
-        purine=nutrition.purine or 0,
-        protein=nutrition.protein,
-        carbs=nutrition.carbs,
-        fat=nutrition.fat,
-        fiber=nutrition.fiber,
-        meal_type=meal_type,
-        category=category,
-        record_date=date.today(),
-        ai_recognized=True,
-        source="ai_quick_log",
-        source_detail="chat_quick_log",
-        confidence=0.75,
-        estimated_fields_json=["amount", "calories", "sodium", "purine", "protein", "carbs", "fat", "fiber"],
-        rule_warnings_json=[],
-        recognition_meta_json={"origin": "chat_quick_log"},
-        sync_status=SyncStatus.SYNCED
+    conditions = await get_user_conditions(current_user.id, db)
+    result = await intake_service.confirm(
+        db,
+        user=current_user,
+        conditions=conditions,
+        data=IntakeConfirmRequest(
+            source=IntakeSource.AI_QUICK_LOG,
+            raw_summary="chat quick log",
+            candidates=[
+                IntakeConfirmItem(
+                    draft_id=str(uuid.uuid4()),
+                    source=IntakeSource.AI_QUICK_LOG,
+                    meal_type=meal_type,
+                    category=category,
+                    food_name=data.food_item.food_name,
+                    amount_text=data.food_item.estimated_portion or "1份",
+                    confidence=0.75,
+                    calories=nutrition.calories,
+                    sodium=nutrition.sodium,
+                    purine=nutrition.purine,
+                    protein=nutrition.protein,
+                    carbs=nutrition.carbs,
+                    fat=nutrition.fat,
+                    fiber=nutrition.fiber,
+                    estimated_fields=[
+                        "amount",
+                        "calories",
+                        "sodium",
+                        "purine",
+                        "protein",
+                        "carbs",
+                        "fat",
+                        "fiber",
+                    ],
+                    estimated_notes=["来自聊天图片识别结果，确认时已重新执行本地规则。"],
+                    origin=KnowledgeOrigin.CLOUD_SUPPLEMENT,
+                    fallback_status=FallbackStatus.NO_LOCAL_MATCH_ALLOW_CLOUD,
+                )
+            ],
+        ),
     )
-    db.add(meal)
-    await db.flush()
-    await db.refresh(meal)
-    return MealResponse.model_validate(meal)
+
+    if not result.meals:
+        detail = result.failed_items[0].reason if result.failed_items else "快捷记录失败"
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+    return result.meals[0]

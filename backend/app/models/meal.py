@@ -4,7 +4,7 @@
 
 from datetime import datetime, date
 from typing import Optional
-from sqlalchemy import String, Float, Integer, DateTime, Date, Text, ForeignKey, Enum as SQLEnum, JSON
+from sqlalchemy import String, Float, Integer, DateTime, Date, Text, ForeignKey, Enum as SQLEnum, JSON, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 import enum
@@ -48,6 +48,9 @@ class Meal(Base):
     """饮食记录表"""
     
     __tablename__ = "meals"
+    __table_args__ = (
+        UniqueConstraint("user_id", "client_id", name="uq_meals_user_client_id"),
+    )
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     
@@ -59,7 +62,7 @@ class Meal(Base):
     )
     
     # 客户端生成的唯一ID（用于离线同步）
-    client_id: Mapped[str] = mapped_column(String(36), unique=True, index=True, nullable=False)
+    client_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     
     # 食物信息
     name: Mapped[str] = mapped_column(String(100), nullable=False)

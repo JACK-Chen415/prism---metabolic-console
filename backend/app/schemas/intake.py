@@ -115,6 +115,7 @@ class IntakeConfirmItem(BaseModel):
     estimated_fields: list[str] = Field(default_factory=list)
     estimated_notes: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    manual_restrictions: list[str] = Field(default_factory=list)
     origin: KnowledgeOrigin
     fallback_status: FallbackStatus
     citations: list[CitationResponse] = Field(default_factory=list)

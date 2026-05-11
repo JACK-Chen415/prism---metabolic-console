@@ -417,6 +417,23 @@ class IntakeService:
             failed_items=failures,
         )
 
+    async def reevaluate_confirm_item(
+        self,
+        db: AsyncSession,
+        *,
+        user: User,
+        conditions: list[HealthCondition],
+        item: IntakeConfirmItem,
+    ) -> IntakeCandidate:
+        normalized = await self.knowledge_service.normalize_conditions(db, conditions)
+        return await self._candidate_from_confirm_item(
+            db,
+            user=user,
+            normalized=normalized,
+            item=item,
+            recompute_nutrition=True,
+        )
+
     async def _candidate_from_voice_segment(
         self,
         db: AsyncSession,
@@ -593,17 +610,15 @@ class IntakeService:
             caution_note=decision.caution_note,
         )
 
-    async def _meal_from_confirm_item(
+    async def _candidate_from_confirm_item(
         self,
         db: AsyncSession,
         *,
         user: User,
         normalized: NormalizedConditions,
         item: IntakeConfirmItem,
-        record_date: date,
-        raw_input_text: Optional[str],
-        raw_summary: Optional[str],
-    ) -> tuple[Meal, IntakeCandidate]:
+        recompute_nutrition: bool = False,
+    ) -> IntakeCandidate:
         food_name = item.food_name.strip()
         if not food_name:
             raise ValueError("食物名称不能为空")
@@ -630,13 +645,26 @@ class IntakeService:
             normalized=normalized,
             food_name=food_name,
             food_code=matched_food.food_code if matched_food else item.food_code,
+            manual_restrictions=item.manual_restrictions,
             user=user,
         )
 
-        estimate = self._estimate_from_confirm_item(item, matched_food, category)
-        warnings = self._unique([*item.warnings, *self._build_warnings(decision)])
+        if recompute_nutrition:
+            estimate = self._estimate_from_match_or_hint(
+                food_name=food_name,
+                matched_food=matched_food,
+                category=category,
+                normalized_amount=item.normalized_amount,
+                unit=item.unit,
+            )
+        else:
+            estimate = self._estimate_from_confirm_item(item, matched_food, category)
 
-        candidate = IntakeCandidate(
+        matched_allergen_tags = list(matched_food.allergen_tags_json or []) if matched_food else []
+        matched_risk_tags = list(matched_food.risk_tags_json or []) if matched_food else []
+        warnings = self._build_warnings(decision)
+
+        return IntakeCandidate(
             draft_id=item.draft_id,
             source=item.source,
             meal_type=item.meal_type,
@@ -658,13 +686,8 @@ class IntakeService:
             sodium=estimate["nutrition"].get("sodium"),
             sugar=estimate["nutrition"].get("sugar"),
             purine=estimate["nutrition"].get("purine"),
-            allergen_tags=item.allergen_tags,
-            risk_tags=self._unique(
-                [
-                    *item.risk_tags,
-                    *(matched_food.risk_tags_json if matched_food else []),
-                ]
-            ),
+            allergen_tags=self._unique([*item.allergen_tags, *matched_allergen_tags]),
+            risk_tags=self._unique([*item.risk_tags, *decision.risk_tags, *matched_risk_tags]),
             estimated_fields=estimate["estimated_fields"],
             estimated_notes=estimate["estimated_notes"],
             local_rule_hit=bool(decision.matched_disease_codes or decision.hard_blocks),
@@ -678,46 +701,59 @@ class IntakeService:
             caution_note=decision.caution_note,
         )
 
+    async def _meal_from_confirm_item(
+        self,
+        db: AsyncSession,
+        *,
+        user: User,
+        normalized: NormalizedConditions,
+        item: IntakeConfirmItem,
+        record_date: date,
+        raw_input_text: Optional[str],
+        raw_summary: Optional[str],
+    ) -> tuple[Meal, IntakeCandidate]:
+        candidate = await self._candidate_from_confirm_item(
+            db,
+            user=user,
+            normalized=normalized,
+            item=item,
+        )
+
         meal = Meal(
             user_id=user.id,
             client_id=str(uuid.uuid4()),
-            name=food_name,
-            portion=amount_text,
-            calories=estimate["nutrition"].get("calories") or 0,
-            sodium=estimate["nutrition"].get("sodium") or 0,
-            purine=estimate["nutrition"].get("purine") or 0,
-            protein=estimate["nutrition"].get("protein"),
-            carbs=estimate["nutrition"].get("carbs"),
-            fat=estimate["nutrition"].get("fat"),
-            fiber=estimate["nutrition"].get("fiber"),
-            meal_type=item.meal_type,
-            category=category,
+            name=candidate.food_name,
+            portion=candidate.amount_text,
+            calories=candidate.calories or 0,
+            sodium=candidate.sodium or 0,
+            purine=candidate.purine or 0,
+            protein=candidate.protein,
+            carbs=candidate.carbs,
+            fat=candidate.fat,
+            fiber=candidate.fiber,
+            meal_type=candidate.meal_type,
+            category=candidate.category,
             record_date=record_date,
-            note=item.note,
-            ai_recognized=item.source in {IntakeSource.PHOTO, IntakeSource.AI_QUICK_LOG},
-            source=item.source.value,
-            source_detail=self._source_detail(item.source),
-            confidence=item.confidence,
-            estimated_fields_json=estimate["estimated_fields"],
-            rule_warnings_json=warnings,
+            note=candidate.note,
+            ai_recognized=candidate.source in {IntakeSource.PHOTO, IntakeSource.AI_QUICK_LOG},
+            source=candidate.source.value,
+            source_detail=self._source_detail(candidate.source),
+            confidence=candidate.confidence,
+            estimated_fields_json=candidate.estimated_fields,
+            rule_warnings_json=candidate.warnings,
             recognition_meta_json={
-                "food_code": matched_food.food_code if matched_food else item.food_code,
-                "normalized_amount": item.normalized_amount,
-                "unit": item.unit,
-                "ingredients": item.ingredients,
-                "cooking_method": item.cooking_method,
-                "origin": decision.origin.value,
-                "fallback_status": decision.fallback_status.value,
-                "citations": [citation.model_dump() for citation in decision.citations],
-                "risk_tags": self._unique(
-                    [
-                        *item.risk_tags,
-                        *(matched_food.risk_tags_json if matched_food else []),
-                    ]
-                ),
-                "allergen_tags": item.allergen_tags,
-                "estimated_notes": estimate["estimated_notes"],
-                "sugar": estimate["nutrition"].get("sugar"),
+                "food_code": candidate.food_code,
+                "normalized_amount": candidate.normalized_amount,
+                "unit": candidate.unit,
+                "ingredients": candidate.ingredients,
+                "cooking_method": candidate.cooking_method,
+                "origin": candidate.origin.value,
+                "fallback_status": candidate.fallback_status.value,
+                "citations": [citation.model_dump() for citation in candidate.citations],
+                "risk_tags": candidate.risk_tags,
+                "allergen_tags": candidate.allergen_tags,
+                "estimated_notes": candidate.estimated_notes,
+                "sugar": candidate.sugar,
                 "raw_input_excerpt": (raw_input_text or "")[:300] or None,
                 "raw_summary_excerpt": (raw_summary or "")[:300] or None,
             },

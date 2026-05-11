@@ -30,6 +30,7 @@ export function mapMeal(apiMeal: any): Meal {
   return {
     id: String(apiMeal.id ?? apiMeal.client_id),
     clientId: apiMeal.client_id || String(apiMeal.id),
+    recordDate: apiMeal.record_date,
     name: apiMeal.name,
     portion: apiMeal.portion || '1份',
     calories: Math.round(apiMeal.calories || 0),

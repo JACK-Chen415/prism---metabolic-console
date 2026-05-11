@@ -7,10 +7,12 @@ import { estimateMealNutrition } from '../../services/mealEstimation';
 interface LogViewProps {
   userProfile: UserProfile;
   meals: Meal[];
+  currentDate: string;
   dailyTargets: DailyTargets;
-  onAddMeal: (meal: Meal) => void;
+  onAddMeal: (meal: Meal, recordDate?: string) => Promise<void> | void;
   onUpdateMeal: (mealId: string, changes: MealUpdateInput) => Promise<void>;
   onDeleteMeal: (mealId: string) => Promise<void>;
+  onDateChange: (date: string) => Promise<void> | void;
 }
 
 const FOOD_CATEGORIES: { id: FoodCategory; label: string; icon: string; color: string }[] = [
@@ -77,7 +79,23 @@ const parseOptionalNumber = (value: string) => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 };
 
-const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onAddMeal, onUpdateMeal, onDeleteMeal }) => {
+const addDays = (dateString: string, days: number) => {
+  const [year, month, day] = dateString.split('-').map(Number);
+  const date = new Date(year, (month || 1) - 1, day || 1);
+  date.setDate(date.getDate() + days);
+  return getLocalDateString(date);
+};
+
+const LogView: React.FC<LogViewProps> = ({
+  userProfile,
+  meals,
+  currentDate,
+  dailyTargets,
+  onAddMeal,
+  onUpdateMeal,
+  onDeleteMeal,
+  onDateChange,
+}) => {
   // BMI Calculation
   const localBmi = userProfile.height && userProfile.weight
     ? Number((userProfile.weight / Math.pow(userProfile.height / 100, 2)).toFixed(1))
@@ -101,13 +119,17 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
   const targetExplanation = dailyTargets.has_complete_profile === false && targetCalories > 0
     ? `当前身体资料未完全填写，已按估算策略计算。${dailyTargets.target_explanation || ''}`
     : dailyTargets.target_explanation || '请先在设置中完善身高、体重、年龄、性别，以获得更准确估算。';
-  const todayLabel = formatChineseDate(getLocalDateString());
+  const todayDate = getLocalDateString();
+  const isViewingToday = currentDate === todayDate;
+  const dateLabel = isViewingToday ? '今天' : formatChineseDate(currentDate);
 
   // State
   const [isAdding, setIsAdding] = useState(false);
   const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
   const [editInput, setEditInput] = useState<MealEditInput | null>(null);
   const [deletingMeal, setDeletingMeal] = useState<Meal | null>(null);
+  const [isChangingDate, setIsChangingDate] = useState(false);
+  const [isSavingAdd, setIsSavingAdd] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
@@ -133,23 +155,48 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
   }, []);
 
   const totalCalories = meals.reduce((sum, item) => sum + item.calories, 0);
+  const totalSodium = meals.reduce((sum, item) => sum + item.sodium, 0);
+  const totalPurine = meals.reduce((sum, item) => sum + item.purine, 0);
+  const totalProtein = meals.reduce((sum, item) => sum + (item.protein || 0), 0);
+  const totalCarbs = meals.reduce((sum, item) => sum + (item.carbs || 0), 0);
+  const totalFat = meals.reduce((sum, item) => sum + (item.fat || 0), 0);
+  const mealsByType = MEAL_TYPES.map(type => ({
+    ...type,
+    meals: meals.filter(meal => meal.type === type.id),
+  }));
   const progress = targetCalories > 0 ? Math.min((totalCalories / targetCalories) * 100, 100) : 0;
   const remainingCalories = targetCalories > 0 ? Math.max(targetCalories - totalCalories, 0) : 0;
   const calorieGuidance = targetCalories <= 0
     ? '请先在设置中完善身高、体重、年龄、性别，以获得更准确的基础代谢和推荐摄入目标。'
     : totalCalories > targetCalories
-      ? `今日热量摄入已超过推荐目标。${targetExplanation}`
+      ? `${isViewingToday ? '今日' : '所选日期'}热量摄入已超过推荐目标。${targetExplanation}`
       : targetExplanation;
 
-  const addMeal = () => {
-    if(!mealInput.name) return;
+  const changeDate = async (nextDate: string) => {
+    setIsChangingDate(true);
+    setActionError(null);
+    try {
+      await onDateChange(nextDate);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : '切换日期失败，请稍后再试。');
+    } finally {
+      setIsChangingDate(false);
+    }
+  };
+
+  const addMeal = async () => {
+    if (!mealInput.name.trim() || isSavingAdd) return;
     const estimated = estimateMealNutrition(mealInput);
 
     const newClientId = crypto.randomUUID();
-    onAddMeal({
+    setIsSavingAdd(true);
+    setActionError(null);
+    try {
+      await onAddMeal({
         id: newClientId,
         clientId: newClientId,
-        name: mealInput.name,
+        recordDate: currentDate,
+        name: mealInput.name.trim(),
         portion: mealInput.portion || '1份',
         calories: estimated.calories,
         sodium: estimated.sodium,
@@ -160,10 +207,15 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
         source: 'manual',
         estimatedFields: ['calories', 'sodium', 'purine'],
         ruleWarnings: [],
-    });
-    
-    setIsAdding(false);
-    setMealInput({ name: '', portion: '', type: 'DINNER', category: 'STAPLE', note: '' });
+      }, currentDate);
+      setFeedbackMessage(`${dateLabel}餐食记录已保存。`);
+      setIsAdding(false);
+      setMealInput({ name: '', portion: '', type: 'DINNER', category: 'STAPLE', note: '' });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : '保存失败，请稍后再试。');
+    } finally {
+      setIsSavingAdd(false);
+    }
   };
 
   const openEditMeal = (meal: Meal) => {
@@ -237,11 +289,53 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
 
   return (
     <div className="flex flex-col w-full pb-28 relative">
-      <div className="sticky top-0 z-20 flex items-center bg-background-dark/90 backdrop-blur-md p-4 pb-2 justify-between border-b border-white/5">
-        <h2 className="text-xl font-bold leading-tight tracking-wide flex-1 text-white font-serif">生命日志</h2>
-        <div className="flex items-center justify-center bg-surface-dark rounded-full px-3 py-1 border border-white/10">
-          <span className="material-symbols-outlined text-base mr-1 text-primary">calendar_today</span>
-          <p className="text-mineral text-sm font-bold leading-normal tracking-wide shrink-0 font-serif">{todayLabel}</p>
+      <div className="sticky top-0 z-20 bg-background-dark/90 backdrop-blur-md p-4 pb-3 border-b border-white/5">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-xl font-bold leading-tight tracking-wide flex-1 text-white font-serif">生命日志</h2>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => changeDate(addDays(currentDate, -1))}
+              disabled={isChangingDate}
+              className="w-8 h-8 rounded-full flex items-center justify-center bg-surface-dark border border-white/10 text-slate-300 hover:text-white disabled:opacity-50"
+              aria-label="前一天"
+            >
+              <span className="material-symbols-outlined text-[18px]">chevron_left</span>
+            </button>
+            <label className="flex items-center justify-center bg-surface-dark rounded-full px-3 py-1 border border-white/10">
+              <span className="material-symbols-outlined text-base mr-1 text-primary">calendar_today</span>
+              <input
+                type="date"
+                value={currentDate}
+                max={todayDate}
+                onChange={(event) => changeDate(event.target.value)}
+                disabled={isChangingDate}
+                className="w-[122px] bg-transparent text-mineral text-sm font-bold leading-normal tracking-wide shrink-0 font-serif outline-none disabled:opacity-50"
+                aria-label="选择日志日期"
+              />
+            </label>
+            <button
+              onClick={() => changeDate(addDays(currentDate, 1))}
+              disabled={isChangingDate || isViewingToday}
+              className="w-8 h-8 rounded-full flex items-center justify-center bg-surface-dark border border-white/10 text-slate-300 hover:text-white disabled:opacity-30"
+              aria-label="后一天"
+            >
+              <span className="material-symbols-outlined text-[18px]">chevron_right</span>
+            </button>
+          </div>
+        </div>
+        <div className="mt-2 flex items-center justify-between">
+          <p className="text-[11px] text-slate-500 font-serif font-bold tracking-wide">
+            {isChangingDate ? '正在切换日期...' : `${dateLabel} · ${meals.length} 条记录`}
+          </p>
+          {!isViewingToday && (
+            <button
+              onClick={() => changeDate(todayDate)}
+              disabled={isChangingDate}
+              className="text-[11px] text-primary font-serif font-bold tracking-wide disabled:opacity-50"
+            >
+              回到今天
+            </button>
+          )}
         </div>
       </div>
 
@@ -347,7 +441,7 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
                  <div className="flex justify-between items-end mb-4 relative z-10">
                      <div>
                          <p className="text-slate-400 text-xs font-serif font-bold tracking-wide mb-1 flex items-center gap-1">
-                             今日摄入 
+                             {isViewingToday ? '今日摄入' : '所选日期摄入'} 
                              <span className="text-white/20">/</span> 
                              <span className="text-slate-500">目标 {targetCalories > 0 ? targetCalories : '--'}</span>
                          </p>
@@ -376,6 +470,21 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
                      </div>
                  </div>
 
+                 <div className="grid grid-cols-5 gap-2 mb-4 relative z-10">
+                   {[
+                     ['钠', `${Math.round(totalSodium)}mg`],
+                     ['嘌呤', `${Math.round(totalPurine)}mg`],
+                     ['蛋白', `${Math.round(totalProtein * 10) / 10}g`],
+                     ['碳水', `${Math.round(totalCarbs * 10) / 10}g`],
+                     ['脂肪', `${Math.round(totalFat * 10) / 10}g`],
+                   ].map(([label, value]) => (
+                     <div key={label} className="rounded-xl border border-white/5 bg-black/20 px-2 py-2 text-center">
+                       <p className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">{label}</p>
+                       <p className="mt-1 text-[11px] text-slate-200 font-serif font-bold tracking-wide">{value}</p>
+                     </div>
+                   ))}
+                 </div>
+
                  {/* AI Suggestion Box */}
                  <div className="bg-white/5 rounded-xl p-3 flex gap-3 items-start border border-white/5 relative z-10">
                      <div className="shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-primary mt-0.5">
@@ -389,7 +498,16 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
 
             {/* Meal List */}
             <div className="flex flex-col gap-3">
-                {meals.map(meal => {
+                {mealsByType.map(group => group.meals.length > 0 && (
+                  <div key={group.id} className="space-y-2">
+                    <div className="flex items-center justify-between px-1">
+                      <h4 className="text-slate-300 text-sm font-serif font-bold tracking-wide">{group.label}</h4>
+                      <span className="text-[11px] text-slate-500 font-serif font-bold tracking-wide">
+                        {group.meals.reduce((sum, meal) => sum + meal.calories, 0)} kcal
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-3">
+                {group.meals.map(meal => {
                     const categoryConfig = FOOD_CATEGORIES.find(c => c.id === meal.category) || FOOD_CATEGORIES[0];
                     const macroSummary = [
                       meal.protein !== undefined ? `蛋白 ${meal.protein}g` : null,
@@ -488,11 +606,14 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
                              )}
                          </div>
                      );
-                 })}
+                  })}
+                    </div>
+                  </div>
+                ))}
                 
                 {meals.length === 0 && (
                     <div className="py-8 text-center border border-dashed border-white/10 rounded-xl">
-                        <p className="text-slate-500 text-xs font-serif font-bold tracking-wide">今日暂无饮食记录</p>
+                        <p className="text-slate-500 text-xs font-serif font-bold tracking-wide">{dateLabel}暂无饮食记录</p>
                     </div>
                 )}
             </div>
@@ -586,10 +707,11 @@ const LogView: React.FC<LogViewProps> = ({ userProfile, meals, dailyTargets, onA
                        <div className="pt-2 flex flex-col gap-3">
                            <button 
                               onClick={addMeal}
-                              className="w-full bg-gradient-to-r from-primary to-[#45b7aa] text-background-dark font-bold py-3.5 rounded-xl hover:shadow-[0_0_20px_rgba(17,196,212,0.4)] transition-all active:scale-[0.98] flex items-center justify-center gap-2 font-serif tracking-wide"
+                              disabled={isSavingAdd || !mealInput.name.trim()}
+                              className="w-full bg-gradient-to-r from-primary to-[#45b7aa] text-background-dark font-bold py-3.5 rounded-xl hover:shadow-[0_0_20px_rgba(17,196,212,0.4)] transition-all active:scale-[0.98] flex items-center justify-center gap-2 font-serif tracking-wide disabled:opacity-50 disabled:cursor-not-allowed"
                            >
                                <span className="material-symbols-outlined text-lg">auto_awesome</span>
-                                本地估算记录(含钠/嘌呤)
+                                {isSavingAdd ? '保存中...' : `记录到${dateLabel}`}
                            </button>
                            <button 
                               onClick={() => setIsAdding(false)}

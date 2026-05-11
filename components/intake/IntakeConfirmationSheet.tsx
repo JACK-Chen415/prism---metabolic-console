@@ -5,10 +5,13 @@ interface IntakeConfirmationSheetProps {
   session: IntakeDraftSession;
   isSubmitting: boolean;
   error?: string | null;
+  reevaluatingDraftIds?: string[];
+  staleEvaluationDraftIds?: string[];
   onClose: () => void;
   onChangeCandidate: (draftId: string, patch: Partial<IntakeCandidate>) => void;
   onDeleteCandidate: (draftId: string) => void;
   onAddCandidate: () => void;
+  onReevaluateCandidate?: (draftId: string) => void;
   onConfirm: () => void;
 }
 
@@ -42,34 +45,37 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
   session,
   isSubmitting,
   error,
+  reevaluatingDraftIds = [],
+  staleEvaluationDraftIds = [],
   onClose,
   onChangeCandidate,
   onDeleteCandidate,
   onAddCandidate,
+  onReevaluateCandidate,
   onConfirm,
 }) => {
   const sourceLabel = session.source === 'voice' ? '语音候选' : session.source === 'photo' ? '拍照候选' : 'AI候选';
 
   return (
-    <div className="fixed inset-x-0 top-0 bottom-[calc(96px_+_env(safe-area-inset-bottom))] z-[70] bg-black/80 backdrop-blur-sm px-4 pt-8 pb-4 flex items-end justify-center">
-      <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#101719] shadow-2xl overflow-hidden max-h-[calc(100dvh_-_144px_-_env(safe-area-inset-bottom))] min-h-0 flex flex-col">
-        <div className="shrink-0 px-5 py-4 border-b border-white/10 bg-[#101719]/95 backdrop-blur flex items-start justify-between">
-          <div>
+    <div className="fixed inset-0 z-[90] bg-black/80 backdrop-blur-sm px-4 pt-[calc(16px_+_env(safe-area-inset-top))] pb-[calc(120px_+_env(safe-area-inset-bottom))] flex items-end justify-center">
+      <div className="w-full max-w-md max-h-full min-h-0 rounded-3xl border border-white/10 bg-[#101719] shadow-2xl overflow-hidden flex flex-col">
+        <div className="shrink-0 px-5 py-4 border-b border-white/10 bg-[#101719]/95 backdrop-blur flex items-start justify-between gap-3">
+          <div className="min-w-0">
             <div className="text-[11px] uppercase tracking-[0.25em] text-primary/80 font-bold">{sourceLabel}</div>
             <h3 className="text-white text-lg font-serif font-bold tracking-wide mt-1">确认后写入生命日志</h3>
-            <p className="text-slate-400 text-xs mt-1 font-serif tracking-wide">
+            <p className="text-slate-400 text-xs mt-1 font-serif tracking-wide leading-relaxed max-h-10 overflow-y-auto pr-1">
               {session.raw_input_text || session.raw_summary || '请核对候选项后再正式记账。'}
             </p>
           </div>
           <button
             onClick={onClose}
-            className="w-9 h-9 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/5 transition-colors"
+            className="w-9 h-9 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/5 transition-colors shrink-0"
           >
             <span className="material-symbols-outlined">close</span>
           </button>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4 space-y-4 scroll-pb-28">
           {session.summary_warning && (
             <div className="rounded-2xl border border-amber-300/20 bg-amber-500/10 px-4 py-3 text-xs text-amber-100 leading-relaxed font-serif tracking-wide">
               {session.summary_warning}
@@ -84,6 +90,8 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
 
           {session.candidates.map((candidate) => {
             const levelClass = levelClassMap[candidate.recommendation_level || 'INSUFFICIENT'] || levelClassMap.INSUFFICIENT;
+            const isReevaluating = reevaluatingDraftIds.includes(candidate.draft_id);
+            const isEvaluationStale = staleEvaluationDraftIds.includes(candidate.draft_id);
             return (
               <div key={candidate.draft_id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
                 <div className="flex items-start justify-between gap-3">
@@ -100,17 +108,41 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
                           命中本地规则
                         </span>
                       )}
+                      {isReevaluating && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-primary/20 bg-primary/10 text-[10px] text-primary font-bold tracking-wide">
+                          <span className="material-symbols-outlined text-[12px] animate-spin">sync</span>
+                          重新评估中
+                        </span>
+                      )}
+                      {isEvaluationStale && !isReevaluating && (
+                        <span className="inline-flex px-2 py-0.5 rounded-full border border-amber-300/30 bg-amber-500/10 text-[10px] text-amber-100 font-bold tracking-wide">
+                          已修改待评估
+                        </span>
+                      )}
                     </div>
                     <p className="text-slate-400 text-[11px] mt-2 font-serif tracking-wide">
                       {candidate.matched_disease_codes.length > 0 ? `命中病种：${candidate.matched_disease_codes.join('、')}` : '本地病种规则未命中'}
                     </p>
                   </div>
-                  <button
-                    onClick={() => onDeleteCandidate(candidate.draft_id)}
-                    className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:text-red-300 hover:bg-red-500/10 transition-colors"
-                  >
-                    <span className="material-symbols-outlined text-[18px]">delete</span>
-                  </button>
+                  <div className="shrink-0 flex items-center gap-1">
+                    {onReevaluateCandidate && (
+                      <button
+                        onClick={() => onReevaluateCandidate(candidate.draft_id)}
+                        disabled={isSubmitting || isReevaluating || !candidate.food_name.trim()}
+                        className="h-8 rounded-full border border-white/10 bg-white/5 px-2 inline-flex items-center gap-1 text-[11px] text-slate-300 hover:text-primary hover:border-primary/30 hover:bg-primary/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="重新评估本地饮食规则"
+                      >
+                        <span className={`material-symbols-outlined text-[16px] ${isReevaluating ? 'animate-spin' : ''}`}>sync</span>
+                        <span>{isReevaluating ? '评估中' : '重新评估'}</span>
+                      </button>
+                    )}
+                    <button
+                      onClick={() => onDeleteCandidate(candidate.draft_id)}
+                      className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">delete</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -259,7 +291,7 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
           )}
         </div>
 
-        <div className="shrink-0 border-t border-white/10 px-4 py-4 bg-[#101719] space-y-3">
+        <div className="shrink-0 border-t border-white/10 px-4 py-4 bg-[#101719] space-y-3 shadow-[0_-12px_24px_rgba(0,0,0,0.18)]">
           <button
             onClick={onAddCandidate}
             className="w-full h-11 rounded-2xl border border-white/10 bg-white/5 text-slate-200 text-sm font-serif font-bold tracking-wide hover:bg-white/10 transition-colors"
@@ -268,10 +300,14 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
           </button>
           <button
             onClick={onConfirm}
-            disabled={isSubmitting || session.candidates.length === 0}
+            disabled={isSubmitting || session.candidates.length === 0 || staleEvaluationDraftIds.length > 0}
             className="w-full h-12 rounded-2xl bg-gradient-to-r from-primary to-[#45b7aa] text-[#081012] text-sm font-serif font-bold tracking-wide disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {isSubmitting ? '正在写入生命日志...' : '确认并写入日志'}
+            {isSubmitting
+              ? '正在写入生命日志...'
+              : staleEvaluationDraftIds.length > 0
+                ? '请先重新评估候选'
+                : '确认并写入日志'}
           </button>
         </div>
       </div>

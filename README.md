@@ -102,6 +102,12 @@ npm run dev:local
 - 后端健康检查：`http://localhost:8000/api/health`
 - API 文档：`http://localhost:8000/api/docs`
 
+本地 PostgreSQL 启动说明：
+- `npm run dev:local` 会优先使用脚本管理的本地 PostgreSQL；脚本会从 `POSTGRES_BIN`、系统 `PATH`、常见安装目录中寻找 PostgreSQL 命令行工具。
+- 如果 PostgreSQL 不在常见路径，可运行：`powershell -File ./scripts/start-local.ps1 -PostgresBin "C:\Program Files\PostgreSQL\16\bin"`。
+- 如果想使用现有数据库，可先设置 `DATABASE_URL`，或运行：`powershell -File ./scripts/start-local.ps1 -DatabaseUrl "postgresql+asyncpg://..."`。
+- 默认统一使用本机 `localhost:5433/prism_metabolic`。`-UseDockerDb` 只保留给旧 Docker 库迁移/恢复场景。
+
 ### 4. 停止本地环境
 
 ```bash
@@ -190,13 +196,27 @@ prism---metabolic-console/
 ### 后端 (`backend/.env`)
 
 ```env
-DATABASE_URL=postgresql+asyncpg://prism:prism123@localhost:5432/prism_metabolic
+DATABASE_URL=postgresql+asyncpg://prism:prism123@localhost:5433/prism_metabolic
 JWT_SECRET_KEY=your-secret-key
 ARK_API_KEY=your-volcengine-api-key
 DOUBAO_MODEL=your-multimodal-endpoint-id
+DOUBAO_TIMEOUT_SECONDS=60
+DOUBAO_MAX_RETRIES=1
+DOUBAO_CHAT_MAX_TOKENS=800
+CHAT_HISTORY_LIMIT=12
 ```
 
 `DOUBAO_MODEL` 是主豆包多模态模型配置，文本聊天和拍照识别共用同一个模型入口。
+超时、重试、输出长度和历史上下文限制用于控制聊天响应耗时；不需要额外配置独立文本模型。
+
+豆包延迟基准测试：
+
+```bash
+cd backend
+python scripts/benchmark_doubao_latency.py --runs 3 --csv
+```
+
+结果会写入 `backend/perf_results/`，只记录耗时、字符数、模型/endpoint 标识和错误摘要，不写入 API Key 或完整 prompt。
 
 ### 前端 (`.env.local`)
 

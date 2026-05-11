@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     port: int = 8000
     
     # 数据库配置
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/prism_db"
+    database_url: str = "postgresql+asyncpg://prism:prism123@localhost:5433/prism_metabolic"
     
     # JWT 认证配置
     jwt_secret_key: str = "your-super-secret-key-change-in-production"
@@ -40,6 +40,17 @@ class Settings(BaseSettings):
     ark_api_key: Optional[str] = None  # ARK API Key
     doubao_model: Optional[str] = None  # 主多模态模型 endpoint/model
     doubao_endpoint_id: Optional[str] = None  # Deprecated: use DOUBAO_MODEL
+    doubao_timeout_seconds: float = 60.0
+    doubao_connect_timeout_seconds: float = 10.0
+    doubao_max_retries: int = 1
+    doubao_chat_max_tokens: int = 800
+    doubao_vision_max_tokens: int = 2000
+    doubao_vision_fast_max_tokens: int = 900
+
+    # AI 聊天上下文保护
+    chat_history_limit: int = 12
+    chat_history_message_max_chars: int = 1200
+    chat_prompt_max_chars: int = 12000
     
     # 文件存储配置
     upload_dir: str = "./uploads"
