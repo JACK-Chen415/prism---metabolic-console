@@ -10,8 +10,7 @@ export enum View {
   CAMERA = 'CAMERA',
   SETTINGS = 'SETTINGS',
   MESSAGES = 'MESSAGES',
-  MEDICAL_ARCHIVES = 'MEDICAL_ARCHIVES',
-  HEALTH_REPORT_ARCHIVES = 'HEALTH_REPORT_ARCHIVES'
+  MEDICAL_ARCHIVES = 'MEDICAL_ARCHIVES'
 }
 
 export interface MetricData {
@@ -188,14 +187,20 @@ export interface IntakeCandidate {
   caution_note?: string | null;
 }
 
+export type IntakeParseStatus = 'ready' | 'needs_clarification' | 'refused';
+
 export interface IntakeDraftSession {
   source: Extract<MealSource, 'voice' | 'photo' | 'ai_quick_log'>;
+  status?: IntakeParseStatus;
   raw_input_text?: string | null;
   raw_summary?: string | null;
   record_date: string;
   meal_time_hint?: string | null;
   candidates: IntakeCandidate[];
   summary_warning?: string | null;
+  missing_fields?: string[];
+  follow_up_prompt?: string | null;
+  refusal_reason?: string | null;
 }
 
 export interface VoiceAutoLogRequest {

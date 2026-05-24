@@ -6,7 +6,7 @@
 import { AUTH_STORAGE_KEYS } from '../constants/storage';
 import { ChatStreamEvent, IntakeCandidate, IntakeDraftSession } from '../types';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api';
 
 export const TokenManager = {
     getAccessToken: (): string | null => {
@@ -505,6 +505,19 @@ export const IntakeAPI = {
             record_date: recordDate,
         }),
 
+    parseText: (
+        text: string,
+        contextText?: string,
+        mealTimeHint?: string,
+        recordDate?: string
+    ) =>
+        apiClient.post<IntakeDraftSession>('/intake/text/parse', {
+            text,
+            context_text: contextText,
+            meal_time_hint: mealTimeHint,
+            record_date: recordDate,
+        }),
+
     autoLogVoice: (
         transcript: string,
         mealTimeHint?: string,
@@ -599,6 +612,12 @@ export const MessagesAPI = {
     markAllAsRead: () => apiClient.post('/messages/read-all'),
 
     delete: (id: number) => apiClient.delete(`/messages/${id}`)
+};
+
+export const InsightsAPI = {
+    refresh: () => apiClient.post('/insights/refresh'),
+
+    getToday: () => apiClient.get('/insights/today')
 };
 
 export default apiClient;

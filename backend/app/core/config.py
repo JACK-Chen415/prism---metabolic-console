@@ -43,14 +43,14 @@ class Settings(BaseSettings):
     doubao_timeout_seconds: float = 60.0
     doubao_connect_timeout_seconds: float = 10.0
     doubao_max_retries: int = 1
-    doubao_chat_max_tokens: int = 800
+    doubao_chat_max_tokens: int = 420
     doubao_vision_max_tokens: int = 2000
     doubao_vision_fast_max_tokens: int = 900
 
     # AI 聊天上下文保护
-    chat_history_limit: int = 12
-    chat_history_message_max_chars: int = 1200
-    chat_prompt_max_chars: int = 12000
+    chat_history_limit: int = 6
+    chat_history_message_max_chars: int = 600
+    chat_prompt_max_chars: int = 3500
     
     # 文件存储配置
     upload_dir: str = "./uploads"
