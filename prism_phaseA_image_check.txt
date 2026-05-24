@@ -1,0 +1,10 @@
+timestamp=2026-05-22T16:40:28.211Z
+health=http://127.0.0.1:8001/api/health OK
+image=public/images/food-fish.png
+auth=throwaway user registered; token redacted
+route_tested=/api/chat/recognize-food/upload HTTP 200; /api/intake/photo/recognize-parse-upload HTTP 200
+semantic_result=success; chat_mentions_fish=true; intake_mentions_fish=true; fish_candidates=香草清蒸整鱼
+works_now=yes
+root_cause_if_any=none
+files_changed=/home/win/Project/prism---metabolic-console/prism_phaseA_image_check.txt only
+remaining_risk=single fixture and live model/API behavior may vary

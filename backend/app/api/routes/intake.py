@@ -15,6 +15,7 @@ from app.schemas.intake import (
     IntakeConfirmResponse,
     IntakeDraftSessionResponse,
     PhotoParseRequest,
+    TextParseRequest,
     VoiceAutoLogRequest,
     VoiceParseRequest,
 )
@@ -39,6 +40,21 @@ async def parse_voice_intake(
 ):
     conditions = await get_user_conditions(current_user.id, db)
     return await intake_service.parse_voice(
+        db,
+        user=current_user,
+        conditions=conditions,
+        data=data,
+    )
+
+
+@router.post("/text/parse", response_model=IntakeDraftSessionResponse)
+async def parse_text_intake(
+    data: TextParseRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+):
+    conditions = await get_user_conditions(current_user.id, db)
+    return await intake_service.parse_text(
         db,
         user=current_user,
         conditions=conditions,

@@ -289,53 +289,53 @@ const LogView: React.FC<LogViewProps> = ({
 
   return (
     <div className="flex flex-col w-full pb-28 relative">
-      <div className="sticky top-0 z-20 bg-background-dark/90 backdrop-blur-md p-4 pb-3 border-b border-white/5">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-xl font-bold leading-tight tracking-wide flex-1 text-white font-serif">生命日志</h2>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => changeDate(addDays(currentDate, -1))}
-              disabled={isChangingDate}
-              className="w-8 h-8 rounded-full flex items-center justify-center bg-surface-dark border border-white/10 text-slate-300 hover:text-white disabled:opacity-50"
-              aria-label="前一天"
-            >
-              <span className="material-symbols-outlined text-[18px]">chevron_left</span>
-            </button>
-            <label className="flex items-center justify-center bg-surface-dark rounded-full px-3 py-1 border border-white/10">
-              <span className="material-symbols-outlined text-base mr-1 text-primary">calendar_today</span>
-              <input
-                type="date"
-                value={currentDate}
-                max={todayDate}
-                onChange={(event) => changeDate(event.target.value)}
-                disabled={isChangingDate}
-                className="w-[122px] bg-transparent text-mineral text-sm font-bold leading-normal tracking-wide shrink-0 font-serif outline-none disabled:opacity-50"
-                aria-label="选择日志日期"
-              />
-            </label>
-            <button
-              onClick={() => changeDate(addDays(currentDate, 1))}
-              disabled={isChangingDate || isViewingToday}
-              className="w-8 h-8 rounded-full flex items-center justify-center bg-surface-dark border border-white/10 text-slate-300 hover:text-white disabled:opacity-30"
-              aria-label="后一天"
-            >
-              <span className="material-symbols-outlined text-[18px]">chevron_right</span>
-            </button>
+      <div className="sticky top-0 z-20 bg-background-dark/90 backdrop-blur-md px-4 pt-3 pb-3 border-b border-white/5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-xl font-bold leading-tight tracking-wide text-white font-serif">生命日志</h2>
+            <p className="mt-1 text-xs text-slate-500 font-serif font-bold tracking-wide">
+              {isChangingDate ? '正在切换日期...' : `${dateLabel} · ${meals.length} 条记录`}
+            </p>
           </div>
-        </div>
-        <div className="mt-2 flex items-center justify-between">
-          <p className="text-[11px] text-slate-500 font-serif font-bold tracking-wide">
-            {isChangingDate ? '正在切换日期...' : `${dateLabel} · ${meals.length} 条记录`}
-          </p>
           {!isViewingToday && (
             <button
               onClick={() => changeDate(todayDate)}
               disabled={isChangingDate}
-              className="text-[11px] text-primary font-serif font-bold tracking-wide disabled:opacity-50"
+              className="min-h-10 shrink-0 rounded-full border border-primary/25 bg-primary/10 px-3 text-xs text-primary font-serif font-bold tracking-wide disabled:opacity-50"
             >
               回到今天
             </button>
           )}
+        </div>
+        <div className="mt-3 grid grid-cols-[44px_minmax(0,1fr)_44px] items-center gap-2">
+          <button
+            onClick={() => changeDate(addDays(currentDate, -1))}
+            disabled={isChangingDate}
+            className="h-11 w-11 rounded-2xl flex items-center justify-center bg-surface-dark border border-white/10 text-slate-300 hover:text-white disabled:opacity-50"
+            aria-label="前一天"
+          >
+            <span className="material-symbols-outlined text-[22px]">chevron_left</span>
+          </button>
+          <label className="h-11 min-w-0 flex items-center justify-center bg-surface-dark rounded-2xl px-3 border border-white/10">
+            <span className="material-symbols-outlined text-lg mr-2 text-primary">calendar_today</span>
+            <input
+              type="date"
+              value={currentDate}
+              max={todayDate}
+              onChange={(event) => changeDate(event.target.value)}
+              disabled={isChangingDate}
+              className="min-w-0 flex-1 bg-transparent text-mineral text-base font-bold leading-normal tracking-wide font-serif outline-none disabled:opacity-50"
+              aria-label="选择日志日期"
+            />
+          </label>
+          <button
+            onClick={() => changeDate(addDays(currentDate, 1))}
+            disabled={isChangingDate || isViewingToday}
+            className="h-11 w-11 rounded-2xl flex items-center justify-center bg-surface-dark border border-white/10 text-slate-300 hover:text-white disabled:opacity-30"
+            aria-label="后一天"
+          >
+            <span className="material-symbols-outlined text-[22px]">chevron_right</span>
+          </button>
         </div>
       </div>
 
@@ -434,27 +434,27 @@ const LogView: React.FC<LogViewProps> = ({
             </div>
             
             {/* Calorie Summary Card */}
-            <div className="bg-surface-dark border border-white/5 rounded-2xl p-5 shadow-sm relative overflow-hidden mb-4">
+            <div className="bg-surface-dark border border-white/5 rounded-2xl p-4 sm:p-5 shadow-sm relative overflow-hidden mb-4">
                  {/* Decorative background glow */}
                  <div className="absolute top-0 right-0 w-32 h-32 bg-primary/5 rounded-full blur-2xl -mr-10 -mt-10"></div>
 
-                 <div className="flex justify-between items-end mb-4 relative z-10">
-                     <div>
-                         <p className="text-slate-400 text-xs font-serif font-bold tracking-wide mb-1 flex items-center gap-1">
+                 <div className="grid gap-3 mb-4 relative z-10 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                     <div className="min-w-0">
+                         <p className="text-slate-400 text-xs font-serif font-bold tracking-wide mb-1.5 flex items-center gap-1">
                              {isViewingToday ? '今日摄入' : '所选日期摄入'} 
                              <span className="text-white/20">/</span> 
                              <span className="text-slate-500">目标 {targetCalories > 0 ? targetCalories : '--'}</span>
                          </p>
-                         <div className="flex items-baseline gap-1.5">
-                             <span className={`text-4xl font-serif font-bold tracking-wide ${targetCalories > 0 && totalCalories > targetCalories ? 'text-ochre' : 'text-white'}`}>
+                         <div className="flex items-baseline gap-2">
+                             <span className={`text-[2.75rem] leading-none font-serif font-bold tracking-wide sm:text-4xl ${targetCalories > 0 && totalCalories > targetCalories ? 'text-ochre' : 'text-white'}`}>
                                 {totalCalories}
                              </span>
                              <span className="text-xs text-slate-500 font-bold font-serif tracking-wide">kcal</span>
                          </div>
                      </div>
-                     <div className="text-right">
-                         <p className="text-xs text-slate-500 mb-1 font-serif font-bold tracking-wide">剩余额度</p>
-                         <span className={`text-xl font-serif font-bold tracking-wide ${remainingCalories > 0 ? 'text-emerald-500' : 'text-ochre'}`}>
+                     <div className="justify-self-start rounded-xl border border-white/5 bg-black/20 px-3 py-2 text-left sm:justify-self-end sm:border-0 sm:bg-transparent sm:p-0 sm:text-right">
+                         <p className="text-[10px] text-slate-500 mb-1 font-serif font-bold tracking-wide sm:text-xs">剩余额度</p>
+                         <span className={`text-lg font-serif font-bold tracking-wide sm:text-xl ${remainingCalories > 0 ? 'text-emerald-500' : 'text-ochre'}`}>
                              {targetCalories > 0 ? remainingCalories : '--'}
                          </span>
                      </div>
@@ -470,7 +470,7 @@ const LogView: React.FC<LogViewProps> = ({
                      </div>
                  </div>
 
-                 <div className="grid grid-cols-5 gap-2 mb-4 relative z-10">
+                 <div className="grid grid-cols-3 gap-1.5 mb-4 relative z-10 min-[380px]:grid-cols-5 sm:gap-2">
                    {[
                      ['钠', `${Math.round(totalSodium)}mg`],
                      ['嘌呤', `${Math.round(totalPurine)}mg`],
@@ -478,19 +478,19 @@ const LogView: React.FC<LogViewProps> = ({
                      ['碳水', `${Math.round(totalCarbs * 10) / 10}g`],
                      ['脂肪', `${Math.round(totalFat * 10) / 10}g`],
                    ].map(([label, value]) => (
-                     <div key={label} className="rounded-xl border border-white/5 bg-black/20 px-2 py-2 text-center">
-                       <p className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">{label}</p>
-                       <p className="mt-1 text-[11px] text-slate-200 font-serif font-bold tracking-wide">{value}</p>
+                     <div key={label} className="min-w-0 rounded-lg border border-white/5 bg-black/20 px-1.5 py-2 text-center sm:rounded-xl sm:px-2">
+                       <p className="text-[10px] leading-none text-slate-500 font-serif font-bold tracking-wide">{label}</p>
+                       <p className="mt-1.5 truncate text-[11px] leading-none text-slate-200 font-serif font-bold tracking-wide">{value}</p>
                      </div>
                    ))}
                  </div>
 
                  {/* AI Suggestion Box */}
-                 <div className="bg-white/5 rounded-xl p-3 flex gap-3 items-start border border-white/5 relative z-10">
+                 <div className="bg-white/5 rounded-xl px-3 py-3.5 flex gap-2.5 items-start border border-white/5 relative z-10 sm:gap-3">
                      <div className="shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-primary mt-0.5">
                         <span className="material-symbols-outlined text-sm">smart_toy</span>
                      </div>
-                     <p className="text-xs text-slate-300 leading-relaxed text-justify font-serif tracking-wide">
+                     <p className="min-w-0 text-xs text-slate-300 leading-6 font-serif tracking-wide">
                           {calorieGuidance}
                      </p>
                  </div>
@@ -516,87 +516,93 @@ const LogView: React.FC<LogViewProps> = ({
                       meal.fiber !== undefined ? `纤维 ${meal.fiber}g` : null,
                     ].filter((item): item is string => Boolean(item));
                     return (
-                        <div key={meal.id} className="group flex flex-col p-3.5 rounded-xl bg-surface-dark border border-white/5 hover:border-white/10 transition-colors gap-3">
-                            <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-3.5">
-                                    <div className={`w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center border border-white/5 group-hover:scale-105 transition-transform ${categoryConfig.color}`}>
+                        <div key={meal.id} className="group flex flex-col p-4 rounded-xl bg-surface-dark border border-white/5 hover:border-white/10 transition-colors gap-3">
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="flex items-start gap-3 min-w-0 flex-1">
+                                    <div className={`w-11 h-11 shrink-0 rounded-xl bg-white/5 flex items-center justify-center border border-white/5 group-hover:scale-105 transition-transform ${categoryConfig.color}`}>
                                         <span className="material-symbols-outlined text-2xl">{categoryConfig.icon}</span>
                                     </div>
-                                    <div className="flex flex-col gap-0.5">
-                                        <p className="text-white text-sm font-bold tracking-wide font-serif">{meal.name}</p>
-                                        <div className="flex items-center gap-2">
+                                    <div className="flex flex-col gap-1 min-w-0">
+                                        <p className="text-white text-base font-bold tracking-wide font-serif leading-snug break-words">{meal.name}</p>
+                                        <div className="flex flex-wrap items-center gap-1.5">
                                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-slate-400 border border-white/5 font-serif font-bold tracking-wide">
                                                 {formatMealType(meal.type)}
                                             </span>
                                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 font-serif font-bold tracking-wide">
                                                 {meal.source === 'voice' ? '语音' : meal.source === 'photo' ? '拍照' : meal.source === 'ai_quick_log' ? 'AI' : '手动'}
                                             </span>
-                                            <p className="text-slate-500 text-xs font-serif font-bold tracking-wide">{meal.portion}</p>
+                                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-slate-500 border border-white/5 font-serif font-bold tracking-wide">
+                                                {categoryConfig.label}
+                                            </span>
+                                            <p className="text-slate-500 text-xs font-serif font-bold tracking-wide break-words">{meal.portion}</p>
                                         </div>
                                         {/* Display Note if exists */}
                                         {meal.note && (
-                                            <p className="text-[10px] text-slate-500 font-serif mt-1 flex items-center gap-1">
-                                                <span className="material-symbols-outlined text-[10px]">edit_note</span>
+                                            <p className="text-[10px] text-slate-500 font-serif mt-1 flex items-start gap-1 leading-relaxed break-words">
+                                                <span className="material-symbols-outlined text-[12px] mt-0.5">edit_note</span>
                                                 {meal.note}
                                             </p>
                                         )}
                                     </div>
                                 </div>
-                                <div className="text-right flex flex-col items-end gap-1">
-                                    <p className="text-white text-base font-serif font-bold tracking-wide">{meal.calories}</p>
+                                <div className="shrink-0 text-right flex flex-col items-end gap-0.5 rounded-xl bg-black/20 border border-white/5 px-3 py-2 min-w-[76px]">
+                                    <p className="text-white text-2xl font-serif font-bold tracking-wide leading-none">{meal.calories}</p>
                                     <p className="text-slate-500 text-[10px] font-serif font-bold tracking-wide leading-none">kcal</p>
-                                    <div className="flex items-center gap-1 pt-1">
-                                      <button
-                                        onClick={() => openEditMeal(meal)}
-                                        className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-primary hover:bg-primary/10 transition-colors"
-                                        title="编辑记录"
-                                        aria-label="编辑记录"
-                                      >
-                                        <span className="material-symbols-outlined text-[16px]">edit</span>
-                                      </button>
-                                      <button
-                                        onClick={() => {
-                                          setFeedbackMessage(null);
-                                          setActionError(null);
-                                          setDeletingMeal(meal);
-                                        }}
-                                        className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-red-300 hover:bg-red-500/10 transition-colors"
-                                        title="删除记录"
-                                        aria-label="删除记录"
-                                      >
-                                        <span className="material-symbols-outlined text-[16px]">delete</span>
-                                      </button>
-                                    </div>
                                 </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                onClick={() => openEditMeal(meal)}
+                                className="h-9 rounded-lg flex items-center justify-center gap-1.5 text-xs font-serif font-bold tracking-wide text-slate-300 bg-white/5 border border-white/5 hover:text-primary hover:bg-primary/10 hover:border-primary/20 transition-colors"
+                                title="编辑记录"
+                                aria-label="编辑记录"
+                              >
+                                <span className="material-symbols-outlined text-[16px]">edit</span>
+                                编辑
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setFeedbackMessage(null);
+                                  setActionError(null);
+                                  setDeletingMeal(meal);
+                                }}
+                                className="h-9 rounded-lg flex items-center justify-center gap-1.5 text-xs font-serif font-bold tracking-wide text-slate-300 bg-white/5 border border-white/5 hover:text-red-300 hover:bg-red-500/10 hover:border-red-500/20 transition-colors"
+                                title="删除记录"
+                                aria-label="删除记录"
+                              >
+                                <span className="material-symbols-outlined text-[16px]">delete</span>
+                                删除
+                              </button>
                             </div>
                             
                             {/* Nutrients Detail Line */}
-                            <div className="flex items-center justify-between pl-[54px] border-t border-white/5 pt-2">
-                                <div className="flex items-center gap-4">
-                                    <div className="flex items-center gap-1.5">
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/5 pt-3">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <div className="flex items-center gap-1.5 rounded-lg bg-white/5 border border-white/5 px-2 py-1">
                                         <span className="w-1.5 h-1.5 rounded-full bg-primary/50"></span>
                                         <span className="text-[10px] text-slate-400 font-serif font-bold tracking-wide">钠: {meal.sodium}mg</span>
                                     </div>
-                                    <div className="flex items-center gap-1.5">
+                                    <div className="flex items-center gap-1.5 rounded-lg bg-white/5 border border-white/5 px-2 py-1">
                                         <span className="w-1.5 h-1.5 rounded-full bg-purple/50"></span>
                                         <span className="text-[10px] text-slate-400 font-serif font-bold tracking-wide">嘌呤: {meal.purine}mg</span>
                                     </div>
                                  </div>
-                                 <span className="text-[9px] text-slate-500/80 bg-white/5 px-1 py-0.5 rounded border border-white/5 font-serif tracking-wide transform scale-90 origin-right">
+                                 <span className="text-[10px] text-slate-500/80 bg-white/5 px-2 py-1 rounded-lg border border-white/5 font-serif tracking-wide">
                                      {meal.estimatedFields && meal.estimatedFields.length > 0 ? '估算' : '已记录'}
                                  </span>
                              </div>
                              {macroSummary.length > 0 && (
-                               <div className="pl-[54px] flex flex-wrap gap-2 -mt-1">
+                               <div className="flex flex-wrap gap-2 -mt-1">
                                  {macroSummary.map(item => (
-                                   <span key={item} className="text-[10px] text-slate-500 bg-white/5 border border-white/5 rounded px-1.5 py-0.5 font-serif font-bold tracking-wide">
+                                   <span key={item} className="text-[10px] text-slate-500 bg-white/5 border border-white/5 rounded-lg px-2 py-1 font-serif font-bold tracking-wide">
                                      {item}
                                    </span>
                                  ))}
                                </div>
                              )}
                              {meal.ruleWarnings && meal.ruleWarnings.length > 0 && (
-                                 <div className="ml-[54px] rounded-xl border border-amber-300/20 bg-amber-500/10 px-3 py-2">
+                                 <div className="rounded-xl border border-amber-300/20 bg-amber-500/10 px-3 py-2">
                                      {meal.ruleWarnings.slice(0, 2).map((warning) => (
                                          <p key={warning} className="text-[10px] text-amber-100 font-serif tracking-wide leading-relaxed">
                                              {warning}

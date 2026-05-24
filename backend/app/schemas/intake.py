@@ -20,8 +20,21 @@ class IntakeSource(str, Enum):
     AI_QUICK_LOG = "ai_quick_log"
 
 
+class IntakeParseStatus(str, Enum):
+    READY = "ready"
+    NEEDS_CLARIFICATION = "needs_clarification"
+    REFUSED = "refused"
+
+
 class VoiceParseRequest(BaseModel):
     transcript: str = Field(..., min_length=1, max_length=1000)
+    meal_time_hint: Optional[str] = Field(None, max_length=50)
+    record_date: Optional[date] = None
+
+
+class TextParseRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=1000)
+    context_text: Optional[str] = Field(None, max_length=2000)
     meal_time_hint: Optional[str] = Field(None, max_length=50)
     record_date: Optional[date] = None
 
@@ -80,12 +93,16 @@ class IntakeCandidate(BaseModel):
 
 class IntakeDraftSessionResponse(BaseModel):
     source: IntakeSource
+    status: IntakeParseStatus = IntakeParseStatus.READY
     raw_input_text: Optional[str] = None
     raw_summary: Optional[str] = None
     record_date: date
     meal_time_hint: Optional[str] = None
     candidates: list[IntakeCandidate] = Field(default_factory=list)
     summary_warning: Optional[str] = None
+    missing_fields: list[str] = Field(default_factory=list)
+    follow_up_prompt: Optional[str] = None
+    refusal_reason: Optional[str] = None
 
 
 class IntakeConfirmItem(BaseModel):

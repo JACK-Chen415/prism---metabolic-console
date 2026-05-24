@@ -73,6 +73,11 @@ interface PendingImage {
   url: string;
 }
 
+interface PendingTextClarification {
+  contextText: string;
+  latestFollowUpPrompt: string;
+}
+
 const ChatView: React.FC<ChatViewProps> = ({
   onViewChange,
   onMealLogged,
@@ -85,6 +90,8 @@ const ChatView: React.FC<ChatViewProps> = ({
   const [isListening, setIsListening] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isParsingIntake, setIsParsingIntake] = useState(false);
+  const [explicitTextLogMode, setExplicitTextLogMode] = useState(false);
+  const [pendingTextClarification, setPendingTextClarification] = useState<PendingTextClarification | null>(null);
   const [isSubmittingIntake, setIsSubmittingIntake] = useState(false);
   const [intakeError, setIntakeError] = useState<string | null>(null);
   const [reevaluatingDraftIds, setReevaluatingDraftIds] = useState<string[]>([]);
@@ -100,6 +107,10 @@ const ChatView: React.FC<ChatViewProps> = ({
 
   useEffect(() => {
     pendingIntakeSessionRef.current = pendingIntakeSession;
+
+    if (pendingIntakeSession) {
+      setPendingTextClarification(null);
+    }
 
     if (!pendingIntakeSession) {
       setReevaluatingDraftIds([]);
@@ -192,6 +203,58 @@ const ChatView: React.FC<ChatViewProps> = ({
     }
 
     return `${date.getMonth() + 1}月${date.getDate()}日 ${timeStr}`;
+  };
+
+  const getSystemNoticePresentation = (content: string) => {
+    if (content.includes('失败')) {
+      return {
+        icon: 'error',
+        label: '系统提醒',
+        shellClass: 'border-red-400/15 bg-red-500/5 text-red-100',
+        iconClass: 'text-red-300',
+        labelClass: 'text-red-300/75',
+      };
+    }
+
+    if (content.includes('已记入') || content.includes('已生成')) {
+      return {
+        icon: 'task_alt',
+        label: '流程更新',
+        shellClass: 'border-emerald-400/15 bg-emerald-500/5 text-emerald-100',
+        iconClass: 'text-emerald-300',
+        labelClass: 'text-emerald-300/75',
+      };
+    }
+
+    if (content.includes('切换')) {
+      return {
+        icon: 'tune',
+        label: '模式更新',
+        shellClass: 'border-white/10 bg-white/[0.03] text-slate-300',
+        iconClass: 'text-slate-400',
+        labelClass: 'text-slate-500',
+      };
+    }
+
+    return {
+      icon: 'info',
+      label: '系统提示',
+      shellClass: 'border-white/10 bg-white/[0.03] text-slate-300',
+      iconClass: 'text-slate-400',
+      labelClass: 'text-slate-500',
+    };
+  };
+
+  const formatRecognizedFoodMeta = (food: RecognizedFood) => {
+    const nutrition = food.nutrition || {};
+    const details = [
+      food.estimated_portion,
+      nutrition.calories ? `${Math.round(nutrition.calories)} kcal` : '',
+      nutrition.sodium ? `钠 ${Math.round(nutrition.sodium)}mg` : '',
+      nutrition.purine ? `嘌呤 ${Math.round(nutrition.purine)}mg` : '',
+    ].filter(Boolean);
+
+    return details.join(' · ');
   };
 
   const handleGalleryClick = () => {
@@ -436,11 +499,37 @@ const ChatView: React.FC<ChatViewProps> = ({
     }));
   };
 
+  const pushAiMessage = (content: string) => {
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'AI',
+      aiMode: currentMode,
+      aiName: '食鉴AI',
+      content,
+      timestamp: Date.now(),
+    }]);
+  };
+
+  const pushSystemMessage = (content: string) => {
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'SYSTEM',
+      content,
+      timestamp: Date.now(),
+    }]);
+  };
+
+  const appendClarificationContext = (contextText: string, answerText: string) => {
+    return [contextText.trim(), answerText.trim()].filter(Boolean).join('\n');
+  };
+
   const handleSendMessage = async () => {
     if ((!inputValue.trim() && !pendingImage) || isSending || isParsingIntake) return;
 
     const clickAt = performance.now();
     const currentInput = inputValue.trim();
+    const isAuthenticated = TokenManager.isAuthenticated();
+    const isExplicitTextLogSend = explicitTextLogMode;
 
     if (pendingImage) {
       const imageToSend = pendingImage;
@@ -518,9 +607,93 @@ const ChatView: React.FC<ChatViewProps> = ({
 
     setMessages(prev => [...prev, newUserMsg]);
     setInputValue('');
+
+    if (!isAuthenticated && isExplicitTextLogSend) {
+      setExplicitTextLogMode(false);
+      pushAiMessage('请登录后使用文本记餐。我不会把这条内容当作普通聊天处理。');
+      return;
+    }
+
+    if (isAuthenticated) {
+      setIsParsingIntake(true);
+      setIntakeError(null);
+
+      const activeClarification = pendingTextClarification;
+
+      try {
+        const intakeSession = await IntakeAPI.parseText(
+          currentInput,
+          activeClarification?.contextText,
+        );
+
+        if (intakeSession.status === 'ready' && intakeSession.candidates?.length) {
+          if (isExplicitTextLogSend) {
+            setExplicitTextLogMode(false);
+          }
+          setPendingTextClarification(null);
+          onPendingIntakeSessionChange(intakeSession);
+          pushSystemMessage(
+            activeClarification
+              ? '已根据你补充的信息生成待确认的饮食草稿，请检查后确认写入日志。'
+              : '已生成待确认的饮食草稿，请检查后确认写入日志。'
+          );
+          return;
+        }
+
+        if (intakeSession.status === 'needs_clarification') {
+          const followUpPrompt = intakeSession.follow_up_prompt || '请再补充一些饮食细节，我再帮你整理成待确认记录。';
+          const nextContextText = activeClarification
+            ? appendClarificationContext(activeClarification.contextText, currentInput)
+            : intakeSession.raw_input_text?.trim() || currentInput;
+
+          setPendingTextClarification({
+            contextText: nextContextText,
+            latestFollowUpPrompt: followUpPrompt,
+          });
+          pushAiMessage(isExplicitTextLogSend ? `文本记餐还需要补充一点信息：${followUpPrompt}` : followUpPrompt);
+          return;
+        }
+
+        if (intakeSession.status === 'refused') {
+          setPendingTextClarification(null);
+
+          if (isExplicitTextLogSend) {
+            setExplicitTextLogMode(false);
+            pushAiMessage(
+              intakeSession.refusal_reason
+                ? `这段文字暂时无法整理成饮食记录。${intakeSession.refusal_reason} 请补充吃了什么、什么时候吃的，以及大致分量后再试一次。`
+                : '这段文字暂时无法整理成饮食记录。请补充吃了什么、什么时候吃的，以及大致分量后再试一次。'
+            );
+            return;
+          }
+
+          if (activeClarification) {
+            pushAiMessage(intakeSession.refusal_reason || '这条消息暂时无法整理成可记录的饮食内容。');
+            return;
+          }
+        }
+      } catch (error) {
+        console.error('文本饮食解析失败:', error);
+        if (activeClarification) {
+          setIntakeError(error instanceof Error ? error.message : '补充信息解析失败，请稍后重试。');
+          pushAiMessage('刚才的补充信息暂时没有处理成功。当前待补充记录我还保留着，请稍后再试一次。');
+          return;
+        }
+
+        if (isExplicitTextLogSend) {
+          setExplicitTextLogMode(false);
+          setIntakeError(error instanceof Error ? error.message : '文本记餐解析失败，请稍后重试。');
+          pushAiMessage('文本记餐暂时没有处理成功。我不会把这条内容当作普通聊天处理，请稍后补充食物、时间和分量后再试一次。');
+          return;
+        }
+      } finally {
+        setIsParsingIntake(false);
+      }
+    }
+
     setIsSending(true);
 
-    if (TokenManager.isAuthenticated() && sessionId) {
+    if (isAuthenticated && sessionId) {
       const assistantMessageId = (Date.now() + 1).toString();
       let streamStarted = false;
       let serverStreamError: string | null = null;
@@ -895,6 +1068,39 @@ const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
+  const canSendComposer = Boolean(inputValue.trim() || pendingImage);
+  const sendButtonLabel = pendingImage
+    ? inputValue.trim()
+      ? '发送图片'
+      : '直接发送'
+    : explicitTextLogMode
+      ? '记餐'
+      : '发送';
+  const composerBusyMessage = isSubmittingIntake
+    ? '正在写入饮食日志，请稍候。'
+    : isParsingIntake
+      ? pendingImage
+        ? '正在识别图片并整理饮食候选。'
+        : '正在解析饮食内容并尝试写入日志。'
+      : isSending
+        ? '正在发送给食鉴AI，请稍候。'
+        : isListening
+          ? '正在听你说，结束后会自动整理。'
+          : null;
+  const composerPlaceholder = isListening
+    ? '正在聆听，请说出你吃了什么、分量和口味...'
+    : isParsingIntake
+      ? '正在解析饮食内容...'
+      : isSubmittingIntake
+        ? '正在写入饮食日志...'
+        : pendingImage
+          ? '可补充：半份、少油、重点看嘌呤...'
+          : pendingTextClarification
+            ? '请补充上面的记餐问题...'
+            : explicitTextLogMode
+              ? '文本记餐：写下食物、时间和大致分量...'
+              : '输入问题，或描述刚吃了什么...';
+
   return (
     <div className="flex flex-col w-full min-h-[calc(100vh-100px)]">
       <input
@@ -962,14 +1168,27 @@ const ChatView: React.FC<ChatViewProps> = ({
                 </div>
               )}
 
-              {msg.role === 'SYSTEM' && (
-                <div className="flex justify-center my-2 animate-fade-in">
-                  <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-surface-dark border border-white/5">
-                    <span className="material-symbols-outlined text-primary text-sm">compare_arrows</span>
-                    <span className="text-xs text-primary/80 font-serif tracking-wide">{msg.content}</span>
+              {msg.role === 'SYSTEM' && (() => {
+                const notice = getSystemNoticePresentation(msg.content);
+
+                return (
+                  <div className="flex justify-center my-1.5 animate-fade-in px-2">
+                    <div className={`w-full max-w-[20rem] rounded-xl border px-3 py-2 ${notice.shellClass}`}>
+                      <div className="flex items-start gap-2">
+                        <span className={`material-symbols-outlined mt-0.5 text-[15px] ${notice.iconClass}`}>{notice.icon}</span>
+                        <div className="min-w-0">
+                          <div className={`text-[10px] font-bold tracking-[0.18em] ${notice.labelClass}`}>
+                            {notice.label}
+                          </div>
+                          <div className="mt-0.5 text-xs leading-relaxed font-serif tracking-wide break-words">
+                            {msg.content}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {msg.role === 'USER' && (
                 <div className="flex gap-2.5 flex-row-reverse animate-fade-in">
@@ -1001,14 +1220,25 @@ const ChatView: React.FC<ChatViewProps> = ({
                     )}
                   </div>
 
-                  <div className="flex flex-col gap-1 max-w-[85%]">
-                    <span className={`text-xs ml-1 font-bold tracking-wide ${msg.aiMode === 'STRICT' ? 'text-primary font-serif' : 'text-slate-400 font-serif'}`}>
-                      {msg.aiName}
-                    </span>
+                  <div className="flex flex-col gap-2 max-w-[88%] sm:max-w-[34rem]">
+                    <div className="ml-1 flex items-center gap-2">
+                      <span className={`text-xs font-bold tracking-wide ${msg.aiMode === 'STRICT' ? 'text-primary font-serif' : 'text-slate-400 font-serif'}`}>
+                        {msg.aiName}
+                      </span>
+                      <span className="rounded-full border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10px] text-slate-500 font-serif font-bold tracking-wide">
+                        {msg.aiMode === 'STRICT' ? '风险分析' : '饮食教练'}
+                      </span>
+                      {msg.content && msg.isStreaming && (
+                        <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-primary/75 font-serif tracking-wide">
+                          <span className="h-1.5 w-1.5 rounded-full bg-primary/70 animate-pulse"></span>
+                          {msg.statusText || '生成中'}
+                        </span>
+                      )}
+                    </div>
 
                     {msg.content ? (
                       <div
-                        className={`rounded-xl rounded-tl-none px-3.5 py-2.5 text-white text-sm leading-relaxed shadow-sm font-serif tracking-wide ${msg.aiMode === 'STRICT'
+                        className={`rounded-xl rounded-tl-none px-3.5 py-3 text-white text-sm leading-7 shadow-sm font-serif tracking-wide break-words [&_p]:my-1.5 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_ul]:my-2 [&_ul]:pl-4 [&_ol]:my-2 [&_ol]:pl-4 [&_li]:my-1 [&_strong]:text-white [&_strong]:font-bold ${msg.aiMode === 'STRICT'
                           ? 'bg-[#0f282d] border border-primary/20'
                           : 'bg-surface-dark border border-white/5'
                           }`}
@@ -1025,23 +1255,42 @@ const ChatView: React.FC<ChatViewProps> = ({
                       </div>
                     )}
 
-                    {msg.content && msg.isStreaming && (
-                      <span className="ml-1 text-[11px] text-primary/70 font-serif tracking-wide">
-                        {msg.statusText || '正在生成回复...'}
-                      </span>
-                    )}
-
                     {msg.recognizedFoods && msg.recognizedFoods.length > 0 && !pendingIntakeSession && (
-                      <div className="flex flex-wrap gap-2 mt-2">
-                        {msg.recognizedFoods.slice(0, 3).map((food, idx) => (
-                          <button
-                            key={`${food.food_name}-${idx}`}
-                            onClick={() => handleQuickLog(food)}
-                            className="px-2 py-1 rounded-lg text-xs bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20 transition-colors"
-                          >
-                            记日志: {food.food_name}
-                          </button>
-                        ))}
+                      <div className="mt-1 rounded-2xl border border-primary/20 bg-primary/[0.06] p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-xs font-serif font-bold tracking-wide text-primary">
+                              下一步：确认要写入日志的食物
+                            </p>
+                            <p className="mt-1 text-[11px] leading-relaxed text-slate-400 font-serif tracking-wide">
+                              点选后会直接按当前时间归入对应餐次。
+                            </p>
+                          </div>
+                          <span className="material-symbols-outlined shrink-0 text-[18px] text-primary/80">add_task</span>
+                        </div>
+
+                        <div className="mt-3 flex flex-col gap-2">
+                          {msg.recognizedFoods.slice(0, 3).map((food, idx) => (
+                            <button
+                              key={`${food.food_name}-${idx}`}
+                              onClick={() => handleQuickLog(food)}
+                              className="flex w-full items-center justify-between gap-3 rounded-xl border border-primary/25 bg-[#0f282d]/80 px-3 py-2.5 text-left transition-colors hover:bg-primary/10 active:scale-[0.99]"
+                            >
+                              <span className="min-w-0">
+                                <span className="block truncate text-sm font-serif font-bold tracking-wide text-white">
+                                  {food.food_name}
+                                </span>
+                                <span className="mt-0.5 block truncate text-[11px] font-serif tracking-wide text-slate-400">
+                                  {formatRecognizedFoodMeta(food) || '识别结果待补充分量'}
+                                </span>
+                              </span>
+                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary px-2.5 py-1 text-[11px] font-serif font-bold tracking-wide text-background-dark">
+                                写入
+                                <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
+                              </span>
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1081,10 +1330,11 @@ const ChatView: React.FC<ChatViewProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="sticky bottom-24 px-4 pb-2 z-30">
-        {isParsingIntake && (
-          <div className="mb-2 rounded-2xl border border-primary/20 bg-primary/10 px-3 py-2 text-xs text-primary font-serif tracking-wide">
-            正在解析并自动记录饮食...
+      <div className="sticky bottom-24 px-3 sm:px-4 pb-2 z-30">
+        {composerBusyMessage && (
+          <div className="mb-2 flex items-start gap-2 rounded-2xl border border-primary/25 bg-[#0f282d]/95 px-3 py-2.5 text-xs text-primary font-serif tracking-wide shadow-lg">
+            <span className="material-symbols-outlined mt-0.5 text-[16px] animate-pulse">progress_activity</span>
+            <span className="leading-relaxed">{composerBusyMessage}</span>
           </div>
         )}
 
@@ -1094,37 +1344,58 @@ const ChatView: React.FC<ChatViewProps> = ({
           </div>
         )}
 
-        <div className="flex items-center justify-start px-1 mb-2 gap-2">
+        <div className="mb-2 flex items-center justify-between gap-2 px-1">
+          <button
+            type="button"
+            onClick={() => setExplicitTextLogMode(prev => !prev)}
+            disabled={isParsingIntake || isSubmittingIntake}
+            aria-pressed={explicitTextLogMode}
+            className={`flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-bold font-serif tracking-wide transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 ${explicitTextLogMode ? 'border-primary/60 bg-primary/15 text-primary shadow-[0_0_14px_rgba(17,196,212,0.18)]' : 'border-white/10 bg-[#101719]/75 text-slate-400 hover:border-primary/30 hover:text-slate-200'}`}
+          >
+            <span className="material-symbols-outlined text-[16px]">edit_note</span>
+            文本记餐
+          </button>
+
+          {explicitTextLogMode && (
+            <span className="min-w-0 flex-1 text-right text-[11px] leading-relaxed text-primary/80 font-serif tracking-wide">
+              下一条文字将整理为饮食记录
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center justify-start px-1 mb-2 gap-1.5 overflow-x-auto">
           <button
             onClick={() => setInputValue('请基于我今天已记录的饮食和健康档案，说明当前需要注意的风险点和下一餐原则。')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#131b1d]/90 border border-white/10 backdrop-blur text-xs text-slate-300 hover:text-white hover:border-primary/40 hover:bg-[#162224] transition-all active:scale-95 shadow-lg group"
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-[#101719]/75 px-2.5 py-1 text-[11px] text-slate-500 backdrop-blur transition-all active:scale-95 hover:border-primary/30 hover:text-slate-300 group"
           >
-            <div className="w-5 h-5 rounded-md bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
-              <span className="material-symbols-outlined text-[14px] text-primary">assignment</span>
-            </div>
-            <span className="font-bold font-serif tracking-wide">今日风险解读</span>
+            <span className="material-symbols-outlined text-[14px] text-primary/70 group-hover:text-primary">assignment</span>
+            <span className="font-serif tracking-wide">今日风险</span>
           </button>
 
           <button
             onClick={() => setInputValue('一日三餐吃什么？')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#131b1d]/90 border border-white/10 backdrop-blur text-xs text-slate-300 hover:text-white hover:border-ochre/40 hover:bg-[#162224] transition-all active:scale-95 shadow-lg group"
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-[#101719]/75 px-2.5 py-1 text-[11px] text-slate-500 backdrop-blur transition-all active:scale-95 hover:border-ochre/30 hover:text-slate-300 group"
           >
-            <div className="w-5 h-5 rounded-md bg-ochre/10 flex items-center justify-center group-hover:bg-ochre/20 transition-colors">
-              <span className="material-symbols-outlined text-[14px] text-ochre">restaurant_menu</span>
-            </div>
-            <span className="font-bold font-serif tracking-wide">一日三餐吃什么？</span>
+            <span className="material-symbols-outlined text-[14px] text-ochre/70 group-hover:text-ochre">restaurant_menu</span>
+            <span className="font-serif tracking-wide">三餐建议</span>
           </button>
         </div>
 
         {pendingImage && (
-          <div className="mb-2 flex items-center gap-2 rounded-2xl border border-white/10 bg-surface-dark/95 p-2 shadow-lg">
-            <div className="relative h-16 w-16 overflow-hidden rounded-xl border border-white/10 shrink-0">
+          <div className="mb-2 flex items-center gap-3 rounded-2xl border border-primary/20 bg-surface-dark/95 p-2.5 shadow-lg">
+            <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-white/10">
               <img src={pendingImage.url} alt="待发送图片" className="h-full w-full object-cover" />
             </div>
 
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-bold text-white font-serif tracking-wide">图片已选择，可继续输入提示词</p>
-              <p className="mt-1 truncate text-[11px] text-slate-500 font-serif">{pendingImage.file.name}</p>
+              <div className="flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-[16px] text-primary">image</span>
+                <p className="text-xs font-bold text-white font-serif tracking-wide">图片已准备好</p>
+              </div>
+              <p className="mt-1 text-[11px] leading-relaxed text-slate-400 font-serif">
+                可先补充提示词，也可直接发送识别。
+              </p>
+              <p className="mt-0.5 truncate text-[11px] text-slate-600 font-serif">{pendingImage.file.name}</p>
             </div>
 
             <button
@@ -1138,11 +1409,12 @@ const ChatView: React.FC<ChatViewProps> = ({
           </div>
         )}
 
-        <div className="flex items-end gap-2 p-1.5 bg-surface-dark border border-white/10 rounded-2xl shadow-lg">
+        <div className="flex items-end gap-1.5 rounded-2xl border border-white/10 bg-surface-dark p-1.5 shadow-lg">
           <button
             onClick={handleGalleryClick}
             disabled={isParsingIntake || isSubmittingIntake}
-            className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-white transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label="添加图片"
           >
             <span className="material-symbols-outlined">add_photo_alternate</span>
           </button>
@@ -1151,34 +1423,31 @@ const ChatView: React.FC<ChatViewProps> = ({
             value={inputValue}
             onChange={handleTextareaInput}
             onKeyDown={handleKeyDown}
-            placeholder={
-              isListening
-                ? '正在聆听，请说出你吃了什么、分量和口味...'
-                : isParsingIntake
-                  ? '正在解析并自动记录...'
-                  : pendingImage
-                    ? '补充提示词，例如：这是半份、少油、重点看嘌呤...'
-                    : '咨询关于您的代谢健康...'
-            }
+            placeholder={composerPlaceholder}
             rows={1}
-            className={`flex-1 bg-transparent border-none outline-none text-white placeholder-slate-500 text-sm focus:ring-0 caret-primary font-serif tracking-wide font-bold resize-none max-h-[120px] py-2.5 ${isListening ? 'animate-pulse' : ''}`}
+            className={`min-w-0 flex-1 resize-none bg-transparent py-2.5 text-sm font-bold tracking-wide text-white caret-primary outline-none placeholder:text-slate-500 focus:ring-0 font-serif max-h-[120px] ${isListening ? 'animate-pulse' : ''}`}
           />
 
           <button
             onClick={startListening}
             disabled={isListening || isParsingIntake || isSubmittingIntake}
-            className={`w-10 h-10 flex items-center justify-center transition-all duration-300 ${isListening ? 'text-primary scale-110' : 'text-slate-400 hover:text-white'} ${(isParsingIntake || isSubmittingIntake) ? 'opacity-50 cursor-not-allowed' : ''}`}
+            className={`flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-300 ${isListening ? 'scale-110 bg-primary/10 text-primary' : 'text-slate-400 hover:bg-white/5 hover:text-white'} ${(isParsingIntake || isSubmittingIntake) ? 'opacity-50 cursor-not-allowed' : ''}`}
             title="语音录入饮食"
+            aria-label="语音录入饮食"
           >
             <span className="material-symbols-outlined">mic</span>
           </button>
 
           <button
             onClick={handleSendMessage}
-            className={`w-10 h-10 flex items-center justify-center rounded-full font-bold transition-all duration-300 ${(inputValue.trim() || pendingImage) ? 'bg-primary text-background-dark hover:bg-primary/90' : 'bg-white/10 text-white/20'}`}
-            disabled={(!inputValue.trim() && !pendingImage) || isSending || isParsingIntake || isSubmittingIntake}
+            className={`flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-xl px-3 font-bold transition-all duration-300 font-serif ${canSendComposer ? 'min-w-[4.5rem] bg-primary text-background-dark shadow-[0_0_18px_rgba(17,196,212,0.25)] hover:bg-primary/90' : 'w-10 bg-white/10 px-0 text-white/20'}`}
+            disabled={!canSendComposer || isSending || isParsingIntake || isSubmittingIntake}
+            aria-label={sendButtonLabel}
           >
-            <span className="material-symbols-outlined">arrow_upward</span>
+            <span className="material-symbols-outlined text-[18px]">arrow_upward</span>
+            {canSendComposer && (
+              <span className="text-xs tracking-wide">{sendButtonLabel}</span>
+            )}
           </button>
         </div>
       </div>

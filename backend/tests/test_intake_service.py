@@ -4,7 +4,7 @@ import pytest
 
 from app.models.knowledge import FallbackStatus, KnowledgeOrigin, RecommendationLevel
 from app.models.meal import FoodCategory, MealType
-from app.schemas.intake import IntakeConfirmItem, IntakeSource
+from app.schemas.intake import IntakeConfirmItem, IntakeParseStatus, IntakeSource, TextParseRequest
 from app.services.intake import IntakeService
 from app.services.knowledge.contracts import LocalDecision, NormalizedConditions
 
@@ -18,6 +18,14 @@ class NoWriteDb:
 
     async def refresh(self, *_):
         raise AssertionError("reevaluate_confirm_item must not refresh meals")
+
+
+class FakeAuditDb:
+    def add(self, *_):
+        return None
+
+    async def flush(self):
+        return None
 
 
 class FakeMatcher:
@@ -91,6 +99,17 @@ def test_extract_amount_and_food_name() -> None:
     assert food_name == "米饭"
 
 
+def test_extract_amount_supports_fuzzy_small_bowl() -> None:
+    service = IntakeService()
+
+    amount_text, normalized_amount, unit, food_name = service._extract_amount("一小碗米饭")
+
+    assert amount_text == "一小碗"
+    assert normalized_amount == 0.75
+    assert unit == "碗"
+    assert food_name == "米饭"
+
+
 def test_infer_meal_type_and_category() -> None:
     service = IntakeService()
 
@@ -99,6 +118,100 @@ def test_infer_meal_type_and_category() -> None:
 
     assert meal_type == MealType.LUNCH
     assert category == FoodCategory.DRINK
+
+
+@pytest.mark.asyncio
+async def test_parse_text_ready_returns_ai_quick_log_candidates() -> None:
+    service = IntakeService(knowledge_service=FakeKnowledgeService())
+
+    result = await service.parse_text(
+        FakeAuditDb(),
+        user=SimpleNamespace(id=1, nickname="tester"),
+        conditions=[],
+        data=TextParseRequest(text="今天早上吃了一个鸡蛋和一杯无糖豆浆"),
+    )
+
+    assert result.status == IntakeParseStatus.READY
+    assert result.source == IntakeSource.AI_QUICK_LOG
+    assert result.candidates
+    assert all(candidate.source == IntakeSource.AI_QUICK_LOG for candidate in result.candidates)
+
+
+@pytest.mark.asyncio
+async def test_parse_text_needs_clarification_when_foods_missing() -> None:
+    service = IntakeService(knowledge_service=FakeKnowledgeService())
+
+    result = await service.parse_text(
+        FakeAuditDb(),
+        user=SimpleNamespace(id=1, nickname="tester"),
+        conditions=[],
+        data=TextParseRequest(text="帮我记录早餐"),
+    )
+
+    assert result.status == IntakeParseStatus.NEEDS_CLARIFICATION
+    assert "foods" in result.missing_fields
+    assert result.follow_up_prompt
+
+
+@pytest.mark.asyncio
+async def test_parse_text_refuses_non_log_text() -> None:
+    service = IntakeService(knowledge_service=FakeKnowledgeService())
+
+    result = await service.parse_text(
+        FakeAuditDb(),
+        user=SimpleNamespace(id=1, nickname="tester"),
+        conditions=[],
+        data=TextParseRequest(text="痛风能不能吃排骨？"),
+    )
+
+    assert result.status == IntakeParseStatus.REFUSED
+    assert result.refusal_reason
+    assert result.candidates == []
+
+
+@pytest.mark.asyncio
+async def test_parse_text_context_follow_up_completes_prior_meal_log() -> None:
+    service = IntakeService(knowledge_service=FakeKnowledgeService())
+
+    result = await service.parse_text(
+        FakeAuditDb(),
+        user=SimpleNamespace(id=1, nickname="tester"),
+        conditions=[],
+        data=TextParseRequest(
+            text="一小碗，有点咸",
+            context_text="帮我记录午餐，番茄鸡蛋面",
+        ),
+    )
+
+    assert result.status == IntakeParseStatus.READY
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.food_name == "番茄鸡蛋面"
+    assert candidate.amount_text == "一小碗"
+    assert candidate.normalized_amount == 0.75
+    assert candidate.unit == "碗"
+    assert candidate.note == "有点咸"
+    assert "amount" in candidate.estimated_fields
+    assert any("上下文补全" in note for note in candidate.estimated_notes)
+
+
+@pytest.mark.asyncio
+async def test_parse_text_preserves_taste_note_in_candidate() -> None:
+    service = IntakeService(knowledge_service=FakeKnowledgeService())
+
+    result = await service.parse_text(
+        FakeAuditDb(),
+        user=SimpleNamespace(id=1, nickname="tester"),
+        conditions=[],
+        data=TextParseRequest(text="晚餐喝了一杯豆浆，清淡"),
+    )
+
+    assert result.status == IntakeParseStatus.READY
+    assert result.candidates
+    candidate = result.candidates[0]
+    assert candidate.note == "清淡"
+    assert candidate.sodium is not None
+    assert not any("mg" in note for note in candidate.estimated_notes)
 
 
 @pytest.mark.asyncio
