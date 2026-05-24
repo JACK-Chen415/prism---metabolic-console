@@ -41,6 +41,54 @@ const levelClassMap: Record<string, string> = {
   INSUFFICIENT: 'text-slate-300 border-white/10 bg-white/5',
 };
 
+const levelLabelMap: Record<string, string> = {
+  AVOID: '避免',
+  LIMIT: '限量',
+  CONDITIONAL: '条件食用',
+  MODERATE: '适量',
+  RECOMMEND: '推荐',
+  INSUFFICIENT: '信息不足',
+};
+
+const fieldLabelMap: Record<string, string> = {
+  amount: '份量',
+  normalized_amount: '份量',
+  calories: '热量',
+  sodium: '钠',
+  purine: '嘌呤',
+  protein: '蛋白质',
+  carbs: '碳水',
+  fat: '脂肪',
+  fiber: '膳食纤维',
+  sugar: '糖',
+};
+
+const originLabelMap: Record<string, string> = {
+  LOCAL_RULE: '本地规则',
+  LOCAL_KNOWLEDGE: '本地知识库',
+  CLOUD_SUPPLEMENT: '云端补充',
+  MIXED: '混合来源',
+};
+
+const sourceLabelMap: Record<IntakeCandidate['source'], string> = {
+  voice: '语音',
+  photo: '拍照',
+  ai_quick_log: 'AI',
+};
+
+const getLevelLabel = (level?: IntakeCandidate['recommendation_level']) => {
+  if (!level) return '待评估';
+  return levelLabelMap[level] || '待评估';
+};
+
+const formatFieldLabel = (field: string) => fieldLabelMap[field] || field;
+
+const summarizeFields = (fields: string[], emptyText: string) => {
+  if (fields.length === 0) return emptyText;
+  const visibleFields = fields.slice(0, 2).map(formatFieldLabel).join('、');
+  return fields.length > 2 ? `${visibleFields}等${fields.length}项` : visibleFields;
+};
+
 const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
   session,
   isSubmitting,
@@ -55,6 +103,13 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
   onConfirm,
 }) => {
   const sourceLabel = session.source === 'voice' ? '语音候选' : session.source === 'photo' ? '拍照候选' : 'AI候选';
+  const staleCandidates = session.candidates.filter((candidate) => staleEvaluationDraftIds.includes(candidate.draft_id));
+  const staleCandidateNames = staleCandidates
+    .map((candidate) => candidate.food_name.trim())
+    .filter(Boolean);
+  const staleReason = staleEvaluationDraftIds.length > 0
+    ? `${staleEvaluationDraftIds.length}条候选修改后尚未重新评估${staleCandidateNames.length > 0 ? `：${staleCandidateNames.slice(0, 3).join('、')}` : ''}${staleCandidateNames.length > 3 ? '等' : ''}`
+    : '';
 
   return (
     <div className="fixed inset-0 z-[90] bg-black/80 backdrop-blur-sm px-4 pt-[calc(16px_+_env(safe-area-inset-top))] pb-[calc(120px_+_env(safe-area-inset-bottom))] flex items-end justify-center">
@@ -90,15 +145,23 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
 
           {session.candidates.map((candidate) => {
             const levelClass = levelClassMap[candidate.recommendation_level || 'INSUFFICIENT'] || levelClassMap.INSUFFICIENT;
+            const levelLabel = getLevelLabel(candidate.recommendation_level);
             const isReevaluating = reevaluatingDraftIds.includes(candidate.draft_id);
             const isEvaluationStale = staleEvaluationDraftIds.includes(candidate.draft_id);
+            const estimateSummary = summarizeFields(candidate.estimated_fields, '无估算项');
+            const warningSummary = candidate.warnings.length > 0 ? `${candidate.warnings.length}条提醒` : '无风险提醒';
+            const citationSummary = candidate.citations.length > 0 ? `${candidate.citations.length}个来源` : '无规则来源';
+            const sourceSummary = `${sourceLabelMap[candidate.source]} · ${originLabelMap[candidate.origin] || '来源待确认'}`;
             return (
-              <div key={candidate.draft_id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
+              <div key={candidate.draft_id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5 sm:p-4 space-y-3.5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
+                    <p className="text-white text-base font-serif font-bold tracking-wide leading-snug truncate">
+                      {candidate.food_name.trim() || '未命名候选'}
+                    </p>
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className={`inline-flex px-2 py-0.5 rounded-full border text-[10px] font-bold tracking-wide ${levelClass}`}>
-                        {candidate.recommendation_level || '待评估'}
+                        {levelLabel}
                       </span>
                       <span className="inline-flex px-2 py-0.5 rounded-full border border-white/10 bg-white/5 text-[10px] text-slate-300 font-bold tracking-wide">
                         置信度 {Math.round((candidate.confidence || 0) * 100)}%
@@ -120,7 +183,7 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
                         </span>
                       )}
                     </div>
-                    <p className="text-slate-400 text-[11px] mt-2 font-serif tracking-wide">
+                    <p className="text-slate-400 text-[11px] mt-1.5 font-serif tracking-wide leading-relaxed">
                       {candidate.matched_disease_codes.length > 0 ? `命中病种：${candidate.matched_disease_codes.join('、')}` : '本地病种规则未命中'}
                     </p>
                   </div>
@@ -142,6 +205,25 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
                     >
                       <span className="material-symbols-outlined text-[18px]">delete</span>
                     </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-xl border border-white/5 bg-black/20 px-3 py-2">
+                    <p className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">估算</p>
+                    <p className="text-xs text-slate-200 font-serif tracking-wide mt-1 leading-snug">{estimateSummary}</p>
+                  </div>
+                  <div className={`rounded-xl border px-3 py-2 ${candidate.warnings.length > 0 ? 'border-red-400/20 bg-red-500/10' : 'border-white/5 bg-black/20'}`}>
+                    <p className={`text-[10px] font-serif font-bold tracking-wide ${candidate.warnings.length > 0 ? 'text-red-200' : 'text-slate-500'}`}>提醒</p>
+                    <p className={`text-xs font-serif tracking-wide mt-1 leading-snug ${candidate.warnings.length > 0 ? 'text-red-100' : 'text-slate-200'}`}>{warningSummary}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/5 bg-black/20 px-3 py-2">
+                    <p className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">来源</p>
+                    <p className="text-xs text-slate-200 font-serif tracking-wide mt-1 leading-snug">{sourceSummary}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/5 bg-black/20 px-3 py-2">
+                    <p className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">依据</p>
+                    <p className="text-xs text-slate-200 font-serif tracking-wide mt-1 leading-snug">{citationSummary}</p>
                   </div>
                 </div>
 
@@ -244,7 +326,7 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
                   <div className="flex flex-wrap gap-2">
                     {candidate.estimated_fields.map((field) => (
                       <span key={field} className="inline-flex px-2 py-1 rounded-full border border-white/10 bg-white/5 text-[10px] text-slate-300 font-bold tracking-wide">
-                        {field} 估算
+                        {formatFieldLabel(field)} 估算
                       </span>
                     ))}
                   </div>
@@ -292,6 +374,14 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
         </div>
 
         <div className="shrink-0 border-t border-white/10 px-4 py-4 bg-[#101719] space-y-3 shadow-[0_-12px_24px_rgba(0,0,0,0.18)]">
+          {staleReason && (
+            <div className="rounded-2xl border border-amber-300/25 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-100 leading-relaxed font-serif tracking-wide">
+              <div className="flex items-start gap-2">
+                <span className="material-symbols-outlined text-[16px] mt-0.5">info</span>
+                <span>暂不能确认。{staleReason}，请先点击对应候选的“重新评估”。</span>
+              </div>
+            </div>
+          )}
           <button
             onClick={onAddCandidate}
             className="w-full h-11 rounded-2xl border border-white/10 bg-white/5 text-slate-200 text-sm font-serif font-bold tracking-wide hover:bg-white/10 transition-colors"

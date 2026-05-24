@@ -85,6 +85,7 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
   };
 
   const msgStyle = getMessageCardStyle(latestMessage?.type || 'ADVICE');
+  const unreadCount = appMessages.filter(m => !m.isRead).length;
 
   return (
     <div className="flex flex-col w-full h-full pb-28">
@@ -187,22 +188,19 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
         <div className="flex items-center justify-between px-2">
           <div className="flex items-center gap-3">
             <h3 className="text-white font-serif font-bold text-xl tracking-wide">AI 智能洞察</h3>
-            <button
-              onClick={() => onViewChange(View.MESSAGES)}
-              className="group flex items-center gap-0.5 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs text-slate-400 hover:text-white hover:bg-white/10 hover:border-white/20 transition-all active:scale-95"
-            >
-              <span className="tracking-wide font-serif font-bold">所有消息</span>
-              <span className="material-symbols-outlined text-[14px] text-slate-500 group-hover:text-white group-hover:translate-x-0.5 transition-transform">chevron_right</span>
-            </button>
           </div>
           <button
             onClick={() => onViewChange(View.MESSAGES)}
-            className="text-xs text-primary/80 border border-primary/30 px-2 py-1 rounded-full bg-primary/5 font-serif font-bold tracking-wide active:scale-95 transition-transform hover:bg-primary/10"
+            className="group flex items-center gap-1.5 text-xs text-slate-400 hover:text-white font-serif font-bold tracking-wide active:scale-95 transition-all"
+            aria-label={unreadCount > 0 ? `查看洞察记录，${unreadCount} 条未读` : '查看洞察记录'}
           >
-            {(() => {
-              const unreadCount = appMessages.filter(m => !m.isRead).length;
-              return unreadCount > 0 ? `${unreadCount} 条新消息` : '暂无新消息';
-            })()}
+            {unreadCount > 0 && (
+              <span className="min-w-5 h-5 px-1.5 rounded-full bg-primary/10 border border-primary/20 text-primary/90 flex items-center justify-center text-[10px] leading-none">
+                {unreadCount}
+              </span>
+            )}
+            <span>洞察记录</span>
+            <span className="material-symbols-outlined text-[14px] text-slate-500 group-hover:text-white group-hover:translate-x-0.5 transition-transform">chevron_right</span>
           </button>
         </div>
 
@@ -243,41 +241,6 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
             </div>
           </div>
         )}
-
-        {/* Recommendation Guardrail Card */}
-        <div className="group relative overflow-hidden rounded-2xl border border-white/5 p-0 shadow-lg transition-all duration-500 hover:shadow-2xl hover:shadow-glow-purple hover:-translate-y-0.5 bg-surface-dark">
-          {/* Background Effects */}
-          <div className="absolute inset-0 bg-surface-dark opacity-90"></div>
-          <div className="absolute inset-0 bg-gradient-to-br from-purple/10 to-transparent opacity-40"></div>
-          <div className="absolute -top-10 -right-10 w-32 h-32 bg-purple/20 rounded-full blur-[60px] opacity-40"></div>
-
-          <div className="relative z-10 p-4">
-            <div className="flex items-stretch gap-4">
-              <div className="w-24 h-24 shrink-0 rounded-xl bg-black/20 relative overflow-hidden shadow-md ring-1 ring-white/10 flex items-center justify-center">
-                <span className="material-symbols-outlined text-purple/70 text-4xl">rule</span>
-              </div>
-
-              <div className="flex flex-col justify-between py-1 flex-1 min-w-0">
-                <div>
-                  <div className="flex justify-between items-start">
-                    <h4 className="text-white text-base font-bold font-serif tracking-wide truncate pr-2 transition-colors">推荐安全提示</h4>
-                    <div className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">
-                      <span className="text-[10px] text-white/40 font-bold font-serif tracking-wide">未开放</span>
-                    </div>
-                  </div>
-                  <p className="text-slate-400 text-sm mt-1.5 line-clamp-2 font-serif tracking-wide leading-snug">
-                    个性化菜谱推荐需先经过过敏与慢病规则校验。当前仅展示摄入余额，不再输出未经校验的具体菜品。
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="text-[10px] px-2 py-0.5 rounded-md border border-purple/20 text-purple/90 bg-purple/10 font-bold tracking-wide backdrop-blur-sm">规则引擎待接入</span>
-                  <span className="text-[10px] px-2 py-0.5 rounded-md border border-ochre/20 text-ochre/90 bg-ochre/10 font-bold tracking-wide backdrop-blur-sm">嘌呤余额 {remaining.purine}mg</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
 
       </section>
     </div>
