@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChatStreamEvent, IntakeCandidate, IntakeDraftSession, KnowledgeFallbackStatus, KnowledgeOrigin, View } from '../../types';
+import { AIFeedbackType, ChatStreamEvent, IntakeCandidate, IntakeDraftSession, KnowledgeFallbackStatus, KnowledgeOrigin, View } from '../../types';
 import { ChatAPI, IntakeAPI, TokenManager } from '../../services/api';
+import { OfflineMealsService, getTodayDateString } from '../../services/offline';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
-import { clearChatSessionId, getChatSessionId, setChatSessionId } from '../../services/sessionState';
+import { CHAT_PREFERENCE_CHANGED_EVENT, clearChatSessionId, getAssistantIntensity, getChatMode, getChatSessionId, setChatMode, setChatSessionId, type AssistantIntensity, type ChatMode } from '../../services/sessionState';
 import IntakeConfirmationSheet from '../intake/IntakeConfirmationSheet';
 
 // 配置 marked：启用换行符支持，关闭不需要的功能
@@ -27,9 +28,11 @@ interface ChatViewProps {
   onMealLogged?: (recordDate?: string) => void | Promise<void>;
   pendingIntakeSession: IntakeDraftSession | null;
   onPendingIntakeSessionChange: (session: IntakeDraftSession | null) => void;
+  currentUserId: number | null;
 }
 
 type MessageRole = 'USER' | 'AI' | 'SYSTEM';
+type DetailedAIFeedbackType = Extract<AIFeedbackType, 'correction' | 'recognition_correction' | 'knowledge_gap'>;
 
 interface Message {
   id: string;
@@ -38,6 +41,7 @@ interface Message {
   content: string;
   image?: string;
   aiMode?: 'GENTLE' | 'STRICT';
+  assistantIntensity?: AssistantIntensity;
   aiName?: string;
   recognizedFoods?: RecognizedFood[];
   attachments?: Record<string, unknown>;
@@ -66,6 +70,7 @@ interface RecognizedFood {
 interface RecognitionResponse {
   foods?: RecognizedFood[];
   ai_response?: string;
+  message_id?: number | null;
 }
 
 interface PendingImage {
@@ -73,11 +78,45 @@ interface PendingImage {
   url: string;
 }
 
+type ImageUploadStage = 'idle' | 'uploading' | 'parsing' | 'done' | 'error';
+
+interface LastImageUpload {
+  image: PendingImage;
+  prompt: string;
+  sessionId: number;
+}
+
+interface PendingTextClarification {
+  contextText: string;
+  latestFollowUpPrompt: string;
+}
+
+interface ChatSessionSummary {
+  id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count?: number;
+}
+
+interface FeedbackComposerState {
+  message: Message;
+  feedbackType: DetailedAIFeedbackType;
+  title: string;
+  description: string;
+  placeholder: string;
+  helper: string;
+  rating: number;
+  tags: string[];
+  text: string;
+}
+
 const ChatView: React.FC<ChatViewProps> = ({
   onViewChange,
   onMealLogged,
   pendingIntakeSession,
   onPendingIntakeSessionChange,
+  currentUserId,
 }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
@@ -85,21 +124,282 @@ const ChatView: React.FC<ChatViewProps> = ({
   const [isListening, setIsListening] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isParsingIntake, setIsParsingIntake] = useState(false);
+  const [explicitTextLogMode, setExplicitTextLogMode] = useState(false);
+  const [pendingTextClarification, setPendingTextClarification] = useState<PendingTextClarification | null>(null);
   const [isSubmittingIntake, setIsSubmittingIntake] = useState(false);
   const [intakeError, setIntakeError] = useState<string | null>(null);
   const [reevaluatingDraftIds, setReevaluatingDraftIds] = useState<string[]>([]);
   const [staleEvaluationDraftIds, setStaleEvaluationDraftIds] = useState<string[]>([]);
-  const [currentMode, setCurrentMode] = useState<'STRICT' | 'GENTLE'>('STRICT');
+  const [currentMode, setCurrentMode] = useState<'STRICT' | 'GENTLE'>(() => getChatMode());
+  const [assistantIntensity, setAssistantIntensityState] = useState<AssistantIntensity>(() => getAssistantIntensity());
+  const [feedbackByMessage, setFeedbackByMessage] = useState<Record<number, AIFeedbackType>>({});
+  const [submittingFeedbackId, setSubmittingFeedbackId] = useState<number | null>(null);
+  const [feedbackComposer, setFeedbackComposer] = useState<FeedbackComposerState | null>(null);
+  const [chatSessions, setChatSessions] = useState<ChatSessionSummary[]>([]);
+  const [isSessionListOpen, setIsSessionListOpen] = useState(false);
+  const [isLoadingSessions, setIsLoadingSessions] = useState(false);
+  const [deletingSessionId, setDeletingSessionId] = useState<number | null>(null);
   const [sessionId, setSessionId] = useState<number | null>(() => {
     return getChatSessionId();
   });
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pendingIntakeSessionRef = useRef<IntakeDraftSession | null>(pendingIntakeSession);
+  const chatHistoryLoadSeqRef = useRef(0);
+  const sessionBootstrapPromiseRef = useRef<Promise<number | null> | null>(null);
+  const imageUploadAbortRef = useRef<AbortController | null>(null);
+  const imageUploadProgressTimerRef = useRef<number | null>(null);
+  const lastImageUploadRef = useRef<LastImageUpload | null>(null);
+  const [imageUploadStage, setImageUploadStage] = useState<ImageUploadStage>('idle');
+  const [imageUploadProgress, setImageUploadProgress] = useState(0);
+
+  const clearImageUploadProgressTimer = () => {
+    if (imageUploadProgressTimerRef.current) {
+      window.clearInterval(imageUploadProgressTimerRef.current);
+      imageUploadProgressTimerRef.current = null;
+    }
+  };
+
+  const startImageUploadProgress = (stage: Exclude<ImageUploadStage, 'idle' | 'done' | 'error'>) => {
+    clearImageUploadProgressTimer();
+    setImageUploadStage(stage);
+    setImageUploadProgress(stage === 'uploading' ? 28 : 84);
+    imageUploadProgressTimerRef.current = window.setInterval(() => {
+      setImageUploadProgress(prev => {
+        const ceiling = stage === 'uploading' ? 86 : 96;
+        if (prev >= ceiling) return prev;
+        return Math.min(ceiling, prev + (stage === 'uploading' ? 4 : 3));
+      });
+    }, 220);
+  };
+
+  const stopImageUploadProgress = (nextProgress = 0, nextStage: ImageUploadStage = 'idle') => {
+    clearImageUploadProgressTimer();
+    setImageUploadStage(nextStage);
+    setImageUploadProgress(nextProgress);
+  };
+
+  const cancelImageUpload = () => {
+    imageUploadAbortRef.current?.abort();
+  };
+
+  useEffect(() => {
+    return () => {
+      imageUploadAbortRef.current?.abort();
+      clearImageUploadProgressTimer();
+    };
+  }, []);
+
+  const isLikelyNetworkFailure = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error || '');
+    return !navigator.onLine || /failed to fetch|networkerror|load failed|request failed/i.test(message);
+  };
+
+  const persistPendingIntakeOffline = async (session: IntakeDraftSession) => {
+    if (!currentUserId) {
+      throw new Error('当前账号信息不可用，无法写入离线队列。');
+    }
+
+    await Promise.all(
+      session.candidates.map(candidate =>
+        OfflineMealsService.add(currentUserId, {
+          clientId: candidate.draft_id,
+          name: candidate.food_name.trim(),
+          portion: candidate.amount_text || (candidate.normalized_amount ? `${candidate.normalized_amount}${candidate.unit || '份'}` : '1份'),
+          calories: candidate.calories ?? 0,
+          sodium: candidate.sodium ?? 0,
+          purine: candidate.purine ?? 0,
+          protein: candidate.protein ?? undefined,
+          carbs: candidate.carbs ?? undefined,
+          fat: candidate.fat ?? undefined,
+          fiber: candidate.fiber ?? undefined,
+          mealType: candidate.meal_type,
+          category: candidate.category,
+          recordDate: session.record_date || getTodayDateString(),
+          note: candidate.note || undefined,
+          aiRecognized: candidate.source === 'photo' || candidate.source === 'ai_quick_log',
+          source: candidate.source,
+          sourceDetail: '离线候选确认',
+          confidence: candidate.confidence ?? undefined,
+          estimatedFields: candidate.estimated_fields || [],
+          ruleWarnings: candidate.warnings || [],
+          recognitionMeta: {
+            source: candidate.source,
+            origin: candidate.origin,
+            fallback_status: candidate.fallback_status,
+            local_rule_hit: candidate.local_rule_hit,
+            matched_disease_codes: candidate.matched_disease_codes,
+            recommendation_level: candidate.recommendation_level,
+            citation_count: candidate.citations.length,
+            ingredients: candidate.ingredients || [],
+            cooking_method: candidate.cooking_method || null,
+            seasonings: candidate.seasonings || [],
+          },
+        }),
+      ),
+    );
+  };
+
+  const mapBackendMessages = (backendMessages: any[]): Message[] => {
+    return (backendMessages || []).map((m: any) => {
+      const role = (m.role || '').toUpperCase();
+      const isUser = role === 'USER';
+      const uiPreferences = (m.attachments?.ui_preferences || {}) as {
+        ai_mode?: ChatMode;
+        intervention_intensity?: AssistantIntensity;
+      };
+      const recognitionFoods = Array.isArray(m.attachments?.recognition?.foods)
+        ? m.attachments.recognition.foods as RecognizedFood[]
+        : undefined;
+      return {
+        id: m.id.toString(),
+        serverId: m.id,
+        role: isUser ? 'USER' as MessageRole : 'AI' as MessageRole,
+        content: m.content,
+        aiMode: !isUser ? (uiPreferences.ai_mode || getChatMode()) : undefined,
+        assistantIntensity: !isUser ? (uiPreferences.intervention_intensity || getAssistantIntensity()) : undefined,
+        aiName: !isUser ? '食鉴AI' : undefined,
+        attachments: m.attachments,
+        recognizedFoods: !isUser ? recognitionFoods : undefined,
+        origin: m.attachments?.knowledge?.origin,
+        fallbackStatus: m.attachments?.knowledge?.fallback_status,
+        timestamp: new Date(m.created_at).getTime(),
+      };
+    });
+  };
+
+  const loadChatSessions = async () => {
+    if (!TokenManager.isAuthenticated()) {
+      setChatSessions([]);
+      return [];
+    }
+    setIsLoadingSessions(true);
+    try {
+      const result = await ChatAPI.listSessions(1, 50) as { items?: ChatSessionSummary[] };
+      const sessions = result.items || [];
+      setChatSessions(sessions);
+      return sessions;
+    } catch (error) {
+      console.error('加载会话列表失败:', error);
+      return [];
+    } finally {
+      setIsLoadingSessions(false);
+    }
+  };
+
+  const loadChatSessionMessages = async (targetSessionId: number) => {
+    const loadSeq = ++chatHistoryLoadSeqRef.current;
+    setIsLoadingHistory(true);
+    try {
+      const session = await ChatAPI.getSession(targetSessionId) as any;
+      if (loadSeq !== chatHistoryLoadSeqRef.current) {
+        return null;
+      }
+      const historyMessages = mapBackendMessages(session.messages || []);
+      setSessionId(session.id);
+      setChatSessionId(session.id);
+      setMessages(historyMessages);
+      setFeedbackByMessage({});
+      setFeedbackComposer(null);
+      setIsSessionListOpen(false);
+
+      const feedbackEntries = await Promise.all(
+        historyMessages
+          .filter(message => message.serverId && message.role === 'AI')
+          .map(async message => {
+            try {
+              const feedbackList = await ChatAPI.listMessageFeedback(message.serverId!);
+              return [message.serverId!, feedbackList?.[0]?.feedback_type || null] as const;
+            } catch (error) {
+              console.warn('恢复消息反馈失败:', error);
+              return [message.serverId!, null] as const;
+            }
+          }),
+      );
+
+      const restoredFeedback = feedbackEntries.reduce<Record<number, AIFeedbackType>>((acc, [messageId, feedbackType]) => {
+        if (feedbackType) {
+          acc[messageId] = feedbackType;
+        }
+        return acc;
+      }, {});
+      if (loadSeq !== chatHistoryLoadSeqRef.current) {
+        return session;
+      }
+      if (Object.keys(restoredFeedback).length > 0) {
+        setFeedbackByMessage(restoredFeedback);
+      }
+      return session;
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  };
+
+  const ensureActiveChatSession = async (title = '食鉴AI对话'): Promise<number | null> => {
+    if (!TokenManager.isAuthenticated()) {
+      return null;
+    }
+
+    const initializedSessionId = sessionBootstrapPromiseRef.current
+      ? await sessionBootstrapPromiseRef.current
+      : null;
+    if (initializedSessionId) {
+      return initializedSessionId;
+    }
+
+    if (sessionId) {
+      return sessionId;
+    }
+
+    const savedId = getChatSessionId();
+    if (savedId) {
+      try {
+        await loadChatSessionMessages(savedId);
+        return savedId;
+      } catch {
+        clearChatSessionId();
+      }
+    }
+
+    const bootstrap = (async () => {
+      const sessions = await loadChatSessions();
+      if (sessions[0]?.id) {
+        setSessionId(sessions[0].id);
+        setChatSessionId(sessions[0].id);
+        return sessions[0].id as number;
+      }
+
+      const res = await ChatAPI.createSession(title) as any;
+      if (res?.id) {
+        setSessionId(res.id);
+        setChatSessionId(res.id);
+        setFeedbackByMessage({});
+        setFeedbackComposer(null);
+        setChatSessions(prev => [res, ...prev.filter(item => item.id !== res.id)]);
+        setIsSessionListOpen(false);
+        return res.id as number;
+      }
+      return null;
+    })();
+
+    sessionBootstrapPromiseRef.current = bootstrap;
+    try {
+      return await bootstrap;
+    } finally {
+      if (sessionBootstrapPromiseRef.current === bootstrap) {
+        sessionBootstrapPromiseRef.current = null;
+      }
+    }
+  };
 
   useEffect(() => {
     pendingIntakeSessionRef.current = pendingIntakeSession;
+
+    if (pendingIntakeSession) {
+      setPendingTextClarification(null);
+    }
 
     if (!pendingIntakeSession) {
       setReevaluatingDraftIds([]);
@@ -117,41 +417,43 @@ const ChatView: React.FC<ChatViewProps> = ({
     setStaleEvaluationDraftIds(keepActiveIds);
   }, [pendingIntakeSession]);
 
+  useEffect(() => {
+    const handlePreferenceChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ chatMode?: ChatMode; assistantIntensity?: AssistantIntensity }>).detail;
+      if (detail?.chatMode) {
+        setCurrentMode(detail.chatMode);
+      }
+      if (detail?.assistantIntensity) {
+        setAssistantIntensityState(detail.assistantIntensity);
+      }
+    };
+
+    window.addEventListener(CHAT_PREFERENCE_CHANGED_EVENT, handlePreferenceChanged as EventListener);
+    return () => window.removeEventListener(CHAT_PREFERENCE_CHANGED_EVENT, handlePreferenceChanged as EventListener);
+  }, []);
+
   // 创建或恢复会话，加载历史消息
   useEffect(() => {
-    const initSession = async () => {
-      if (!TokenManager.isAuthenticated()) return;
+    const initSession = async (): Promise<number | null> => {
+      if (!TokenManager.isAuthenticated()) return null;
 
+      const sessions = await loadChatSessions();
       const savedId = getChatSessionId();
       if (savedId) {
         try {
-          setIsLoadingHistory(true);
-          const session = await ChatAPI.getSession(savedId) as any;
-          setSessionId(session.id);
-
-          const loadedMsgs: Message[] = (session.messages || []).map((m: any) => {
-            const role = (m.role || '').toUpperCase();
-            const isUser = role === 'USER';
-            return {
-              id: m.id.toString(),
-              serverId: m.id,
-              role: isUser ? 'USER' as MessageRole : 'AI' as MessageRole,
-              content: m.content,
-              aiMode: !isUser ? 'STRICT' as const : undefined,
-              aiName: !isUser ? '食鉴AI' : undefined,
-              attachments: m.attachments,
-              origin: m.attachments?.knowledge?.origin,
-              fallbackStatus: m.attachments?.knowledge?.fallback_status,
-              timestamp: new Date(m.created_at).getTime(),
-            };
-          });
-
-          setMessages(loadedMsgs);
-          setIsLoadingHistory(false);
-          return;
+          await loadChatSessionMessages(savedId);
+          return savedId;
         } catch {
           clearChatSessionId();
-          setIsLoadingHistory(false);
+        }
+      }
+
+      if (sessions[0]?.id) {
+        try {
+          await loadChatSessionMessages(sessions[0].id);
+          return sessions[0].id;
+        } catch {
+          clearChatSessionId();
         }
       }
 
@@ -160,13 +462,22 @@ const ChatView: React.FC<ChatViewProps> = ({
         if (res?.id) {
           setSessionId(res.id);
           setChatSessionId(res.id);
+          setChatSessions(prev => [res, ...prev.filter(item => item.id !== res.id)]);
+          return res.id as number;
         }
       } catch (err) {
         console.error('创建会话失败:', err);
       }
+      return null;
     };
 
-    initSession();
+    const initPromise = initSession();
+    sessionBootstrapPromiseRef.current = initPromise;
+    void initPromise.finally(() => {
+      if (sessionBootstrapPromiseRef.current === initPromise) {
+        sessionBootstrapPromiseRef.current = null;
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -194,6 +505,58 @@ const ChatView: React.FC<ChatViewProps> = ({
     return `${date.getMonth() + 1}月${date.getDate()}日 ${timeStr}`;
   };
 
+  const getSystemNoticePresentation = (content: string) => {
+    if (content.includes('失败')) {
+      return {
+        icon: 'error',
+        label: '系统提醒',
+        shellClass: 'border-red-400/15 bg-red-500/5 text-red-100',
+        iconClass: 'text-red-300',
+        labelClass: 'text-red-300/75',
+      };
+    }
+
+    if (content.includes('已记入') || content.includes('已生成')) {
+      return {
+        icon: 'task_alt',
+        label: '流程更新',
+        shellClass: 'border-emerald-400/15 bg-emerald-500/5 text-emerald-100',
+        iconClass: 'text-emerald-300',
+        labelClass: 'text-emerald-300/75',
+      };
+    }
+
+    if (content.includes('切换')) {
+      return {
+        icon: 'tune',
+        label: '模式更新',
+        shellClass: 'border-white/10 bg-white/[0.03] text-slate-300',
+        iconClass: 'text-slate-400',
+        labelClass: 'text-slate-500',
+      };
+    }
+
+    return {
+      icon: 'info',
+      label: '系统提示',
+      shellClass: 'border-white/10 bg-white/[0.03] text-slate-300',
+      iconClass: 'text-slate-400',
+      labelClass: 'text-slate-500',
+    };
+  };
+
+  const formatRecognizedFoodMeta = (food: RecognizedFood) => {
+    const nutrition = food.nutrition;
+    const details = [
+      food.estimated_portion,
+      nutrition.calories ? `${Math.round(nutrition.calories)} kcal` : '',
+      nutrition.sodium ? `钠 ${Math.round(nutrition.sodium)}mg` : '',
+      nutrition.purine ? `嘌呤 ${Math.round(nutrition.purine)}mg` : '',
+    ].filter(Boolean);
+
+    return details.join(' · ');
+  };
+
   const handleGalleryClick = () => {
     fileInputRef.current?.click();
   };
@@ -201,6 +564,10 @@ const ChatView: React.FC<ChatViewProps> = ({
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    stopImageUploadProgress(0, 'idle');
+    lastImageUploadRef.current = null;
+    setIntakeError(null);
 
     const imageUrl = URL.createObjectURL(file);
     setPendingImage(prev => {
@@ -213,6 +580,8 @@ const ChatView: React.FC<ChatViewProps> = ({
   };
 
   const clearPendingImage = () => {
+    stopImageUploadProgress(0, 'idle');
+    lastImageUploadRef.current = null;
     setPendingImage(prev => {
       if (prev) {
         URL.revokeObjectURL(prev.url);
@@ -225,6 +594,7 @@ const ChatView: React.FC<ChatViewProps> = ({
     if (mode === currentMode) return;
 
     setCurrentMode(mode);
+    setChatMode(mode);
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
       role: 'SYSTEM',
@@ -232,6 +602,11 @@ const ChatView: React.FC<ChatViewProps> = ({
       timestamp: Date.now(),
     }]);
   };
+
+  const buildChatPreferences = () => ({
+    aiMode: currentMode,
+    interventionIntensity: assistantIntensity,
+  });
 
   const autoLogVoiceTranscript = async (transcript: string) => {
     const cleanTranscript = transcript.trim();
@@ -407,7 +782,7 @@ const ChatView: React.FC<ChatViewProps> = ({
       isStreaming: true,
     });
 
-    const response = await ChatAPI.sendMessage(sessionIdValue, content) as any;
+    const response = await ChatAPI.sendMessage(sessionIdValue, content, undefined, buildChatPreferences()) as any;
     const knowledge = response?.attachments?.knowledge;
     const aiContent = response?.ai_message?.content || response?.content || `已收到您的消息："${content}"。`;
 
@@ -436,15 +811,332 @@ const ChatView: React.FC<ChatViewProps> = ({
     }));
   };
 
+  const pushAiMessage = (content: string) => {
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'AI',
+      aiMode: currentMode,
+      aiName: '食鉴AI',
+      content,
+      timestamp: Date.now(),
+    }]);
+  };
+
+  const handleNewChatSession = async () => {
+    if (isCreatingSession || isSending || isParsingIntake || isSubmittingIntake) return;
+
+    setIsCreatingSession(true);
+    setIntakeError(null);
+    setPendingTextClarification(null);
+    onPendingIntakeSessionChange(null);
+    clearPendingImage();
+
+    if (!TokenManager.isAuthenticated()) {
+      clearChatSessionId();
+      setSessionId(null);
+      setMessages([]);
+      setFeedbackComposer(null);
+      setIsCreatingSession(false);
+      return;
+    }
+
+    try {
+      const session = await ChatAPI.createSession('食鉴AI对话') as any;
+      if (session?.id) {
+        setSessionId(session.id);
+        setChatSessionId(session.id);
+        setFeedbackByMessage({});
+        setFeedbackComposer(null);
+        setMessages([]);
+        setChatSessions(prev => [session, ...prev.filter(item => item.id !== session.id)]);
+        setIsSessionListOpen(false);
+      }
+    } catch (error) {
+      console.error('新建会话失败:', error);
+      pushSystemMessage(error instanceof Error ? error.message : '新建会话失败，请稍后再试。');
+    } finally {
+      setIsCreatingSession(false);
+    }
+  };
+
+  const handleSelectChatSession = async (targetSessionId: number) => {
+    if (
+      targetSessionId === sessionId ||
+      isSending ||
+      isParsingIntake ||
+      isSubmittingIntake ||
+      isLoadingHistory
+    ) {
+      setIsSessionListOpen(false);
+      return;
+    }
+
+    setIntakeError(null);
+    setPendingTextClarification(null);
+    onPendingIntakeSessionChange(null);
+    clearPendingImage();
+
+    try {
+      await loadChatSessionMessages(targetSessionId);
+    } catch (error) {
+      console.error('切换会话失败:', error);
+      pushSystemMessage(error instanceof Error ? error.message : '切换会话失败，请稍后再试。');
+    }
+  };
+
+  const handleDeleteChatSession = async (targetSessionId: number, event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (isSending || isParsingIntake || isSubmittingIntake || deletingSessionId) return;
+
+    setDeletingSessionId(targetSessionId);
+    try {
+      await ChatAPI.deleteSession(targetSessionId);
+      const nextSessions = chatSessions.filter(item => item.id !== targetSessionId);
+      setChatSessions(nextSessions);
+
+      if (sessionId === targetSessionId) {
+        setMessages([]);
+        setFeedbackByMessage({});
+        if (nextSessions[0]?.id) {
+          await loadChatSessionMessages(nextSessions[0].id);
+        } else {
+          clearChatSessionId();
+          setSessionId(null);
+          await handleNewChatSession();
+        }
+      }
+    } catch (error) {
+      console.error('删除会话失败:', error);
+      pushSystemMessage(error instanceof Error ? error.message : '删除会话失败，请稍后再试。');
+    } finally {
+      setDeletingSessionId(null);
+    }
+  };
+
+  const pushSystemMessage = (content: string) => {
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'SYSTEM',
+      content,
+      timestamp: Date.now(),
+    }]);
+  };
+
+  const runImageRecognitionUpload = async (
+    imageToSend: PendingImage,
+    prompt: string,
+    activeSessionId: number,
+  ) => {
+    const uploadController = new AbortController();
+    imageUploadAbortRef.current = uploadController;
+    lastImageUploadRef.current = { image: imageToSend, prompt, sessionId: activeSessionId };
+    setIsParsingIntake(true);
+    setIntakeError(null);
+
+    try {
+      startImageUploadProgress('uploading');
+      const result = await ChatAPI.recognizeFoodUpload(
+        imageToSend.file,
+        prompt,
+        activeSessionId || undefined,
+        { signal: uploadController.signal },
+      ) as RecognitionResponse;
+
+      if (uploadController.signal.aborted) {
+        throw new DOMException('aborted', 'AbortError');
+      }
+
+      setMessages(prev => [...prev, {
+        id: (Date.now() + 1).toString(),
+        role: 'AI',
+        serverId: result?.message_id || undefined,
+        aiMode: currentMode,
+        aiName: '食鉴AI',
+        content: result?.ai_response || '已完成图片识别。',
+        recognizedFoods: result?.foods || [],
+        timestamp: Date.now(),
+      }]);
+
+      startImageUploadProgress('parsing');
+      const session = await IntakeAPI.parsePhotoResult({
+        recognized_foods: result?.foods || [],
+        ai_response: result?.ai_response || '已完成图片识别。',
+      });
+
+      if (uploadController.signal.aborted) {
+        throw new DOMException('aborted', 'AbortError');
+      }
+
+      onPendingIntakeSessionChange(session);
+      stopImageUploadProgress(100, 'done');
+
+      setMessages(prev => [...prev, {
+        id: (Date.now() + 2).toString(),
+        role: 'SYSTEM',
+        content: '已生成拍照候选，请确认后再写入生命日志。',
+        timestamp: Date.now(),
+      }]);
+    } catch (error) {
+      if (uploadController.signal.aborted) {
+        setIntakeError('已取消本次图片识别，可以重试上一张图片或重新选择。');
+      } else {
+        console.error('食物识别失败:', error);
+        setIntakeError(error instanceof Error ? error.message : '抱歉，食物识别服务暂时不可用。');
+      }
+      stopImageUploadProgress(0, 'error');
+    } finally {
+      clearImageUploadProgressTimer();
+      if (imageUploadAbortRef.current === uploadController) {
+        imageUploadAbortRef.current = null;
+      }
+      setIsParsingIntake(false);
+    }
+  };
+
+  const retryLastImageUpload = async () => {
+    const last = lastImageUploadRef.current;
+    if (!last || isParsingIntake || isSubmittingIntake) return;
+    pushSystemMessage('正在重试上一张图片识别。');
+    await runImageRecognitionUpload(last.image, last.prompt, last.sessionId);
+  };
+
+  const openFeedbackComposer = (msg: Message, feedbackType: DetailedAIFeedbackType) => {
+    if (!msg.serverId || submittingFeedbackId === msg.serverId) return;
+
+    const copyByType: Record<DetailedAIFeedbackType, Omit<FeedbackComposerState, 'message' | 'feedbackType' | 'rating' | 'tags' | 'text'>> = {
+      correction: {
+        title: '纠错反馈',
+        description: '请说明这条回复中需要更正的地方。尽量只写结论和修正点，不要贴出无关隐私内容。',
+        placeholder: '例如：这条建议忽略了我有虾过敏，应该改成避免虾和虾制品。',
+        helper: '你的说明会进入反馈记录，用于后续改进，不会被写入安全审计原文。',
+      },
+      recognition_correction: {
+        title: '识别纠错',
+        description: '请指出识别结果里哪些食物、份量、做法或调料不准确。可以直接写正确版本。',
+        placeholder: '例如：这不是牛肉面，是番茄鸡蛋面；份量只有半碗，汤很少。',
+        helper: '适合拍照识别、语音识别或候选食物识别结果。',
+      },
+      knowledge_gap: {
+        title: '知识缺口反馈',
+        description: '请说明这条回复缺少什么知识、规则或场景。我们会把它作为知识库改进线索。',
+        placeholder: '例如：我想看“痛风 + 轻断食”场景下的更保守建议，当前解释还不够具体。',
+        helper: '适合补充新食物、新菜系、新病种或特殊场景。',
+      },
+    };
+
+    const meta = copyByType[feedbackType];
+    setFeedbackComposer({
+      message: msg,
+      feedbackType,
+      ...meta,
+      rating: feedbackType === 'knowledge_gap' ? 3 : 1,
+      tags: feedbackType === 'recognition_correction' ? ['recognition'] : feedbackType === 'knowledge_gap' ? ['knowledge_gap'] : ['correction'],
+      text: '',
+    });
+  };
+
+  const handleMessageFeedback = async (
+    msg: Message,
+    feedbackType: AIFeedbackType,
+    rating: number,
+    tags: string[] = []
+  ) => {
+    if (!msg.serverId || submittingFeedbackId === msg.serverId) return;
+
+    setSubmittingFeedbackId(msg.serverId);
+    try {
+      await ChatAPI.sendMessageFeedback(msg.serverId, {
+        feedback_type: feedbackType,
+        rating,
+        tags,
+        metadata: {
+          source: 'chat',
+          surface: 'message_actions',
+          mode: msg.aiMode || currentMode,
+        },
+      });
+      setFeedbackByMessage(prev => ({ ...prev, [msg.serverId!]: feedbackType }));
+    } catch (error) {
+      console.error('AI 反馈提交失败:', error);
+      pushSystemMessage(error instanceof Error ? error.message : '反馈提交失败，请稍后再试。');
+    } finally {
+      setSubmittingFeedbackId(null);
+    }
+  };
+
+  const submitComposerFeedback = async () => {
+    if (!feedbackComposer || !feedbackComposer.message.serverId || submittingFeedbackId === feedbackComposer.message.serverId) {
+      return;
+    }
+
+    const correctionText = feedbackComposer.text.trim();
+    if (!correctionText) {
+      pushSystemMessage('请先写一点纠错或补充说明，再提交反馈。');
+      return;
+    }
+
+    setSubmittingFeedbackId(feedbackComposer.message.serverId);
+    try {
+      await ChatAPI.sendMessageFeedback(feedbackComposer.message.serverId, {
+        feedback_type: feedbackComposer.feedbackType,
+        rating: feedbackComposer.rating,
+        tags: feedbackComposer.tags,
+        correction_text: correctionText,
+        metadata: {
+          source: 'chat',
+          surface: feedbackComposer.feedbackType,
+          mode: feedbackComposer.message.aiMode || currentMode,
+          intensity: feedbackComposer.message.assistantIntensity || assistantIntensity,
+        },
+      });
+      setFeedbackByMessage(prev => ({ ...prev, [feedbackComposer.message.serverId!]: feedbackComposer.feedbackType }));
+      setFeedbackComposer(null);
+      pushSystemMessage('反馈已提交，感谢你帮我校准。');
+    } catch (error) {
+      console.error('AI 反馈提交失败:', error);
+      pushSystemMessage(error instanceof Error ? error.message : '反馈提交失败，请稍后再试。');
+    } finally {
+      setSubmittingFeedbackId(null);
+    }
+  };
+
+  const appendClarificationContext = (contextText: string, answerText: string) => {
+    return [contextText.trim(), answerText.trim()].filter(Boolean).join('\n');
+  };
+
   const handleSendMessage = async () => {
     if ((!inputValue.trim() && !pendingImage) || isSending || isParsingIntake) return;
 
     const clickAt = performance.now();
     const currentInput = inputValue.trim();
+    const isAuthenticated = TokenManager.isAuthenticated();
+    const isExplicitTextLogSend = explicitTextLogMode;
 
     if (pendingImage) {
       const imageToSend = pendingImage;
       const messageContent = currentInput || '请识别这张食物图片';
+      let activeSessionId: number | null = sessionId;
+
+      if (TokenManager.isAuthenticated()) {
+        setIsParsingIntake(true);
+        setIntakeError(null);
+        try {
+          activeSessionId = await ensureActiveChatSession('食物图片识别');
+        } catch (error) {
+          console.error('创建识别会话失败:', error);
+          setIsParsingIntake(false);
+          const errorMessage = error instanceof Error ? error.message : '创建图片识别会话失败，请稍后再试。';
+          setIntakeError(errorMessage);
+          pushSystemMessage(errorMessage);
+          return;
+        }
+        if (!activeSessionId) {
+          setIsParsingIntake(false);
+          setIntakeError('创建图片识别会话失败，请稍后再试。');
+          pushSystemMessage('创建图片识别会话失败，请稍后再试。');
+          return;
+        }
+      }
 
       const newUserMsg: Message = {
         id: Date.now().toString(),
@@ -470,41 +1162,14 @@ const ChatView: React.FC<ChatViewProps> = ({
         return;
       }
 
-      setIsParsingIntake(true);
-      setIntakeError(null);
-
-      try {
-        const result = await ChatAPI.recognizeFoodUpload(imageToSend.file, currentInput) as RecognitionResponse;
-
-        setMessages(prev => [...prev, {
-          id: (Date.now() + 1).toString(),
-          role: 'AI',
-          aiMode: currentMode,
-          aiName: '食鉴AI',
-          content: result?.ai_response || '已完成图片识别。',
-          recognizedFoods: result?.foods || [],
-          timestamp: Date.now(),
-        }]);
-
-        const session = await IntakeAPI.parsePhotoResult({
-          recognized_foods: result?.foods || [],
-          ai_response: result?.ai_response || '已完成图片识别。',
-        });
-
-        onPendingIntakeSessionChange(session);
-
-        setMessages(prev => [...prev, {
-          id: (Date.now() + 2).toString(),
-          role: 'SYSTEM',
-          content: '已生成拍照候选，请确认后再写入生命日志。',
-          timestamp: Date.now(),
-        }]);
-      } catch (error) {
-        console.error('食物识别失败:', error);
-        setIntakeError(error instanceof Error ? error.message : '抱歉，食物识别服务暂时不可用。');
-      } finally {
+      if (!activeSessionId) {
         setIsParsingIntake(false);
+        setIntakeError('创建图片识别会话失败，请稍后再试。');
+        pushSystemMessage('创建图片识别会话失败，请稍后再试。');
+        return;
       }
+
+      await runImageRecognitionUpload(imageToSend, currentInput, activeSessionId);
 
       return;
     }
@@ -518,9 +1183,93 @@ const ChatView: React.FC<ChatViewProps> = ({
 
     setMessages(prev => [...prev, newUserMsg]);
     setInputValue('');
+
+    if (!isAuthenticated && isExplicitTextLogSend) {
+      setExplicitTextLogMode(false);
+      pushAiMessage('请登录后使用文本记餐。我不会把这条内容当作普通聊天处理。');
+      return;
+    }
+
+    if (isAuthenticated) {
+      setIsParsingIntake(true);
+      setIntakeError(null);
+
+      const activeClarification = pendingTextClarification;
+
+      try {
+        const intakeSession = await IntakeAPI.parseText(
+          currentInput,
+          activeClarification?.contextText,
+        );
+
+        if (intakeSession.status === 'ready' && intakeSession.candidates?.length) {
+          if (isExplicitTextLogSend) {
+            setExplicitTextLogMode(false);
+          }
+          setPendingTextClarification(null);
+          onPendingIntakeSessionChange(intakeSession);
+          pushSystemMessage(
+            activeClarification
+              ? '已根据你补充的信息生成待确认的饮食草稿，请检查后确认写入日志。'
+              : '已生成待确认的饮食草稿，请检查后确认写入日志。'
+          );
+          return;
+        }
+
+        if (intakeSession.status === 'needs_clarification') {
+          const followUpPrompt = intakeSession.follow_up_prompt || '请再补充一些饮食细节，我再帮你整理成待确认记录。';
+          const nextContextText = activeClarification
+            ? appendClarificationContext(activeClarification.contextText, currentInput)
+            : intakeSession.raw_input_text?.trim() || currentInput;
+
+          setPendingTextClarification({
+            contextText: nextContextText,
+            latestFollowUpPrompt: followUpPrompt,
+          });
+          pushAiMessage(isExplicitTextLogSend ? `文本记餐还需要补充一点信息：${followUpPrompt}` : followUpPrompt);
+          return;
+        }
+
+        if (intakeSession.status === 'refused') {
+          setPendingTextClarification(null);
+
+          if (isExplicitTextLogSend) {
+            setExplicitTextLogMode(false);
+            pushAiMessage(
+              intakeSession.refusal_reason
+                ? `这段文字暂时无法整理成饮食记录。${intakeSession.refusal_reason} 请补充吃了什么、什么时候吃的，以及大致分量后再试一次。`
+                : '这段文字暂时无法整理成饮食记录。请补充吃了什么、什么时候吃的，以及大致分量后再试一次。'
+            );
+            return;
+          }
+
+          if (activeClarification) {
+            pushAiMessage(intakeSession.refusal_reason || '这条消息暂时无法整理成可记录的饮食内容。');
+            return;
+          }
+        }
+      } catch (error) {
+        console.error('文本饮食解析失败:', error);
+        if (activeClarification) {
+          setIntakeError(error instanceof Error ? error.message : '补充信息解析失败，请稍后重试。');
+          pushAiMessage('刚才的补充信息暂时没有处理成功。当前待补充记录我还保留着，请稍后再试一次。');
+          return;
+        }
+
+        if (isExplicitTextLogSend) {
+          setExplicitTextLogMode(false);
+          setIntakeError(error instanceof Error ? error.message : '文本记餐解析失败，请稍后重试。');
+          pushAiMessage('文本记餐暂时没有处理成功。我不会把这条内容当作普通聊天处理，请稍后补充食物、时间和分量后再试一次。');
+          return;
+        }
+      } finally {
+        setIsParsingIntake(false);
+      }
+    }
+
     setIsSending(true);
 
-    if (TokenManager.isAuthenticated() && sessionId) {
+    if (isAuthenticated && sessionId) {
       const assistantMessageId = (Date.now() + 1).toString();
       let streamStarted = false;
       let serverStreamError: string | null = null;
@@ -549,6 +1298,7 @@ const ChatView: React.FC<ChatViewProps> = ({
           sessionId,
           currentInput,
           undefined,
+          buildChatPreferences(),
           (event: ChatStreamEvent) => {
             streamStarted = true;
             if (event.event === 'meta') {
@@ -723,7 +1473,10 @@ const ChatView: React.FC<ChatViewProps> = ({
       Object.prototype.hasOwnProperty.call(patch, 'food_code') ||
       Object.prototype.hasOwnProperty.call(patch, 'category') ||
       Object.prototype.hasOwnProperty.call(patch, 'normalized_amount') ||
-      Object.prototype.hasOwnProperty.call(patch, 'unit')
+      Object.prototype.hasOwnProperty.call(patch, 'unit') ||
+      Object.prototype.hasOwnProperty.call(patch, 'ingredients') ||
+      Object.prototype.hasOwnProperty.call(patch, 'cooking_method') ||
+      Object.prototype.hasOwnProperty.call(patch, 'seasonings')
     ) {
       setStaleEvaluationDraftIds(prev => prev.includes(draftId) ? prev : [...prev, draftId]);
     }
@@ -800,9 +1553,10 @@ const ChatView: React.FC<ChatViewProps> = ({
   const handleAddPendingCandidate = () => {
     const fallbackMealType = pendingIntakeSession?.candidates[0]?.meal_type || 'DINNER';
     const source = pendingIntakeSession?.source || 'voice';
+    const draftId = crypto.randomUUID();
 
     const nextCandidate: IntakeCandidate = {
-      draft_id: crypto.randomUUID(),
+      draft_id: draftId,
       source,
       meal_type: fallbackMealType,
       category: 'STAPLE',
@@ -816,6 +1570,7 @@ const ChatView: React.FC<ChatViewProps> = ({
       confidence: 0.2,
       ingredients: [],
       cooking_method: null,
+      seasonings: [],
       calories: null,
       protein: null,
       carbs: null,
@@ -848,10 +1603,15 @@ const ChatView: React.FC<ChatViewProps> = ({
       summary_warning: pendingIntakeSession?.summary_warning || null,
       candidates: [...(pendingIntakeSession?.candidates || []), nextCandidate],
     });
+    setStaleEvaluationDraftIds(prev => prev.includes(draftId) ? prev : [...prev, draftId]);
   };
 
   const handleConfirmIntake = async () => {
     if (!pendingIntakeSession || isSubmittingIntake) return;
+    if (pendingIntakeSession.candidates.some(candidate => !candidate.food_name.trim())) {
+      setIntakeError('请先填写所有候选项的食物名称，并重新评估后再确认写入日志。');
+      return;
+    }
     if (staleEvaluationDraftIds.length > 0) {
       setIntakeError('候选项已修改，请先点击“重新评估”，再确认写入日志。');
       return;
@@ -889,11 +1649,74 @@ const ChatView: React.FC<ChatViewProps> = ({
       }
     } catch (error) {
       console.error('确认写入失败', error);
+      if (currentUserId && isLikelyNetworkFailure(error)) {
+        try {
+          await persistPendingIntakeOffline(pendingIntakeSession);
+          setMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            role: 'SYSTEM',
+            content: '网络不可用，已保存到本地离线队列，联网后会自动同步。',
+            timestamp: Date.now(),
+          }]);
+          onPendingIntakeSessionChange(null);
+          await onMealLogged?.(pendingIntakeSession.record_date);
+          onViewChange(View.LOG);
+          return;
+        } catch (offlineError) {
+          console.error('离线候选落盘失败', offlineError);
+          setIntakeError(offlineError instanceof Error ? offlineError.message : '离线保存失败，请稍后重试。');
+          return;
+        }
+      }
+
       setIntakeError(error instanceof Error ? error.message : '确认写入失败，请稍后重试。');
     } finally {
       setIsSubmittingIntake(false);
     }
   };
+
+  const canSendComposer = Boolean(inputValue.trim() || pendingImage);
+  const sendButtonLabel = pendingImage
+    ? inputValue.trim()
+      ? '发送图片'
+      : '直接发送'
+    : explicitTextLogMode
+      ? '记餐'
+      : '发送';
+  const imageUploadStageLabel = imageUploadStage === 'uploading'
+    ? '正在安全上传图片。'
+    : imageUploadStage === 'parsing'
+      ? '正在生成饮食候选。'
+      : imageUploadStage === 'done'
+        ? '图片识别完成。'
+        : imageUploadStage === 'error'
+          ? '图片识别未完成。'
+          : '准备识别图片。';
+  const composerBusyMessage = isSubmittingIntake
+    ? '正在写入饮食日志，请稍候。'
+    : isParsingIntake
+      ? imageUploadStage !== 'idle'
+        ? imageUploadStageLabel
+        : '正在解析饮食内容并尝试写入日志。'
+      : isSending
+        ? '正在发送给食鉴AI，请稍候。'
+        : isListening
+          ? '正在听你说，结束后会自动整理。'
+          : null;
+  const composerPlaceholder = isListening
+    ? '正在聆听，请说出你吃了什么、分量和口味...'
+    : isParsingIntake
+      ? '正在解析饮食内容...'
+      : isSubmittingIntake
+        ? '正在写入饮食日志...'
+        : pendingImage
+          ? '可补充：半份、少油、重点看嘌呤...'
+          : pendingTextClarification
+            ? '请补充上面的记餐问题...'
+            : explicitTextLogMode
+              ? '文本记餐：写下食物、时间和大致分量...'
+              : '输入问题，或描述刚吃了什么...';
+  const currentSession = chatSessions.find(item => item.id === sessionId);
 
   return (
     <div className="flex flex-col w-full min-h-[calc(100vh-100px)]">
@@ -913,15 +1736,110 @@ const ChatView: React.FC<ChatViewProps> = ({
           <span className="material-symbols-outlined text-white">arrow_back</span>
         </button>
 
-        <h2 className="text-lg font-bold text-white font-serif tracking-wide">食鉴AI</h2>
-
         <button
-          onClick={() => onViewChange(View.SETTINGS)}
-          className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors"
+          type="button"
+          onClick={() => {
+            setIsSessionListOpen(prev => !prev);
+            if (!isSessionListOpen) void loadChatSessions();
+          }}
+          className="min-w-0 flex flex-col items-center rounded-lg px-3 py-1 transition-colors hover:bg-white/5"
+          aria-label="打开会话列表"
         >
-          <span className="material-symbols-outlined text-white">settings</span>
+          <h2 className="max-w-[9rem] truncate text-lg font-bold text-white font-serif tracking-wide">
+            {currentSession?.title || '食鉴AI'}
+          </h2>
+          <span className="mt-0.5 flex items-center gap-1 text-[10px] text-primary/55 font-serif font-bold tracking-wide">
+            <span className="material-symbols-outlined text-[13px]">forum</span>
+            会话
+          </span>
         </button>
+
+        <div className="flex items-center gap-1">
+          <button
+            onClick={handleNewChatSession}
+            disabled={isCreatingSession || isSending || isParsingIntake || isSubmittingIntake}
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors disabled:opacity-40"
+            title="新建会话"
+            aria-label="新建会话"
+          >
+            <span className={`material-symbols-outlined text-white ${isCreatingSession ? 'animate-spin' : ''}`}>{isCreatingSession ? 'progress_activity' : 'add_comment'}</span>
+          </button>
+          <button
+            onClick={() => onViewChange(View.SETTINGS)}
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors"
+          >
+            <span className="material-symbols-outlined text-white">settings</span>
+          </button>
+        </div>
       </div>
+
+      {isSessionListOpen && (
+        <div className="relative z-20 mx-4 mt-3 overflow-hidden rounded-2xl border border-white/10 bg-[#101719]/95 shadow-2xl backdrop-blur">
+          <div className="flex items-center justify-between border-b border-white/10 px-3 py-2.5">
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-[18px] text-primary">forum</span>
+              <span className="font-serif text-xs font-bold tracking-wide text-white">AI 会话</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadChatSessions()}
+              disabled={isLoadingSessions}
+              className="flex h-7 w-7 items-center justify-center rounded-full text-slate-400 hover:bg-white/5 hover:text-white disabled:opacity-40"
+              aria-label="刷新会话"
+              title="刷新"
+            >
+              <span className={`material-symbols-outlined text-[17px] ${isLoadingSessions ? 'animate-spin' : ''}`}>
+                {isLoadingSessions ? 'progress_activity' : 'refresh'}
+              </span>
+            </button>
+          </div>
+
+          <div className="max-h-64 overflow-y-auto divide-y divide-white/5">
+            {chatSessions.length === 0 && (
+              <div className="px-3 py-5 text-center font-serif text-xs font-bold tracking-wide text-slate-500">
+                暂无会话
+              </div>
+            )}
+            {chatSessions.map(item => {
+              const active = item.id === sessionId;
+              return (
+                <div key={item.id} className={`flex w-full items-center gap-2 px-3 py-3 transition-colors ${active ? 'bg-primary/[0.08]' : 'hover:bg-white/[0.04]'}`}>
+                  <button
+                    type="button"
+                    onClick={() => void handleSelectChatSession(item.id)}
+                    disabled={isLoadingHistory || deletingSessionId === item.id}
+                    className="flex min-w-0 flex-1 items-center gap-3 text-left disabled:opacity-50"
+                  >
+                    <span className={`material-symbols-outlined text-[18px] ${active ? 'text-primary' : 'text-slate-500'}`}>
+                      {active ? 'radio_button_checked' : 'chat_bubble'}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-serif text-sm font-bold tracking-wide text-white">
+                        {item.title || '食鉴AI对话'}
+                      </span>
+                      <span className="mt-0.5 block truncate font-serif text-[11px] tracking-wide text-slate-500">
+                        {item.message_count || 0} 条 · {formatTime(new Date(item.updated_at || item.created_at).getTime())}
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => void handleDeleteChatSession(item.id, event)}
+                    disabled={deletingSessionId === item.id}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-300 disabled:opacity-40"
+                    aria-label="删除会话"
+                    title="删除会话"
+                  >
+                    <span className={`material-symbols-outlined text-[18px] ${deletingSessionId === item.id ? 'animate-spin' : ''}`}>
+                      {deletingSessionId === item.id ? 'progress_activity' : 'delete'}
+                    </span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="px-4 py-3">
         <div className="flex rounded-xl bg-surface-dark border border-white/10 p-1">
@@ -962,14 +1880,27 @@ const ChatView: React.FC<ChatViewProps> = ({
                 </div>
               )}
 
-              {msg.role === 'SYSTEM' && (
-                <div className="flex justify-center my-2 animate-fade-in">
-                  <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-surface-dark border border-white/5">
-                    <span className="material-symbols-outlined text-primary text-sm">compare_arrows</span>
-                    <span className="text-xs text-primary/80 font-serif tracking-wide">{msg.content}</span>
+              {msg.role === 'SYSTEM' && (() => {
+                const notice = getSystemNoticePresentation(msg.content);
+
+                return (
+                  <div className="flex justify-center my-1.5 animate-fade-in px-2">
+                    <div className={`w-full max-w-[20rem] rounded-xl border px-3 py-2 ${notice.shellClass}`}>
+                      <div className="flex items-start gap-2">
+                        <span className={`material-symbols-outlined mt-0.5 text-[15px] ${notice.iconClass}`}>{notice.icon}</span>
+                        <div className="min-w-0">
+                          <div className={`text-[10px] font-bold tracking-[0.18em] ${notice.labelClass}`}>
+                            {notice.label}
+                          </div>
+                          <div className="mt-0.5 text-xs leading-relaxed font-serif tracking-wide break-words">
+                            {msg.content}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {msg.role === 'USER' && (
                 <div className="flex gap-2.5 flex-row-reverse animate-fade-in">
@@ -1001,14 +1932,25 @@ const ChatView: React.FC<ChatViewProps> = ({
                     )}
                   </div>
 
-                  <div className="flex flex-col gap-1 max-w-[85%]">
-                    <span className={`text-xs ml-1 font-bold tracking-wide ${msg.aiMode === 'STRICT' ? 'text-primary font-serif' : 'text-slate-400 font-serif'}`}>
-                      {msg.aiName}
-                    </span>
+                  <div className="flex flex-col gap-2 max-w-[88%] sm:max-w-[34rem]">
+                    <div className="ml-1 flex items-center gap-2">
+                      <span className={`text-xs font-bold tracking-wide ${msg.aiMode === 'STRICT' ? 'text-primary font-serif' : 'text-slate-400 font-serif'}`}>
+                        {msg.aiName}
+                      </span>
+                      <span className="rounded-full border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10px] text-slate-500 font-serif font-bold tracking-wide">
+                        {msg.aiMode === 'STRICT' ? '风险分析' : '饮食教练'}
+                      </span>
+                      {msg.content && msg.isStreaming && (
+                        <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-primary/75 font-serif tracking-wide">
+                          <span className="h-1.5 w-1.5 rounded-full bg-primary/70 animate-pulse"></span>
+                          {msg.statusText || '生成中'}
+                        </span>
+                      )}
+                    </div>
 
                     {msg.content ? (
                       <div
-                        className={`rounded-xl rounded-tl-none px-3.5 py-2.5 text-white text-sm leading-relaxed shadow-sm font-serif tracking-wide ${msg.aiMode === 'STRICT'
+                        className={`rounded-xl rounded-tl-none px-3.5 py-3 text-white text-sm leading-7 shadow-sm font-serif tracking-wide break-words [&_p]:my-1.5 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_ul]:my-2 [&_ul]:pl-4 [&_ol]:my-2 [&_ol]:pl-4 [&_li]:my-1 [&_strong]:text-white [&_strong]:font-bold ${msg.aiMode === 'STRICT'
                           ? 'bg-[#0f282d] border border-primary/20'
                           : 'bg-surface-dark border border-white/5'
                           }`}
@@ -1025,23 +1967,120 @@ const ChatView: React.FC<ChatViewProps> = ({
                       </div>
                     )}
 
-                    {msg.content && msg.isStreaming && (
-                      <span className="ml-1 text-[11px] text-primary/70 font-serif tracking-wide">
-                        {msg.statusText || '正在生成回复...'}
-                      </span>
+                    {msg.serverId && !msg.isStreaming && (
+                      <div className="ml-1 flex flex-wrap items-center gap-1.5">
+                        {([
+                          { type: 'helpful' as AIFeedbackType, rating: 5, icon: 'thumb_up', title: '有帮助', tags: [] },
+                          { type: 'not_helpful' as AIFeedbackType, rating: 1, icon: 'thumb_down', title: '没帮助', tags: [] },
+                          { type: 'unsafe' as AIFeedbackType, rating: 1, icon: 'flag', title: '标记风险', tags: ['flagged'] },
+                        ]).map(action => {
+                          const selected = feedbackByMessage[msg.serverId!] === action.type;
+                          const submitting = submittingFeedbackId === msg.serverId;
+                          return (
+                            <button
+                              key={action.type}
+                              type="button"
+                              title={action.title}
+                              aria-label={action.title}
+                              disabled={submitting}
+                              onClick={() => void handleMessageFeedback(msg, action.type, action.rating, action.tags)}
+                              className={`flex h-7 w-7 items-center justify-center rounded-full border transition-colors disabled:opacity-50 ${selected
+                                ? 'border-primary/40 bg-primary/15 text-primary'
+                                : 'border-white/10 bg-white/[0.03] text-slate-500 hover:border-white/20 hover:text-slate-300'
+                                }`}
+                            >
+                              <span className={`material-symbols-outlined text-[15px] ${submitting && !selected ? 'animate-pulse' : ''}`}>
+                                {submitting && !selected ? 'progress_activity' : action.icon}
+                              </span>
+                            </button>
+                          );
+                        })}
+                        {msg.recognizedFoods && msg.recognizedFoods.length > 0 && (
+                          <button
+                            type="button"
+                            title="识别纠错"
+                            aria-label="识别纠错"
+                            disabled={submittingFeedbackId === msg.serverId}
+                            onClick={() => openFeedbackComposer(msg, 'recognition_correction')}
+                            className={`flex h-7 w-7 items-center justify-center rounded-full border transition-colors disabled:opacity-50 ${feedbackByMessage[msg.serverId!] === 'recognition_correction'
+                              ? 'border-primary/40 bg-primary/15 text-primary'
+                              : 'border-white/10 bg-white/[0.03] text-slate-500 hover:border-white/20 hover:text-slate-300'
+                              }`}
+                          >
+                            <span className={`material-symbols-outlined text-[15px] ${submittingFeedbackId === msg.serverId ? 'animate-pulse' : ''}`}>
+                              edit_note
+                            </span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          title="纠错"
+                          aria-label="纠错"
+                          disabled={submittingFeedbackId === msg.serverId}
+                          onClick={() => openFeedbackComposer(msg, 'correction')}
+                          className={`flex h-7 w-7 items-center justify-center rounded-full border transition-colors disabled:opacity-50 ${feedbackByMessage[msg.serverId!] === 'correction'
+                            ? 'border-primary/40 bg-primary/15 text-primary'
+                            : 'border-white/10 bg-white/[0.03] text-slate-500 hover:border-white/20 hover:text-slate-300'
+                            }`}
+                        >
+                          <span className={`material-symbols-outlined text-[15px] ${submittingFeedbackId === msg.serverId ? 'animate-pulse' : ''}`}>
+                            edit
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          title="补知识"
+                          aria-label="补知识"
+                          disabled={submittingFeedbackId === msg.serverId}
+                          onClick={() => openFeedbackComposer(msg, 'knowledge_gap')}
+                          className={`flex h-7 w-7 items-center justify-center rounded-full border transition-colors disabled:opacity-50 ${feedbackByMessage[msg.serverId!] === 'knowledge_gap'
+                            ? 'border-primary/40 bg-primary/15 text-primary'
+                            : 'border-white/10 bg-white/[0.03] text-slate-500 hover:border-white/20 hover:text-slate-300'
+                            }`}
+                        >
+                          <span className={`material-symbols-outlined text-[15px] ${submittingFeedbackId === msg.serverId ? 'animate-pulse' : ''}`}>
+                            travel_explore
+                          </span>
+                        </button>
+                      </div>
                     )}
 
                     {msg.recognizedFoods && msg.recognizedFoods.length > 0 && !pendingIntakeSession && (
-                      <div className="flex flex-wrap gap-2 mt-2">
-                        {msg.recognizedFoods.slice(0, 3).map((food, idx) => (
-                          <button
-                            key={`${food.food_name}-${idx}`}
-                            onClick={() => handleQuickLog(food)}
-                            className="px-2 py-1 rounded-lg text-xs bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20 transition-colors"
-                          >
-                            记日志: {food.food_name}
-                          </button>
-                        ))}
+                      <div className="mt-1 rounded-2xl border border-primary/20 bg-primary/[0.06] p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-xs font-serif font-bold tracking-wide text-primary">
+                              下一步：确认要写入日志的食物
+                            </p>
+                            <p className="mt-1 text-[11px] leading-relaxed text-slate-400 font-serif tracking-wide">
+                              点选后会直接按当前时间归入对应餐次。
+                            </p>
+                          </div>
+                          <span className="material-symbols-outlined shrink-0 text-[18px] text-primary/80">add_task</span>
+                        </div>
+
+                        <div className="mt-3 flex flex-col gap-2">
+                          {msg.recognizedFoods.slice(0, 3).map((food, idx) => (
+                            <button
+                              key={`${food.food_name}-${idx}`}
+                              onClick={() => handleQuickLog(food)}
+                              className="flex w-full items-center justify-between gap-3 rounded-xl border border-primary/25 bg-[#0f282d]/80 px-3 py-2.5 text-left transition-colors hover:bg-primary/10 active:scale-[0.99]"
+                            >
+                              <span className="min-w-0">
+                                <span className="block truncate text-sm font-serif font-bold tracking-wide text-white">
+                                  {food.food_name}
+                                </span>
+                                <span className="mt-0.5 block truncate text-[11px] font-serif tracking-wide text-slate-400">
+                                  {formatRecognizedFoodMeta(food) || '识别结果待补充分量'}
+                                </span>
+                              </span>
+                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary px-2.5 py-1 text-[11px] font-serif font-bold tracking-wide text-background-dark">
+                                写入
+                                <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
+                              </span>
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1081,50 +2120,109 @@ const ChatView: React.FC<ChatViewProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="sticky bottom-24 px-4 pb-2 z-30">
-        {isParsingIntake && (
-          <div className="mb-2 rounded-2xl border border-primary/20 bg-primary/10 px-3 py-2 text-xs text-primary font-serif tracking-wide">
-            正在解析并自动记录饮食...
+      <div className="sticky bottom-24 px-3 sm:px-4 pb-2 z-30">
+        {composerBusyMessage && (
+          <div className="mb-2 rounded-2xl border border-primary/25 bg-[#0f282d]/95 px-3 py-2.5 text-xs text-primary font-serif tracking-wide shadow-lg">
+            <div className="flex items-start gap-2">
+              <span className="material-symbols-outlined mt-0.5 text-[16px] animate-pulse">progress_activity</span>
+              <div className="min-w-0 flex-1">
+                <span className="leading-relaxed">{composerBusyMessage}</span>
+                {isParsingIntake && imageUploadStage !== 'idle' && (
+                  <div className="mt-2">
+                    <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                      <div
+                        className="h-full rounded-full bg-primary transition-[width] duration-200"
+                        style={{ width: `${Math.min(100, Math.max(0, imageUploadProgress))}%` }}
+                      />
+                    </div>
+                    <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-primary/80">
+                      <span>{Math.round(imageUploadProgress)}%</span>
+                      <button
+                        type="button"
+                        onClick={cancelImageUpload}
+                        disabled={imageUploadStage !== 'uploading' && imageUploadStage !== 'parsing'}
+                        className="inline-flex items-center gap-1 rounded-full border border-primary/30 px-2 py-0.5 font-bold transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <span className="material-symbols-outlined text-[13px]">close</span>
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
 
         {intakeError && (
-          <div className="mb-2 rounded-2xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-200 font-serif tracking-wide">
-            {intakeError}
+          <div className="mb-2 flex items-start justify-between gap-2 rounded-2xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-200 font-serif tracking-wide">
+            <span className="min-w-0 flex-1 leading-relaxed">{intakeError}</span>
+            {imageUploadStage === 'error' && lastImageUploadRef.current && (
+              <button
+                type="button"
+                onClick={retryLastImageUpload}
+                disabled={isParsingIntake || isSubmittingIntake}
+                className="inline-flex shrink-0 items-center gap-1 rounded-full border border-red-300/30 px-2 py-0.5 font-bold text-red-100 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-[13px]">replay</span>
+                重试
+              </button>
+            )}
           </div>
         )}
 
-        <div className="flex items-center justify-start px-1 mb-2 gap-2">
+        <div className="mb-2 flex items-center justify-between gap-2 px-1">
+          <button
+            type="button"
+            onClick={() => setExplicitTextLogMode(prev => !prev)}
+            disabled={isParsingIntake || isSubmittingIntake}
+            aria-pressed={explicitTextLogMode}
+            className={`flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-bold font-serif tracking-wide transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 ${explicitTextLogMode ? 'border-primary/60 bg-primary/15 text-primary shadow-[0_0_14px_rgba(17,196,212,0.18)]' : 'border-white/10 bg-[#101719]/75 text-slate-400 hover:border-primary/30 hover:text-slate-200'}`}
+          >
+            <span className="material-symbols-outlined text-[16px]">edit_note</span>
+            文本记餐
+          </button>
+
+          {explicitTextLogMode && (
+            <span className="min-w-0 flex-1 text-right text-[11px] leading-relaxed text-primary/80 font-serif tracking-wide">
+              下一条文字将整理为饮食记录
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center justify-start px-1 mb-2 gap-1.5 overflow-x-auto">
           <button
             onClick={() => setInputValue('请基于我今天已记录的饮食和健康档案，说明当前需要注意的风险点和下一餐原则。')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#131b1d]/90 border border-white/10 backdrop-blur text-xs text-slate-300 hover:text-white hover:border-primary/40 hover:bg-[#162224] transition-all active:scale-95 shadow-lg group"
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-[#101719]/75 px-2.5 py-1 text-[11px] text-slate-500 backdrop-blur transition-all active:scale-95 hover:border-primary/30 hover:text-slate-300 group"
           >
-            <div className="w-5 h-5 rounded-md bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
-              <span className="material-symbols-outlined text-[14px] text-primary">assignment</span>
-            </div>
-            <span className="font-bold font-serif tracking-wide">今日风险解读</span>
+            <span className="material-symbols-outlined text-[14px] text-primary/70 group-hover:text-primary">assignment</span>
+            <span className="font-serif tracking-wide">今日风险</span>
           </button>
 
           <button
             onClick={() => setInputValue('一日三餐吃什么？')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#131b1d]/90 border border-white/10 backdrop-blur text-xs text-slate-300 hover:text-white hover:border-ochre/40 hover:bg-[#162224] transition-all active:scale-95 shadow-lg group"
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-[#101719]/75 px-2.5 py-1 text-[11px] text-slate-500 backdrop-blur transition-all active:scale-95 hover:border-ochre/30 hover:text-slate-300 group"
           >
-            <div className="w-5 h-5 rounded-md bg-ochre/10 flex items-center justify-center group-hover:bg-ochre/20 transition-colors">
-              <span className="material-symbols-outlined text-[14px] text-ochre">restaurant_menu</span>
-            </div>
-            <span className="font-bold font-serif tracking-wide">一日三餐吃什么？</span>
+            <span className="material-symbols-outlined text-[14px] text-ochre/70 group-hover:text-ochre">restaurant_menu</span>
+            <span className="font-serif tracking-wide">三餐建议</span>
           </button>
         </div>
 
         {pendingImage && (
-          <div className="mb-2 flex items-center gap-2 rounded-2xl border border-white/10 bg-surface-dark/95 p-2 shadow-lg">
-            <div className="relative h-16 w-16 overflow-hidden rounded-xl border border-white/10 shrink-0">
+          <div className="mb-2 flex items-center gap-3 rounded-2xl border border-primary/20 bg-surface-dark/95 p-2.5 shadow-lg">
+            <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-white/10">
               <img src={pendingImage.url} alt="待发送图片" className="h-full w-full object-cover" />
             </div>
 
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-bold text-white font-serif tracking-wide">图片已选择，可继续输入提示词</p>
-              <p className="mt-1 truncate text-[11px] text-slate-500 font-serif">{pendingImage.file.name}</p>
+              <div className="flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-[16px] text-primary">image</span>
+                <p className="text-xs font-bold text-white font-serif tracking-wide">图片已准备好</p>
+              </div>
+              <p className="mt-1 text-[11px] leading-relaxed text-slate-400 font-serif">
+                可先补充提示词，也可直接发送识别。
+              </p>
+              <p className="mt-0.5 truncate text-[11px] text-slate-600 font-serif">{pendingImage.file.name}</p>
             </div>
 
             <button
@@ -1138,11 +2236,12 @@ const ChatView: React.FC<ChatViewProps> = ({
           </div>
         )}
 
-        <div className="flex items-end gap-2 p-1.5 bg-surface-dark border border-white/10 rounded-2xl shadow-lg">
+        <div className="flex items-end gap-1.5 rounded-2xl border border-white/10 bg-surface-dark p-1.5 shadow-lg">
           <button
             onClick={handleGalleryClick}
             disabled={isParsingIntake || isSubmittingIntake}
-            className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-white transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label="添加图片"
           >
             <span className="material-symbols-outlined">add_photo_alternate</span>
           </button>
@@ -1151,37 +2250,89 @@ const ChatView: React.FC<ChatViewProps> = ({
             value={inputValue}
             onChange={handleTextareaInput}
             onKeyDown={handleKeyDown}
-            placeholder={
-              isListening
-                ? '正在聆听，请说出你吃了什么、分量和口味...'
-                : isParsingIntake
-                  ? '正在解析并自动记录...'
-                  : pendingImage
-                    ? '补充提示词，例如：这是半份、少油、重点看嘌呤...'
-                    : '咨询关于您的代谢健康...'
-            }
+            placeholder={composerPlaceholder}
             rows={1}
-            className={`flex-1 bg-transparent border-none outline-none text-white placeholder-slate-500 text-sm focus:ring-0 caret-primary font-serif tracking-wide font-bold resize-none max-h-[120px] py-2.5 ${isListening ? 'animate-pulse' : ''}`}
+            className={`min-w-0 flex-1 resize-none bg-transparent py-2.5 text-sm font-bold tracking-wide text-white caret-primary outline-none placeholder:text-slate-500 focus:ring-0 font-serif max-h-[120px] ${isListening ? 'animate-pulse' : ''}`}
           />
 
           <button
             onClick={startListening}
             disabled={isListening || isParsingIntake || isSubmittingIntake}
-            className={`w-10 h-10 flex items-center justify-center transition-all duration-300 ${isListening ? 'text-primary scale-110' : 'text-slate-400 hover:text-white'} ${(isParsingIntake || isSubmittingIntake) ? 'opacity-50 cursor-not-allowed' : ''}`}
+            className={`flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-300 ${isListening ? 'scale-110 bg-primary/10 text-primary' : 'text-slate-400 hover:bg-white/5 hover:text-white'} ${(isParsingIntake || isSubmittingIntake) ? 'opacity-50 cursor-not-allowed' : ''}`}
             title="语音录入饮食"
+            aria-label="语音录入饮食"
           >
             <span className="material-symbols-outlined">mic</span>
           </button>
 
           <button
             onClick={handleSendMessage}
-            className={`w-10 h-10 flex items-center justify-center rounded-full font-bold transition-all duration-300 ${(inputValue.trim() || pendingImage) ? 'bg-primary text-background-dark hover:bg-primary/90' : 'bg-white/10 text-white/20'}`}
-            disabled={(!inputValue.trim() && !pendingImage) || isSending || isParsingIntake || isSubmittingIntake}
+            className={`flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-xl px-3 font-bold transition-all duration-300 font-serif ${canSendComposer ? 'min-w-[4.5rem] bg-primary text-background-dark shadow-[0_0_18px_rgba(17,196,212,0.25)] hover:bg-primary/90' : 'w-10 bg-white/10 px-0 text-white/20'}`}
+            disabled={!canSendComposer || isSending || isParsingIntake || isSubmittingIntake}
+            aria-label={sendButtonLabel}
           >
-            <span className="material-symbols-outlined">arrow_upward</span>
+            <span className="material-symbols-outlined text-[18px]">arrow_upward</span>
+            {canSendComposer && (
+              <span className="text-xs tracking-wide">{sendButtonLabel}</span>
+            )}
           </button>
         </div>
       </div>
+
+      {feedbackComposer && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 p-4 backdrop-blur-sm sm:items-center">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#101719] p-4 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="font-serif text-base font-bold tracking-wide text-white">{feedbackComposer.title}</h3>
+                <p className="mt-1 text-xs leading-relaxed text-slate-400 font-serif tracking-wide">
+                  {feedbackComposer.description}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFeedbackComposer(null)}
+                disabled={submittingFeedbackId === feedbackComposer.message.serverId}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/10 text-slate-500 hover:text-white disabled:opacity-50"
+                aria-label="关闭反馈"
+              >
+                <span className="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
+
+            <textarea
+              value={feedbackComposer.text}
+              onChange={(event) => setFeedbackComposer(prev => prev ? { ...prev, text: event.target.value.slice(0, 1800) } : prev)}
+              rows={5}
+              placeholder={feedbackComposer.placeholder}
+              className="mt-4 w-full resize-none rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm leading-relaxed text-white outline-none transition-colors placeholder:text-slate-600 focus:border-primary/40 font-serif tracking-wide"
+            />
+
+            <p className="mt-2 text-[11px] leading-relaxed text-slate-500 font-serif tracking-wide">
+              {feedbackComposer.helper}
+            </p>
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setFeedbackComposer(null)}
+                disabled={submittingFeedbackId === feedbackComposer.message.serverId}
+                className="rounded-xl border border-white/10 px-4 py-2 text-xs font-bold tracking-wide text-slate-400 hover:bg-white/5 disabled:opacity-50 font-serif"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitComposerFeedback()}
+                disabled={!feedbackComposer.text.trim() || submittingFeedbackId === feedbackComposer.message.serverId}
+                className="rounded-xl border border-primary/25 bg-primary/15 px-4 py-2 text-xs font-bold tracking-wide text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50 font-serif"
+              >
+                {submittingFeedbackId === feedbackComposer.message.serverId ? '提交中...' : '提交反馈'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {pendingIntakeSession && (
         <IntakeConfirmationSheet

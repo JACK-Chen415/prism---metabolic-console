@@ -6,9 +6,15 @@ interface MedicalArchivesViewProps {
   onViewChange: (view: View) => void;
   conditions: ConditionData[];
   setConditions: React.Dispatch<React.SetStateAction<ConditionData[]>>;
+  onConditionsChanged: () => Promise<void>;
 }
 
-const MedicalArchivesView: React.FC<MedicalArchivesViewProps> = ({ onViewChange, conditions, setConditions }) => {
+const MedicalArchivesView: React.FC<MedicalArchivesViewProps> = ({
+  onViewChange,
+  conditions,
+  setConditions,
+  onConditionsChanged,
+}) => {
   // Local UI state
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -40,6 +46,7 @@ const MedicalArchivesView: React.FC<MedicalArchivesViewProps> = ({ onViewChange,
               dictum: editingItem.dictum,
               attribution: editingItem.attribution
             });
+            await onConditionsChanged();
           }
         } catch (error) {
           console.error('更新健康档案失败:', error);
@@ -87,6 +94,7 @@ const MedicalArchivesView: React.FC<MedicalArchivesViewProps> = ({ onViewChange,
               } : c
             ));
           }
+          await onConditionsChanged();
         } catch (error) {
           console.error('创建健康档案失败:', error);
         }
@@ -106,6 +114,7 @@ const MedicalArchivesView: React.FC<MedicalArchivesViewProps> = ({ onViewChange,
           const target = conditions.find(c => c.id === deleteId);
           if (target?.backendId) {
             await ConditionsAPI.delete(target.backendId);
+            await onConditionsChanged();
           }
         } catch (error) {
           console.error('删除健康档案失败:', error);

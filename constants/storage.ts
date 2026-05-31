@@ -8,3 +8,7 @@ export const SESSION_STORAGE_KEYS = {
   foodScanResult: 'prism.foodScan.result',
 } as const;
 
+export const UI_STORAGE_KEYS = {
+  chatMode: 'prism.chat.mode',
+  assistantIntensity: 'prism.assistant.intensity',
+} as const;

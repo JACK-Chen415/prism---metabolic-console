@@ -5,6 +5,7 @@
 
 import Dexie, { Table } from 'dexie';
 import { getLocalDateString } from './date';
+import { MealsAPI } from './api';
 
 const LEGACY_USER_ID = -1;
 
@@ -28,7 +29,16 @@ export interface CachedMeal {
     note?: string;
     imageUrl?: string;
     aiRecognized: boolean;
-    syncStatus: 'PENDING' | 'SYNCED' | 'CONFLICT';
+    source?: 'manual' | 'voice' | 'photo' | 'ai_quick_log';
+    sourceDetail?: string;
+    confidence?: number;
+    estimatedFields?: string[];
+    ruleWarnings?: string[];
+    recognitionMeta?: Record<string, unknown>;
+    syncStatus: 'PENDING' | 'SYNCED' | 'CONFLICT' | 'FAILED';
+    pendingDelete?: boolean;
+    lastSyncError?: string;
+    retryCount?: number;
     createdAt: Date;
     updatedAt: Date;
 }
@@ -88,6 +98,7 @@ export const OfflineMealsService = {
             userId,
             clientId: meal.clientId || generateClientId(),
             syncStatus: 'PENDING',
+            pendingDelete: false,
             aiRecognized: meal.aiRecognized ?? false,
             createdAt: now,
             updatedAt: now
@@ -114,7 +125,19 @@ export const OfflineMealsService = {
     },
 
     async getPending(userId: number): Promise<CachedMeal[]> {
-        return db.meals.where('[userId+syncStatus]').equals([userId, 'PENDING']).toArray();
+        const pending = await db.meals.where('[userId+syncStatus]').equals([userId, 'PENDING']).toArray();
+        const failed = await db.meals.where('[userId+syncStatus]').equals([userId, 'FAILED']).toArray();
+        return [...pending, ...failed].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    },
+
+    async getQueue(userId: number): Promise<CachedMeal[]> {
+        const statuses: CachedMeal['syncStatus'][] = ['PENDING', 'FAILED', 'CONFLICT'];
+        const groups = await Promise.all(
+            statuses.map(status => db.meals.where('[userId+syncStatus]').equals([userId, status]).toArray())
+        );
+        return groups
+            .flat()
+            .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
     },
 
     async update(userId: number, id: number, changes: Partial<CachedMeal>): Promise<void> {
@@ -125,14 +148,70 @@ export const OfflineMealsService = {
             ...changes,
             userId,
             updatedAt: new Date(),
-            syncStatus: 'PENDING'
+            syncStatus: 'PENDING',
+            pendingDelete: false,
+            lastSyncError: undefined,
+            retryCount: 0
         });
     },
 
     async delete(userId: number, id: number): Promise<void> {
         const meal = await db.meals.get(id);
-        if (meal?.userId === userId) {
+        if (!meal || meal.userId !== userId) return;
+
+        if (meal.serverId) {
+            await db.meals.update(id, {
+                syncStatus: 'PENDING',
+                pendingDelete: true,
+                lastSyncError: undefined,
+                retryCount: 0,
+                updatedAt: new Date()
+            });
+        } else {
             await db.meals.delete(id);
+        }
+    },
+
+    async getByClientId(userId: number, clientId: string): Promise<CachedMeal | undefined> {
+        return db.meals.where('[userId+clientId]').equals([userId, clientId]).first();
+    },
+
+    async getByServerId(userId: number, serverId: number): Promise<CachedMeal | undefined> {
+        return db.meals.where('serverId').equals(serverId).and(meal => meal.userId === userId).first();
+    },
+
+    async updateByClientId(userId: number, clientId: string, changes: Partial<CachedMeal>): Promise<void> {
+        const meal = await this.getByClientId(userId, clientId);
+        if (meal?.id) {
+            await this.update(userId, meal.id, changes);
+        }
+    },
+
+    async updateByServerId(userId: number, serverId: number, changes: Partial<CachedMeal>): Promise<void> {
+        const meal = await this.getByServerId(userId, serverId);
+        if (meal?.id) {
+            await this.update(userId, meal.id, changes);
+        }
+    },
+
+    async deleteByClientId(userId: number, clientId: string): Promise<void> {
+        const meal = await this.getByClientId(userId, clientId);
+        if (meal?.id) {
+            await this.delete(userId, meal.id);
+        }
+    },
+
+    async deleteByServerId(userId: number, serverId: number): Promise<void> {
+        const meal = await this.getByServerId(userId, serverId);
+        if (meal?.id) {
+            await this.delete(userId, meal.id);
+        }
+    },
+
+    async removeByClientId(userId: number, clientId: string): Promise<void> {
+        const meal = await this.getByClientId(userId, clientId);
+        if (meal?.id && meal.userId === userId) {
+            await db.meals.delete(meal.id);
         }
     },
 
@@ -142,9 +221,59 @@ export const OfflineMealsService = {
             await db.meals.update(meal.id, {
                 serverId,
                 syncStatus: 'SYNCED',
+                pendingDelete: false,
+                lastSyncError: undefined,
+                retryCount: 0,
                 updatedAt: new Date()
             });
         }
+    },
+
+    async markConflict(userId: number, clientId: string, reason = 'server_conflict'): Promise<void> {
+        const meal = await db.meals.where('[userId+clientId]').equals([userId, clientId]).first();
+        if (meal?.id) {
+            await db.meals.update(meal.id, {
+                syncStatus: 'CONFLICT',
+                lastSyncError: reason.slice(0, 160),
+                updatedAt: new Date()
+            });
+        }
+    },
+
+    async markRetry(userId: number, clientId: string): Promise<void> {
+        const meal = await db.meals.where('[userId+clientId]').equals([userId, clientId]).first();
+        if (!meal?.id || meal.userId !== userId) return;
+        if (!['PENDING', 'FAILED', 'CONFLICT'].includes(meal.syncStatus)) return;
+
+        await db.meals.update(meal.id, {
+            syncStatus: 'PENDING',
+            lastSyncError: undefined,
+            updatedAt: new Date()
+        });
+    },
+
+    async discardLocal(userId: number, clientId: string): Promise<void> {
+        const meal = await db.meals.where('[userId+clientId]').equals([userId, clientId]).first();
+        if (!meal?.id || meal.userId !== userId) return;
+        if (!['PENDING', 'FAILED', 'CONFLICT'].includes(meal.syncStatus)) return;
+
+        await db.meals.delete(meal.id);
+    },
+
+    async markFailed(userId: number, clientIds: string[], reason: string): Promise<void> {
+        const safeReason = reason.slice(0, 160);
+        await db.transaction('rw', db.meals, async () => {
+            for (const clientId of clientIds) {
+                const meal = await db.meals.where('[userId+clientId]').equals([userId, clientId]).first();
+                if (!meal?.id || meal.syncStatus === 'SYNCED' || meal.syncStatus === 'CONFLICT') continue;
+                await db.meals.update(meal.id, {
+                    syncStatus: 'FAILED',
+                    lastSyncError: safeReason,
+                    retryCount: (meal.retryCount || 0) + 1,
+                    updatedAt: new Date()
+                });
+            }
+        });
     },
 
     async mergeFromServer(userId: number, serverMeals: Array<{
@@ -164,6 +293,12 @@ export const OfflineMealsService = {
         record_date: string;
         note?: string;
         ai_recognized: boolean;
+        source?: string;
+        source_detail?: string;
+        confidence?: number;
+        estimated_fields_json?: string[];
+        rule_warnings_json?: string[];
+        recognition_meta_json?: Record<string, unknown>;
     }>): Promise<void> {
         await db.transaction('rw', db.meals, async () => {
             for (const serverMeal of serverMeals) {
@@ -189,7 +324,14 @@ export const OfflineMealsService = {
                     recordDate: serverMeal.record_date,
                     note: serverMeal.note,
                     aiRecognized: serverMeal.ai_recognized,
+                    source: (serverMeal.source || 'manual') as CachedMeal['source'],
+                    sourceDetail: serverMeal.source_detail || undefined,
+                    confidence: serverMeal.confidence ?? undefined,
+                    estimatedFields: Array.isArray(serverMeal.estimated_fields_json) ? serverMeal.estimated_fields_json : [],
+                    ruleWarnings: Array.isArray(serverMeal.rule_warnings_json) ? serverMeal.rule_warnings_json : [],
+                    recognitionMeta: serverMeal.recognition_meta_json || undefined,
                     syncStatus: 'SYNCED' as const,
+                    pendingDelete: false,
                     updatedAt: new Date()
                 };
 
@@ -215,7 +357,7 @@ export const OfflineMealsService = {
         fat: number;
         mealCount: number;
     }> {
-        const meals = await this.getToday(userId);
+        const meals = (await this.getToday(userId)).filter(meal => !meal.pendingDelete);
 
         return {
             calories: meals.reduce((sum, m) => sum + m.calories, 0),
@@ -286,6 +428,8 @@ export const CacheCleanupService = {
         totalCount: number;
         syncedCount: number;
         pendingCount: number;
+        failedCount: number;
+        conflictCount: number;
         oldestDate: string | null;
         newestDate: string | null;
         estimatedSizeKB: number;
@@ -293,6 +437,8 @@ export const CacheCleanupService = {
         const allMeals = await db.meals.where('userId').equals(userId).toArray();
         const synced = allMeals.filter(m => m.syncStatus === 'SYNCED');
         const pending = allMeals.filter(m => m.syncStatus === 'PENDING');
+        const failed = allMeals.filter(m => m.syncStatus === 'FAILED');
+        const conflict = allMeals.filter(m => m.syncStatus === 'CONFLICT');
         const dates = allMeals.map(m => m.recordDate).sort();
         const estimatedSizeKB = Math.max(1, Math.round(JSON.stringify(allMeals).length / 1024));
 
@@ -300,6 +446,8 @@ export const CacheCleanupService = {
             totalCount: allMeals.length,
             syncedCount: synced.length,
             pendingCount: pending.length,
+            failedCount: failed.length,
+            conflictCount: conflict.length,
             oldestDate: dates[0] || null,
             newestDate: dates[dates.length - 1] || null,
             estimatedSizeKB
@@ -318,11 +466,13 @@ export const CacheCleanupService = {
 };
 
 export class SyncScheduler {
-    private syncInterval: number | null = null;
-    private isOnline: boolean = navigator.onLine;
+    private syncInterval: ReturnType<typeof setInterval> | null = null;
+    private isOnline: boolean = typeof navigator === 'undefined' ? true : navigator.onLine;
     private currentUserId: number | null = null;
 
     constructor() {
+        if (typeof window === 'undefined') return;
+
         window.addEventListener('online', () => {
             this.isOnline = true;
             void this.triggerSync();
@@ -339,7 +489,7 @@ export class SyncScheduler {
             clearInterval(this.syncInterval);
         }
 
-        this.syncInterval = window.setInterval(() => {
+        this.syncInterval = setInterval(() => {
             void this.triggerSync();
         }, intervalMs);
 
@@ -368,39 +518,77 @@ export class SyncScheduler {
             return;
         }
 
+        let pendingMeals: CachedMeal[] = [];
         try {
             await SyncMetaService.setSyncStatus(userId, 'syncing');
-            const pendingMeals = await OfflineMealsService.getPending(userId);
+            pendingMeals = await OfflineMealsService.getPending(userId);
 
             if (pendingMeals.length === 0) {
                 await SyncMetaService.setSyncStatus(userId, 'idle');
                 return;
             }
 
-            const mealsToSync = pendingMeals.map(m => ({
-                client_id: m.clientId,
-                name: m.name,
-                portion: m.portion,
-                calories: m.calories,
-                sodium: m.sodium,
-                purine: m.purine,
-                protein: m.protein,
-                carbs: m.carbs,
-                fat: m.fat,
-                fiber: m.fiber,
-                meal_type: m.mealType,
-                category: m.category,
-                record_date: m.recordDate,
-                note: m.note,
-                image_url: m.imageUrl,
-                ai_recognized: m.aiRecognized
-            }));
+            const mealCreates = pendingMeals
+                .filter(m => !m.serverId && !m.pendingDelete)
+                .map(m => ({
+                    client_id: m.clientId,
+                    name: m.name,
+                    portion: m.portion,
+                    calories: m.calories,
+                    sodium: m.sodium,
+                    purine: m.purine,
+                    protein: m.protein,
+                    carbs: m.carbs,
+                    fat: m.fat,
+                    fiber: m.fiber,
+                    meal_type: m.mealType,
+                    category: m.category,
+                    record_date: m.recordDate,
+                    note: m.note,
+                    image_url: m.imageUrl,
+                    ai_recognized: m.aiRecognized,
+                    source: m.source || 'manual',
+                    source_detail: m.sourceDetail,
+                    confidence: m.confidence,
+                    estimated_fields_json: m.estimatedFields || [],
+                    rule_warnings_json: m.ruleWarnings || [],
+                    recognition_meta_json: m.recognitionMeta
+                }));
 
-            const { MealsAPI } = await import('./api');
+            const mealOperations = pendingMeals
+                .filter(m => !!m.serverId)
+                .map(m => ({
+                    op_type: m.pendingDelete ? 'delete' as const : 'update' as const,
+                    client_id: m.clientId,
+                    server_id: m.serverId,
+                    changes: m.pendingDelete ? undefined : {
+                        name: m.name,
+                        portion: m.portion,
+                        calories: m.calories,
+                        sodium: m.sodium,
+                        purine: m.purine,
+                        protein: m.protein,
+                        carbs: m.carbs,
+                        fat: m.fat,
+                        fiber: m.fiber,
+                        meal_type: m.mealType,
+                        category: m.category,
+                        note: m.note,
+                        source_detail: m.sourceDetail,
+                        confidence: m.confidence,
+                        estimated_fields_json: m.estimatedFields || [],
+                        rule_warnings_json: m.ruleWarnings || [],
+                        recognition_meta_json: m.recognitionMeta
+                    }
+                }));
+
+            const mealsToSync = mealCreates;
+
             const lastSyncTime = await SyncMetaService.getLastSyncTime(userId);
-            const response = await MealsAPI.sync(mealsToSync, lastSyncTime?.toISOString()) as {
+            const response = await MealsAPI.sync(mealsToSync, lastSyncTime?.toISOString(), mealOperations) as {
                 synced_count: number;
                 conflicts: string[];
+                deleted_client_ids: string[];
                 server_meals: Array<{
                     id: number;
                     client_id: string;
@@ -418,15 +606,29 @@ export class SyncScheduler {
                     record_date: string;
                     note?: string;
                     ai_recognized: boolean;
+                    source?: string;
+                    source_detail?: string;
+                    confidence?: number;
+                    estimated_fields_json?: string[];
+                    rule_warnings_json?: string[];
+                    recognition_meta_json?: Record<string, unknown>;
                 }>;
             };
 
             for (const meal of pendingMeals) {
-                if (!response.conflicts.includes(meal.clientId)) {
-                    const serverMeal = response.server_meals.find(sm => sm.client_id === meal.clientId);
-                    if (serverMeal) {
-                        await OfflineMealsService.markSynced(userId, meal.clientId, serverMeal.id);
-                    }
+                if (response.conflicts.includes(meal.clientId)) {
+                    await OfflineMealsService.markConflict(userId, meal.clientId);
+                    continue;
+                }
+
+                if (response.deleted_client_ids?.includes(meal.clientId)) {
+                    await OfflineMealsService.removeByClientId(userId, meal.clientId);
+                    continue;
+                }
+
+                const serverMeal = response.server_meals.find(sm => sm.client_id === meal.clientId);
+                if (serverMeal) {
+                    await OfflineMealsService.markSynced(userId, meal.clientId, serverMeal.id);
                 }
             }
 
@@ -437,8 +639,16 @@ export class SyncScheduler {
             await SyncMetaService.setLastSyncTime(userId);
             await SyncMetaService.setSyncStatus(userId, 'idle');
             await CacheCleanupService.cleanupExpired(userId);
+            window.dispatchEvent(new CustomEvent('prism:meals-synced', { detail: { userId } }));
         } catch (error) {
             console.error('[Sync] 同步失败:', error);
+            if (pendingMeals.length > 0) {
+                await OfflineMealsService.markFailed(
+                    userId,
+                    pendingMeals.map(meal => meal.clientId),
+                    error instanceof Error ? error.message : 'sync_failed',
+                );
+            }
             await SyncMetaService.setSyncStatus(userId, 'error');
         }
     }

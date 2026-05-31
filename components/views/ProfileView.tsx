@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { View, ConditionData, ConditionStatus, UserProfile } from '../../types';
-import { FEATURE_FLAGS } from '../../constants/featureFlags';
 
 interface ProfileViewProps {
     onViewChange?: (view: View) => void;
@@ -109,18 +108,12 @@ const ProfileView: React.FC<ProfileViewProps> = ({ onViewChange, medicalConditio
 
                 {/* Avatar Section */}
                 <div className="relative z-10 px-6 py-6 flex flex-col items-center gap-4">
-                    <div className={`relative group ${FEATURE_FLAGS.profileAvatarUpload ? 'cursor-pointer' : ''}`}>
+                    <div className="relative group">
                         <div className="size-28 rounded-full p-1 bg-gradient-to-tr from-primary/30 to-ochre/30 transition-transform duration-300 group-active:scale-95">
                             <div
                                 className="w-full h-full rounded-full bg-cover bg-center border-4 border-background-dark relative overflow-hidden"
                                 style={{ backgroundImage: `url("${avatar}")` }}
-                            >
-                                {!FEATURE_FLAGS.profileAvatarUpload && (
-                                    <div className="absolute bottom-1 left-1 right-1 rounded-full bg-black/40 px-2 py-0.5 text-center">
-                                        <span className="text-[9px] text-white/60 font-serif">头像上传未开放</span>
-                                    </div>
-                                )}
-                            </div>
+                            />
                         </div>
                         <div className="absolute -bottom-2 -right-2 bg-surface-dark border border-white/10 p-1.5 px-3 rounded-full flex items-center gap-1.5 shadow-lg pointer-events-none">
                             <span className="material-symbols-outlined text-primary text-[18px]">ecg_heart</span>
@@ -211,33 +204,6 @@ const ProfileView: React.FC<ProfileViewProps> = ({ onViewChange, medicalConditio
                     )}
                 </div>
 
-                {/* Scan Archives List */}
-                <div className="flex flex-col gap-3 mt-4">
-                    <div className="flex items-center justify-between px-2">
-                        <h3 className="text-white text-base font-bold font-serif tracking-wide">体检档案</h3>
-                        {/* Filter button removed */}
-                    </div>
-                    <button
-                        onClick={() => onViewChange && onViewChange(View.HEALTH_REPORT_ARCHIVES)}
-                        className="group relative flex items-center gap-4 p-4 rounded-2xl bg-[#131b1d]/80 backdrop-blur-md border border-white/5 shadow-sm active:scale-[0.98] transition-all hover:border-primary/20 hover:bg-[#131b1d] cursor-pointer"
-                    >
-                        <div className="relative shrink-0 size-12 rounded-xl bg-white/5 flex items-center justify-center text-slate-400 border border-white/10">
-                            <span className="material-symbols-outlined text-[24px]">description</span>
-                        </div>
-                        <div className="flex-1 min-w-0 text-left">
-                            <h4 className="text-sm font-bold font-serif text-white truncate group-hover:text-primary transition-colors tracking-wide">体检原始档案</h4>
-                            <p className="text-xs text-slate-400 mt-1 flex items-center gap-1.5 font-serif font-bold tracking-wide">
-                                暂未接入真实上传与分析接口
-                            </p>
-                        </div>
-                        <div className="shrink-0 flex items-center gap-3">
-                            <div className="px-2.5 py-1 rounded-md bg-white/5 border border-white/10">
-                                <span className="text-[10px] font-bold font-serif text-white/40 tracking-wide">未开放</span>
-                            </div>
-                            <span className="material-symbols-outlined text-slate-500 group-hover:text-white transition-colors text-xl">chevron_right</span>
-                        </div>
-                    </button>
-                </div>
             </div>
         </div>
     );

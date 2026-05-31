@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { IntakeCandidate, IntakeDraftSession, FoodCategory } from '../../types';
+import { AI_INTAKE_CONFIRMATION_NOTICE } from '../../constants/compliance';
 
 interface IntakeConfirmationSheetProps {
   session: IntakeDraftSession;
@@ -41,6 +42,63 @@ const levelClassMap: Record<string, string> = {
   INSUFFICIENT: 'text-slate-300 border-white/10 bg-white/5',
 };
 
+const levelLabelMap: Record<string, string> = {
+  AVOID: '避免',
+  LIMIT: '限量',
+  CONDITIONAL: '条件食用',
+  MODERATE: '适量',
+  RECOMMEND: '推荐',
+  INSUFFICIENT: '信息不足',
+};
+
+const fieldLabelMap: Record<string, string> = {
+  amount: '份量',
+  normalized_amount: '份量',
+  calories: '热量',
+  sodium: '钠',
+  purine: '嘌呤',
+  protein: '蛋白质',
+  carbs: '碳水',
+  fat: '脂肪',
+  fiber: '膳食纤维',
+  sugar: '糖',
+};
+
+const originLabelMap: Record<string, string> = {
+  LOCAL_RULE: '本地规则',
+  LOCAL_KNOWLEDGE: '本地知识库',
+  CLOUD_SUPPLEMENT: '云端补充',
+  MIXED: '混合来源',
+};
+
+const LOW_CONFIDENCE_THRESHOLD = 0.55;
+
+const sourceLabelMap: Record<IntakeCandidate['source'], string> = {
+  voice: '语音',
+  photo: '拍照',
+  ai_quick_log: 'AI',
+};
+
+const getLevelLabel = (level?: IntakeCandidate['recommendation_level']) => {
+  if (!level) return '待评估';
+  return levelLabelMap[level] || '待评估';
+};
+
+const formatFieldLabel = (field: string) => fieldLabelMap[field] || field;
+
+const summarizeFields = (fields: string[], emptyText: string) => {
+  if (fields.length === 0) return emptyText;
+  const visibleFields = fields.slice(0, 2).map(formatFieldLabel).join('、');
+  return fields.length > 2 ? `${visibleFields}等${fields.length}项` : visibleFields;
+};
+
+const splitListText = (value: string): string[] => {
+  return value
+    .split(/[，,、；;\n/]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
 const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
   session,
   isSubmitting,
@@ -54,7 +112,27 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
   onReevaluateCandidate,
   onConfirm,
 }) => {
+  const [lowConfidenceAcknowledgedIds, setLowConfidenceAcknowledgedIds] = useState<string[]>([]);
   const sourceLabel = session.source === 'voice' ? '语音候选' : session.source === 'photo' ? '拍照候选' : 'AI候选';
+  const staleCandidates = session.candidates.filter((candidate) => staleEvaluationDraftIds.includes(candidate.draft_id));
+  const staleCandidateNames = staleCandidates
+    .map((candidate) => candidate.food_name.trim())
+    .filter(Boolean);
+  const staleReason = staleEvaluationDraftIds.length > 0
+    ? `${staleEvaluationDraftIds.length}条候选修改后尚未重新评估${staleCandidateNames.length > 0 ? `：${staleCandidateNames.slice(0, 3).join('、')}` : ''}${staleCandidateNames.length > 3 ? '等' : ''}`
+    : '';
+  const blankCandidateCount = session.candidates.filter((candidate) => !candidate.food_name.trim()).length;
+  const lowConfidenceCandidates = session.candidates.filter((candidate) => (candidate.confidence || 0) < LOW_CONFIDENCE_THRESHOLD);
+  const lowConfidencePending = lowConfidenceCandidates.filter((candidate) => !lowConfidenceAcknowledgedIds.includes(candidate.draft_id));
+  const confirmBlockedReason = blankCandidateCount > 0
+    ? `${blankCandidateCount}条候选缺少食物名称，请补全后重新评估。`
+    : staleReason || (lowConfidencePending.length > 0
+      ? `${lowConfidencePending.length}条低置信度候选尚未核对，请先确认。`
+      : '');
+
+  useEffect(() => {
+    setLowConfidenceAcknowledgedIds(prev => prev.filter(id => session.candidates.some(candidate => candidate.draft_id === id)));
+  }, [session.candidates]);
 
   return (
     <div className="fixed inset-0 z-[90] bg-black/80 backdrop-blur-sm px-4 pt-[calc(16px_+_env(safe-area-inset-top))] pb-[calc(120px_+_env(safe-area-inset-bottom))] flex items-end justify-center">
@@ -76,6 +154,10 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4 space-y-4 scroll-pb-28">
+          <div className="rounded-2xl border border-ochre/20 bg-ochre/10 px-4 py-3 text-xs text-ochre/90 leading-relaxed font-serif tracking-wide">
+            {AI_INTAKE_CONFIRMATION_NOTICE}
+          </div>
+
           {session.summary_warning && (
             <div className="rounded-2xl border border-amber-300/20 bg-amber-500/10 px-4 py-3 text-xs text-amber-100 leading-relaxed font-serif tracking-wide">
               {session.summary_warning}
@@ -90,15 +172,25 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
 
           {session.candidates.map((candidate) => {
             const levelClass = levelClassMap[candidate.recommendation_level || 'INSUFFICIENT'] || levelClassMap.INSUFFICIENT;
+            const levelLabel = getLevelLabel(candidate.recommendation_level);
             const isReevaluating = reevaluatingDraftIds.includes(candidate.draft_id);
             const isEvaluationStale = staleEvaluationDraftIds.includes(candidate.draft_id);
+            const isLowConfidence = (candidate.confidence || 0) < LOW_CONFIDENCE_THRESHOLD;
+            const isLowConfidenceAcknowledged = lowConfidenceAcknowledgedIds.includes(candidate.draft_id);
+            const estimateSummary = summarizeFields(candidate.estimated_fields, '无估算项');
+            const warningSummary = candidate.warnings.length > 0 ? `${candidate.warnings.length}条提醒` : '无风险提醒';
+            const citationSummary = candidate.citations.length > 0 ? `${candidate.citations.length}个来源` : '无规则来源';
+            const sourceSummary = `${sourceLabelMap[candidate.source]} · ${originLabelMap[candidate.origin] || '来源待确认'}`;
             return (
-              <div key={candidate.draft_id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
+              <div key={candidate.draft_id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5 sm:p-4 space-y-3.5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
+                    <p className="text-white text-base font-serif font-bold tracking-wide leading-snug truncate">
+                      {candidate.food_name.trim() || '未命名候选'}
+                    </p>
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className={`inline-flex px-2 py-0.5 rounded-full border text-[10px] font-bold tracking-wide ${levelClass}`}>
-                        {candidate.recommendation_level || '待评估'}
+                        {levelLabel}
                       </span>
                       <span className="inline-flex px-2 py-0.5 rounded-full border border-white/10 bg-white/5 text-[10px] text-slate-300 font-bold tracking-wide">
                         置信度 {Math.round((candidate.confidence || 0) * 100)}%
@@ -120,7 +212,7 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
                         </span>
                       )}
                     </div>
-                    <p className="text-slate-400 text-[11px] mt-2 font-serif tracking-wide">
+                    <p className="text-slate-400 text-[11px] mt-1.5 font-serif tracking-wide leading-relaxed">
                       {candidate.matched_disease_codes.length > 0 ? `命中病种：${candidate.matched_disease_codes.join('、')}` : '本地病种规则未命中'}
                     </p>
                   </div>
@@ -142,6 +234,25 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
                     >
                       <span className="material-symbols-outlined text-[18px]">delete</span>
                     </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-xl border border-white/5 bg-black/20 px-3 py-2">
+                    <p className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">估算</p>
+                    <p className="text-xs text-slate-200 font-serif tracking-wide mt-1 leading-snug">{estimateSummary}</p>
+                  </div>
+                  <div className={`rounded-xl border px-3 py-2 ${candidate.warnings.length > 0 ? 'border-red-400/20 bg-red-500/10' : 'border-white/5 bg-black/20'}`}>
+                    <p className={`text-[10px] font-serif font-bold tracking-wide ${candidate.warnings.length > 0 ? 'text-red-200' : 'text-slate-500'}`}>提醒</p>
+                    <p className={`text-xs font-serif tracking-wide mt-1 leading-snug ${candidate.warnings.length > 0 ? 'text-red-100' : 'text-slate-200'}`}>{warningSummary}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/5 bg-black/20 px-3 py-2">
+                    <p className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">来源</p>
+                    <p className="text-xs text-slate-200 font-serif tracking-wide mt-1 leading-snug">{sourceSummary}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/5 bg-black/20 px-3 py-2">
+                    <p className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">依据</p>
+                    <p className="text-xs text-slate-200 font-serif tracking-wide mt-1 leading-snug">{citationSummary}</p>
                   </div>
                 </div>
 
@@ -214,16 +325,63 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
                   <p className="text-sm text-slate-200 font-serif tracking-wide mt-1">{candidate.amount_text || '1份'}</p>
                 </div>
 
-                {(candidate.ingredients.length > 0 || candidate.cooking_method) && (
-                  <div className="rounded-xl bg-black/20 border border-white/5 px-3 py-3 space-y-2">
-                    {candidate.ingredients.length > 0 && (
-                      <p className="text-xs text-slate-300 font-serif tracking-wide">主要食材：{candidate.ingredients.join('、')}</p>
-                    )}
-                    {candidate.cooking_method && (
-                      <p className="text-xs text-slate-300 font-serif tracking-wide">烹调方式：{candidate.cooking_method}</p>
-                    )}
+                {isLowConfidence && (
+                  <div className="rounded-2xl border border-amber-300/25 bg-amber-500/10 px-3 py-3">
+                    <div className="flex items-start gap-2">
+                      <span className="material-symbols-outlined mt-0.5 text-[16px] text-amber-100">visibility</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-serif text-xs font-bold tracking-wide text-amber-100">低置信度候选</p>
+                        <p className="mt-1 font-serif text-[11px] leading-relaxed text-amber-100/80">
+                          请核对名称、份量、食材、调料和烹调方式后再写入日志。
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setLowConfidenceAcknowledgedIds(prev => (
+                          prev.includes(candidate.draft_id)
+                            ? prev.filter(id => id !== candidate.draft_id)
+                            : [...prev, candidate.draft_id]
+                        ))}
+                        className={`shrink-0 rounded-full border px-2 py-1 font-serif text-[10px] font-bold tracking-wide transition-colors ${isLowConfidenceAcknowledged
+                          ? 'border-emerald-300/25 bg-emerald-500/10 text-emerald-200'
+                          : 'border-amber-300/30 bg-black/20 text-amber-100'
+                          }`}
+                      >
+                        {isLowConfidenceAcknowledged ? '已核对' : '确认核对'}
+                      </button>
+                    </div>
                   </div>
                 )}
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[11px] text-slate-500 font-serif font-bold tracking-wide block mb-1">主要食材</label>
+                    <input
+                      value={(candidate.ingredients || []).join('、')}
+                      onChange={(e) => onChangeCandidate(candidate.draft_id, { ingredients: splitListText(e.target.value) })}
+                      placeholder="如 米饭、鸡蛋"
+                      className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm outline-none focus:border-primary/40 transition-colors font-serif tracking-wide placeholder:text-slate-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-slate-500 font-serif font-bold tracking-wide block mb-1">调料</label>
+                    <input
+                      value={(candidate.seasonings || []).join('、')}
+                      onChange={(e) => onChangeCandidate(candidate.draft_id, { seasonings: splitListText(e.target.value) })}
+                      placeholder="如 酱油、糖"
+                      className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm outline-none focus:border-primary/40 transition-colors font-serif tracking-wide placeholder:text-slate-600"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="text-[11px] text-slate-500 font-serif font-bold tracking-wide block mb-1">烹调方式</label>
+                    <input
+                      value={candidate.cooking_method || ''}
+                      onChange={(e) => onChangeCandidate(candidate.draft_id, { cooking_method: e.target.value.trim() || null })}
+                      placeholder="如 清蒸、红烧、油炸"
+                      className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm outline-none focus:border-primary/40 transition-colors font-serif tracking-wide placeholder:text-slate-600"
+                    />
+                  </div>
+                </div>
 
                 <div className="grid grid-cols-3 gap-2">
                   <div className="rounded-xl border border-white/5 bg-black/20 px-3 py-2">
@@ -244,7 +402,7 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
                   <div className="flex flex-wrap gap-2">
                     {candidate.estimated_fields.map((field) => (
                       <span key={field} className="inline-flex px-2 py-1 rounded-full border border-white/10 bg-white/5 text-[10px] text-slate-300 font-bold tracking-wide">
-                        {field} 估算
+                        {formatFieldLabel(field)} 估算
                       </span>
                     ))}
                   </div>
@@ -292,6 +450,14 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
         </div>
 
         <div className="shrink-0 border-t border-white/10 px-4 py-4 bg-[#101719] space-y-3 shadow-[0_-12px_24px_rgba(0,0,0,0.18)]">
+          {confirmBlockedReason && (
+            <div className="rounded-2xl border border-amber-300/25 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-100 leading-relaxed font-serif tracking-wide">
+              <div className="flex items-start gap-2">
+                <span className="material-symbols-outlined text-[16px] mt-0.5">info</span>
+                <span>暂不能确认。{confirmBlockedReason}{blankCandidateCount === 0 && staleReason ? '，请先点击对应候选的“重新评估”。' : ''}</span>
+              </div>
+            </div>
+          )}
           <button
             onClick={onAddCandidate}
             className="w-full h-11 rounded-2xl border border-white/10 bg-white/5 text-slate-200 text-sm font-serif font-bold tracking-wide hover:bg-white/10 transition-colors"
@@ -300,13 +466,17 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
           </button>
           <button
             onClick={onConfirm}
-            disabled={isSubmitting || session.candidates.length === 0 || staleEvaluationDraftIds.length > 0}
+            disabled={isSubmitting || session.candidates.length === 0 || staleEvaluationDraftIds.length > 0 || blankCandidateCount > 0 || lowConfidencePending.length > 0}
             className="w-full h-12 rounded-2xl bg-gradient-to-r from-primary to-[#45b7aa] text-[#081012] text-sm font-serif font-bold tracking-wide disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isSubmitting
               ? '正在写入生命日志...'
+              : blankCandidateCount > 0
+                ? '请补全食物名称'
               : staleEvaluationDraftIds.length > 0
                 ? '请先重新评估候选'
+              : lowConfidencePending.length > 0
+                ? '请先核对低置信度候选'
                 : '确认并写入日志'}
           </button>
         </div>

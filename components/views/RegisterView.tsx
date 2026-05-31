@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { View } from '../../types';
-import { AuthAPI, TokenManager } from '../../services/api';
+import { ComplianceDocumentKey, View } from '../../types';
+import { AuthAPI, REGISTRATION_CONSENT_VERSION, TokenManager } from '../../services/api';
 
 interface RegisterViewProps {
     onViewChange: (view: View) => void;
     onRegisterSuccess?: (user: unknown) => void;
+    onOpenCompliance?: (documentKey: ComplianceDocumentKey) => void;
 }
 
 interface RegisterResponse {
@@ -19,7 +20,15 @@ interface RegisterResponse {
     };
 }
 
-const RegisterView: React.FC<RegisterViewProps> = ({ onViewChange, onRegisterSuccess }) => {
+const CONSENT_PAYLOAD = {
+    terms_accepted: true,
+    privacy_accepted: true,
+    ai_use_accepted: true,
+    health_disclaimer_accepted: true,
+    consent_version: REGISTRATION_CONSENT_VERSION,
+};
+
+const RegisterView: React.FC<RegisterViewProps> = ({ onViewChange, onRegisterSuccess, onOpenCompliance }) => {
     const [phone, setPhone] = useState('');
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
@@ -61,7 +70,7 @@ const RegisterView: React.FC<RegisterViewProps> = ({ onViewChange, onRegisterSuc
         // 调用真实API注册
         setIsLoading(true);
         try {
-            const response = await AuthAPI.register(phone, password) as RegisterResponse;
+            const response = await AuthAPI.register(phone, password, CONSENT_PAYLOAD) as RegisterResponse;
 
             // 保存 Token
             TokenManager.setTokens(
@@ -267,7 +276,27 @@ const RegisterView: React.FC<RegisterViewProps> = ({ onViewChange, onRegisterSuc
                         {agreed && <span className="material-symbols-outlined text-[10px] text-[#080c0d] font-bold">check</span>}
                     </div>
                     <p className={`text-[10px] leading-tight font-serif tracking-wide ${shakeTerm ? 'text-ochre' : 'text-slate-500'}`}>
-                        我已阅读并同意 <span className="text-[#45b7aa] hover:underline">《用户协议》</span> 与 <span className="text-[#45b7aa] hover:underline">《隐私政策》</span>
+                        我已阅读并同意{' '}
+                        {([
+                            ['terms', '《用户协议》'],
+                            ['privacy', '《隐私政策》'],
+                            ['ai_use', '《AI 使用说明》'],
+                            ['health_disclaimer', '《健康免责声明》'],
+                        ] as [ComplianceDocumentKey, string][]).map(([key, label], index) => (
+                            <React.Fragment key={key}>
+                                {index > 0 && <span>、</span>}
+                                <button
+                                    type="button"
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        onOpenCompliance?.(key);
+                                    }}
+                                    className="text-[#45b7aa] hover:underline"
+                                >
+                                    {label}
+                                </button>
+                            </React.Fragment>
+                        ))}
                     </p>
                 </div>
             </div>

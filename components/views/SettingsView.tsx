@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { View, UserProfile } from '../../types';
-import { TokenManager } from '../../services/api';
+import { ComplianceDocumentKey, DeviceSessionItem, View, UserProfile } from '../../types';
+import { AccountAPI, AuthAPI, ReportsAPI, TokenManager } from '../../services/api';
 import { APP_BUILD, APP_DISPLAY_NAME, APP_VERSION } from '../../constants/app';
-import { CacheCleanupService } from '../../services/offline';
+import { CacheCleanupService, CachedMeal, OfflineMealsService, SyncMetaService, syncScheduler } from '../../services/offline';
+import { AssistantIntensity, ChatMode, getAssistantIntensity, getChatMode, setAssistantIntensity, setChatMode } from '../../services/sessionState';
 
 interface SettingsViewProps {
     onViewChange: (view: View) => void;
@@ -10,12 +11,21 @@ interface SettingsViewProps {
     currentUserId: number | null;
     onUpdateProfile: (profile: UserProfile) => Promise<void> | void;
     onLogout?: () => void;
+    onOpenCompliance?: (documentKey: ComplianceDocumentKey) => void;
+    onDataDeleted?: () => void;
+    onOpenLogDate?: (date: string) => void | Promise<void>;
 }
 
 type ModalType =
     | 'BODY_PARAMS'
     | 'GENDER_SELECT'
+    | 'ASSISTANT_PREF'
+    | 'INTENSITY_SELECT'
     | 'CLEAN_DATA'
+    | 'OFFLINE_QUEUE'
+    | 'DELETE_DATA_CONFIRM'
+    | 'DELETE_ACCOUNT_CONFIRM'
+    | 'DATA_RIGHTS_NOTICE'
     | 'ABOUT'
     | 'LOGOUT_CONFIRM'
     | null;
@@ -24,6 +34,8 @@ type CacheStats = {
     totalCount: number;
     syncedCount: number;
     pendingCount: number;
+    failedCount: number;
+    conflictCount: number;
     oldestDate: string | null;
     newestDate: string | null;
     estimatedSizeKB: number;
@@ -33,11 +45,12 @@ interface ModalProps {
     title: string;
     onClose: () => void;
     children: React.ReactNode;
+    maxWidthClass?: string;
 }
 
-const Modal: React.FC<ModalProps> = ({ title, onClose, children }) => (
+const Modal: React.FC<ModalProps> = ({ title, onClose, children, maxWidthClass = 'max-w-xs' }) => (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-        <div className="bg-[#131b1d] border border-white/10 w-full max-w-xs rounded-2xl p-5 shadow-2xl relative">
+        <div className={`bg-[#131b1d] border border-white/10 w-full rounded-2xl p-5 shadow-2xl relative ${maxWidthClass}`}>
             <h3 className="text-white font-serif text-lg font-bold mb-4 text-center tracking-wide">{title}</h3>
             {children}
             <button
@@ -50,32 +63,97 @@ const Modal: React.FC<ModalProps> = ({ title, onClose, children }) => (
     </div>
 );
 
-const DisabledBadge = ({ label = '未开放' }: { label?: string }) => (
-    <span className="text-[10px] bg-white/5 border border-white/10 px-2 py-0.5 rounded text-white/40 font-serif font-bold tracking-wide">
-        {label}
-    </span>
-);
+const queueStatusLabelMap: Record<CachedMeal['syncStatus'], string> = {
+    PENDING: '待同步',
+    SYNCED: '已同步',
+    FAILED: '同步失败',
+    CONFLICT: '冲突待处理',
+};
 
-const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, currentUserId, onUpdateProfile, onLogout }) => {
+const queueStatusClassMap: Record<CachedMeal['syncStatus'], string> = {
+    PENDING: 'border-primary/20 bg-primary/10 text-primary',
+    SYNCED: 'border-emerald-400/15 bg-emerald-500/10 text-emerald-200',
+    FAILED: 'border-red-400/25 bg-red-500/10 text-red-200',
+    CONFLICT: 'border-amber-300/25 bg-amber-500/10 text-amber-100',
+};
+
+const mealTypeLabelMap: Record<CachedMeal['mealType'], string> = {
+    BREAKFAST: '早餐',
+    LUNCH: '午餐',
+    DINNER: '晚餐',
+    SNACK: '加餐',
+};
+
+const sourceLabelMap: Record<string, string> = {
+    manual: '手动',
+    voice: '语音',
+    photo: '拍照',
+    ai_quick_log: 'AI',
+};
+
+const assistantModeLabelMap: Record<ChatMode, string> = {
+    STRICT: '分析师模式',
+    GENTLE: '教练模式',
+};
+
+const assistantIntensityLabelMap: Record<AssistantIntensity, string> = {
+    LOW: '轻提示',
+    STANDARD: '平衡',
+    HIGH: '强干预',
+};
+
+const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, currentUserId, onUpdateProfile, onLogout, onOpenCompliance, onDataDeleted, onOpenLogDate }) => {
     const [editProfile, setEditProfile] = useState<UserProfile>(userProfile);
     const [activeModal, setActiveModal] = useState<ModalType>(null);
     const [isCleaning, setIsCleaning] = useState(false);
     const [isSavingProfile, setIsSavingProfile] = useState(false);
     const [profileError, setProfileError] = useState<string | null>(null);
     const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
+    const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'error' | null>(null);
+    const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
+    const [isSyncingOffline, setIsSyncingOffline] = useState(false);
+    const [offlineQueueItems, setOfflineQueueItems] = useState<CachedMeal[]>([]);
+    const [queueActionClientId, setQueueActionClientId] = useState<string | null>(null);
+    const [queueNotice, setQueueNotice] = useState<string | null>(null);
+    const [deviceSessions, setDeviceSessions] = useState<DeviceSessionItem[]>([]);
+    const [sessionActionId, setSessionActionId] = useState<string | null>(null);
+    const [sessionNotice, setSessionNotice] = useState<string | null>(null);
+    const [assistantMode, setAssistantModeState] = useState<ChatMode>(() => getChatMode());
+    const [assistantIntensity, setAssistantIntensityState] = useState<AssistantIntensity>(() => getAssistantIntensity());
+    const [dataRightsLoading, setDataRightsLoading] = useState<string | null>(null);
+    const [dataRightsNotice, setDataRightsNotice] = useState<string | null>(null);
 
     const appVersionLabel = `v${APP_VERSION}${APP_BUILD !== 'local' ? ` (${APP_BUILD})` : ''}`;
 
     const loadCacheStats = async () => {
         if (!currentUserId) {
             setCacheStats(null);
+            setSyncStatus(null);
+            setLastSyncTime(null);
+            setOfflineQueueItems([]);
+            setDeviceSessions([]);
             return;
         }
         try {
-            setCacheStats(await CacheCleanupService.getStats(currentUserId));
+            const [stats, status, lastSync, queueItems, sessions] = await Promise.all([
+                CacheCleanupService.getStats(currentUserId),
+                SyncMetaService.getSyncStatus(currentUserId),
+                SyncMetaService.getLastSyncTime(currentUserId),
+                OfflineMealsService.getQueue(currentUserId),
+                AuthAPI.listSessions(),
+            ]);
+            setCacheStats(stats);
+            setSyncStatus(status);
+            setLastSyncTime(lastSync ? lastSync.toLocaleString('zh-CN', { hour12: false }) : null);
+            setOfflineQueueItems(queueItems);
+            setDeviceSessions(sessions);
         } catch (error) {
             console.error('读取缓存统计失败:', error);
             setCacheStats(null);
+            setSyncStatus(null);
+            setLastSyncTime(null);
+            setOfflineQueueItems([]);
+            setDeviceSessions([]);
         }
     };
 
@@ -97,6 +175,16 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
         setEditProfile(userProfile);
         setProfileError(null);
         setActiveModal('GENDER_SELECT');
+    };
+
+    const openAssistantModeModal = () => {
+        setAssistantModeState(getChatMode());
+        setActiveModal('ASSISTANT_PREF');
+    };
+
+    const openAssistantIntensityModal = () => {
+        setAssistantIntensityState(getAssistantIntensity());
+        setActiveModal('INTENSITY_SELECT');
     };
 
     const saveProfileChanges = async () => {
@@ -124,12 +212,194 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
         }
     };
 
+    const handleRetryOfflineSync = async () => {
+        if (!currentUserId) return;
+        setIsSyncingOffline(true);
+        try {
+            await syncScheduler.triggerSync(currentUserId);
+            await loadCacheStats();
+        } finally {
+            setIsSyncingOffline(false);
+        }
+    };
+
+    const handleRetryOfflineItem = async (item: CachedMeal) => {
+        if (!currentUserId) return;
+        setQueueActionClientId(item.clientId);
+        setQueueNotice(null);
+        try {
+            await OfflineMealsService.markRetry(currentUserId, item.clientId);
+            await syncScheduler.triggerSync(currentUserId);
+            await loadCacheStats();
+            setQueueNotice('该记录已重新进入同步队列。');
+        } catch (error) {
+            setQueueNotice(error instanceof Error ? error.message : '重试失败，请稍后再试。');
+        } finally {
+            setQueueActionClientId(null);
+        }
+    };
+
+    const handleDiscardOfflineItem = async (item: CachedMeal) => {
+        if (!currentUserId) return;
+        const confirmed = window.confirm(`确认丢弃「${item.name || '未命名记录'}」的本地未同步草稿？这不会删除云端已有记录。`);
+        if (!confirmed) return;
+
+        setQueueActionClientId(item.clientId);
+        setQueueNotice(null);
+        try {
+            await OfflineMealsService.discardLocal(currentUserId, item.clientId);
+            await loadCacheStats();
+            setQueueNotice('本地草稿已丢弃，云端记录不会受影响。');
+        } catch (error) {
+            setQueueNotice(error instanceof Error ? error.message : '丢弃失败，请稍后再试。');
+        } finally {
+            setQueueActionClientId(null);
+        }
+    };
+
+    const handleOpenQueueItemInLog = async (item: CachedMeal) => {
+        setActiveModal(null);
+        setQueueNotice(null);
+        if (onOpenLogDate) {
+            await onOpenLogDate(item.recordDate);
+            return;
+        }
+        onViewChange(View.LOG);
+    };
+
+    const handleRevokeDeviceSession = async (session: DeviceSessionItem) => {
+        if (!currentUserId || session.is_current) return;
+        const confirmed = window.confirm(`确认撤销设备会话「${session.device_label || session.session_id}」？这台设备将需要重新登录。`);
+        if (!confirmed) return;
+
+        setSessionActionId(session.session_id);
+        setSessionNotice(null);
+        try {
+            await AuthAPI.revokeSession(session.session_id);
+            await loadCacheStats();
+            setSessionNotice('设备会话已撤销。');
+        } catch (error) {
+            setSessionNotice(error instanceof Error ? error.message : '撤销失败，请稍后再试。');
+        } finally {
+            setSessionActionId(null);
+        }
+    };
+
+    const handleSelectAssistantMode = (mode: ChatMode) => {
+        setAssistantModeState(mode);
+        setChatMode(mode);
+        setActiveModal(null);
+    };
+
+    const handleSelectAssistantIntensity = (intensity: AssistantIntensity) => {
+        setAssistantIntensityState(intensity);
+        setAssistantIntensity(intensity);
+        setActiveModal(null);
+    };
+
     const handleLogout = () => {
         if (onLogout) {
             onLogout();
         } else {
             TokenManager.clearTokens();
             onViewChange(View.LOGIN);
+        }
+    };
+
+    const downloadJson = (fileName: string, data: unknown) => {
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+    };
+
+    const downloadText = (fileName: string, text: string, type = 'text/plain;charset=utf-8') => {
+        const blob = new Blob([text], { type });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+    };
+
+    const handleExportData = async () => {
+        setDataRightsLoading('export');
+        try {
+            const data = await AccountAPI.exportData();
+            const date = new Date().toISOString().slice(0, 10);
+            downloadJson(`prism-data-export-${date}.json`, data);
+            setDataRightsNotice('个人数据导出已生成。导出内容仅供个人健康管理参考，不构成医疗诊断或治疗记录。');
+            setActiveModal('DATA_RIGHTS_NOTICE');
+        } catch (error) {
+            setDataRightsNotice(error instanceof Error ? error.message : '导出失败，请稍后再试。');
+            setActiveModal('DATA_RIGHTS_NOTICE');
+        } finally {
+            setDataRightsLoading(null);
+        }
+    };
+
+    const handleExportReport = async (period: 'weekly' | 'monthly') => {
+        setDataRightsLoading(`${period}-report`);
+        try {
+            const date = new Date().toISOString().slice(0, 10);
+            const report = period === 'weekly'
+                ? await ReportsAPI.getWeekly()
+                : await ReportsAPI.getMonthly();
+            const csv = period === 'weekly'
+                ? await ReportsAPI.getWeeklyCsv()
+                : await ReportsAPI.getMonthlyCsv();
+            const label = period === 'weekly' ? 'weekly' : 'monthly';
+            downloadJson(`prism-${label}-report-${date}.json`, report);
+            downloadText(`prism-${label}-report-${date}.csv`, csv, 'text/csv;charset=utf-8');
+            setDataRightsNotice('报告已导出为 JSON 与 CSV。报告仅用于个人记录回顾和营养估算，不构成医疗诊断或治疗建议。');
+            setActiveModal('DATA_RIGHTS_NOTICE');
+        } catch (error) {
+            setDataRightsNotice(error instanceof Error ? error.message : '报告导出失败，请稍后再试。');
+            setActiveModal('DATA_RIGHTS_NOTICE');
+        } finally {
+            setDataRightsLoading(null);
+        }
+    };
+
+    const handleDeleteData = async () => {
+        if (!currentUserId) return;
+        setDataRightsLoading('delete-data');
+        try {
+            const result = await AccountAPI.deleteData();
+            await CacheCleanupService.clearUserLocalData(currentUserId);
+            onDataDeleted?.();
+            await loadCacheStats();
+            setDataRightsNotice(result.message || '云端个人内容删除请求已完成。');
+            setActiveModal('DATA_RIGHTS_NOTICE');
+        } catch (error) {
+            setDataRightsNotice(error instanceof Error ? error.message : '删除数据失败，请稍后再试。');
+            setActiveModal('DATA_RIGHTS_NOTICE');
+        } finally {
+            setDataRightsLoading(null);
+        }
+    };
+
+    const handleDeleteAccount = async () => {
+        setDataRightsLoading('delete-account');
+        try {
+            await AccountAPI.deleteAccount();
+            if (currentUserId) {
+                await CacheCleanupService.clearUserLocalData(currentUserId);
+            }
+            handleLogout();
+        } catch (error) {
+            setDataRightsNotice(error instanceof Error ? error.message : '注销账户失败，请稍后再试。');
+            setActiveModal('DATA_RIGHTS_NOTICE');
+        } finally {
+            setDataRightsLoading(null);
         }
     };
 
@@ -166,6 +436,12 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
             </div>
         </div>
     );
+
+    const formatSessionTime = (value: string) => {
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return value;
+        return date.toLocaleString('zh-CN', { hour12: false });
+    };
 
     const renderModalContent = () => {
         switch (activeModal) {
@@ -253,6 +529,56 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                         </div>
                     </Modal>
                 );
+            case 'ASSISTANT_PREF':
+                return (
+                    <Modal title="全局助手偏好" onClose={() => setActiveModal(null)}>
+                        <div className="space-y-3">
+                            {(['STRICT', 'GENTLE'] as ChatMode[]).map(mode => (
+                                <button
+                                    key={mode}
+                                    type="button"
+                                    onClick={() => handleSelectAssistantMode(mode)}
+                                    className={`w-full rounded-xl border px-4 py-3 text-left transition-colors font-serif tracking-wide ${
+                                        assistantMode === mode
+                                            ? 'border-primary/30 bg-primary/15 text-primary'
+                                            : 'border-white/10 bg-black/20 text-slate-300 hover:bg-white/5'
+                                    }`}
+                                >
+                                    <span className="block text-sm font-bold">{assistantModeLabelMap[mode]}</span>
+                                    <span className="mt-1 block text-[11px] text-slate-500">
+                                        {mode === 'STRICT' ? '更偏结构化分析和风险边界。' : '更偏陪伴式解释和行动鼓励。'}
+                                    </span>
+                                </button>
+                            ))}
+                        </div>
+                    </Modal>
+                );
+            case 'INTENSITY_SELECT':
+                return (
+                    <Modal title="干预强度" onClose={() => setActiveModal(null)}>
+                        <div className="space-y-3">
+                            {(['LOW', 'STANDARD', 'HIGH'] as AssistantIntensity[]).map(intensity => (
+                                <button
+                                    key={intensity}
+                                    type="button"
+                                    onClick={() => handleSelectAssistantIntensity(intensity)}
+                                    className={`w-full rounded-xl border px-4 py-3 text-left transition-colors font-serif tracking-wide ${
+                                        assistantIntensity === intensity
+                                            ? 'border-primary/30 bg-primary/15 text-primary'
+                                            : 'border-white/10 bg-black/20 text-slate-300 hover:bg-white/5'
+                                    }`}
+                                >
+                                    <span className="block text-sm font-bold">{assistantIntensityLabelMap[intensity]}</span>
+                                    <span className="mt-1 block text-[11px] text-slate-500">
+                                        {intensity === 'LOW' && '只在明显风险或目标偏离时提醒。'}
+                                        {intensity === 'STANDARD' && '保留必要提醒，兼顾记录体验。'}
+                                        {intensity === 'HIGH' && '更主动提示风险、缺口和下一步。'}
+                                    </span>
+                                </button>
+                            ))}
+                        </div>
+                    </Modal>
+                );
             case 'CLEAN_DATA':
                 return (
                     <Modal title="本地离线缓存" onClose={() => !isCleaning && setActiveModal(null)}>
@@ -275,10 +601,45 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                                     <span>待同步</span>
                                     <span>{cacheStats?.pendingCount ?? 0}</span>
                                 </div>
+                                <div className="flex items-center justify-between p-2 rounded bg-white/5">
+                                    <span>冲突 / 失败</span>
+                                    <span>{(cacheStats?.conflictCount ?? 0) + (cacheStats?.failedCount ?? 0)}</span>
+                                </div>
+                                <div className="flex items-center justify-between p-2 rounded bg-white/5">
+                                    <span>同步状态</span>
+                                    <span>{syncStatus || 'idle'}</span>
+                                </div>
+                                <div className="flex items-center justify-between p-2 rounded bg-white/5">
+                                    <span>最近同步</span>
+                                    <span className="max-w-[160px] truncate">{lastSyncTime || '暂无'}</span>
+                                </div>
                                 <p className="text-[11px] text-slate-500 leading-relaxed pt-1">
-                                    清理只会删除本账号已同步且超过 30 天的本地离线缓存，不会删除服务器饮食记录或 AI 对话。
+                                    清理只会删除本账号已同步且超过 30 天的本地离线缓存，不会删除服务器饮食记录或 AI 对话。冲突项会保留在本地，需回到日志中重新编辑确认。
                                 </p>
                             </div>
+                            <button
+                                onClick={handleRetryOfflineSync}
+                                disabled={isSyncingOffline || !currentUserId}
+                                className="w-full bg-primary/10 text-primary py-3 rounded-xl font-bold mt-2 border border-primary/20 hover:bg-primary/20 transition-colors font-serif tracking-wide flex items-center justify-center gap-2 disabled:opacity-50 disabled:grayscale"
+                            >
+                                {isSyncingOffline ? (
+                                    <>
+                                        <span className="material-symbols-outlined animate-spin text-sm">rotate_right</span>
+                                        同步中...
+                                    </>
+                                ) : '立即同步待处理队列'}
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setQueueNotice(null);
+                                    setActiveModal('OFFLINE_QUEUE');
+                                }}
+                                disabled={!currentUserId}
+                                className="w-full bg-white/5 text-slate-200 py-3 rounded-xl font-bold mt-2 border border-white/10 hover:bg-white/10 transition-colors font-serif tracking-wide flex items-center justify-center gap-2 disabled:opacity-50"
+                            >
+                                <span className="material-symbols-outlined text-sm">list_alt</span>
+                                查看待处理队列
+                            </button>
                             <button
                                 onClick={handleDataClean}
                                 disabled={isCleaning || !currentUserId}
@@ -291,6 +652,126 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                                     </>
                                 ) : '清理过期缓存'}
                             </button>
+                        </div>
+                    </Modal>
+                );
+            case 'OFFLINE_QUEUE':
+                return (
+                    <Modal
+                        title="离线同步队列"
+                        onClose={() => !queueActionClientId && setActiveModal(null)}
+                        maxWidthClass="max-w-md max-h-[86vh] overflow-y-auto"
+                    >
+                        <div className="space-y-4">
+                            <div className="grid grid-cols-3 gap-2">
+                                <div className="rounded-xl border border-white/5 bg-black/20 px-3 py-2 text-center">
+                                    <p className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">待同步</p>
+                                    <p className="mt-1 text-lg text-primary font-serif font-bold">{cacheStats?.pendingCount ?? 0}</p>
+                                </div>
+                                <div className="rounded-xl border border-white/5 bg-black/20 px-3 py-2 text-center">
+                                    <p className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">失败</p>
+                                    <p className="mt-1 text-lg text-red-200 font-serif font-bold">{cacheStats?.failedCount ?? 0}</p>
+                                </div>
+                                <div className="rounded-xl border border-white/5 bg-black/20 px-3 py-2 text-center">
+                                    <p className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">冲突</p>
+                                    <p className="mt-1 text-lg text-amber-100 font-serif font-bold">{cacheStats?.conflictCount ?? 0}</p>
+                                </div>
+                            </div>
+
+                            {queueNotice && (
+                                <p className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200 leading-relaxed font-serif tracking-wide">
+                                    {queueNotice}
+                                </p>
+                            )}
+
+                            <button
+                                onClick={handleRetryOfflineSync}
+                                disabled={isSyncingOffline || !currentUserId || offlineQueueItems.length === 0}
+                                className="w-full bg-primary/10 text-primary py-3 rounded-xl font-bold border border-primary/20 hover:bg-primary/20 transition-colors font-serif tracking-wide flex items-center justify-center gap-2 disabled:opacity-50"
+                            >
+                                <span className={`material-symbols-outlined text-sm ${isSyncingOffline ? 'animate-spin' : ''}`}>
+                                    {isSyncingOffline ? 'rotate_right' : 'sync'}
+                                </span>
+                                {isSyncingOffline ? '同步中...' : '重试全部待处理项'}
+                            </button>
+
+                            <div className="space-y-3">
+                                {offlineQueueItems.length === 0 ? (
+                                    <div className="rounded-2xl border border-dashed border-white/10 py-8 text-center">
+                                        <p className="text-xs text-slate-500 font-serif font-bold tracking-wide">当前没有待处理的离线记录</p>
+                                    </div>
+                                ) : offlineQueueItems.map(item => {
+                                    const isBusy = queueActionClientId === item.clientId;
+                                    const statusClass = queueStatusClassMap[item.syncStatus];
+                                    const statusLabel = queueStatusLabelMap[item.syncStatus];
+                                    const updatedAt = item.updatedAt.toLocaleString('zh-CN', { hour12: false });
+                                    const sourceLabel = sourceLabelMap[item.source || 'manual'] || '记录';
+                                    const ingredients = Array.isArray(item.recognitionMeta?.ingredients)
+                                        ? item.recognitionMeta.ingredients.filter(value => typeof value === 'string').slice(0, 3).join('、')
+                                        : '';
+                                    return (
+                                        <div key={item.clientId} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5 space-y-3">
+                                            <div className="flex items-start justify-between gap-3">
+                                                <div className="min-w-0">
+                                                    <p className="text-white text-sm font-serif font-bold tracking-wide break-words">
+                                                        {item.name || '未命名记录'}
+                                                    </p>
+                                                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                                        <span className={`rounded border px-1.5 py-0.5 text-[10px] font-serif font-bold tracking-wide ${statusClass}`}>
+                                                            {statusLabel}
+                                                        </span>
+                                                        <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-slate-300 font-serif font-bold tracking-wide">
+                                                            {sourceLabel}
+                                                        </span>
+                                                        <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-slate-400 font-serif font-bold tracking-wide">
+                                                            {mealTypeLabelMap[item.mealType]}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div className="shrink-0 text-right">
+                                                    <p className="text-xs text-slate-300 font-serif font-bold">{Math.round(item.calories || 0)} kcal</p>
+                                                    <p className="mt-1 text-[10px] text-slate-500 font-serif">{item.recordDate}</p>
+                                                </div>
+                                            </div>
+
+                                            <div className="space-y-1 text-[11px] text-slate-400 font-serif leading-relaxed">
+                                                <p>份量：{item.portion || '1份'} · 更新：{updatedAt}</p>
+                                                {ingredients && <p>候选食材：{ingredients}</p>}
+                                                {item.lastSyncError && <p className="text-amber-100">原因：{item.lastSyncError}</p>}
+                                            </div>
+
+                                            <div className="grid grid-cols-3 gap-2">
+                                                <button
+                                                    onClick={() => void handleOpenQueueItemInLog(item)}
+                                                    disabled={isBusy}
+                                                    className="h-9 rounded-lg border border-white/10 bg-white/5 text-[11px] text-slate-200 font-serif font-bold tracking-wide hover:bg-white/10 disabled:opacity-50 flex items-center justify-center gap-1"
+                                                >
+                                                    <span className="material-symbols-outlined text-[15px]">edit</span>
+                                                    日志编辑
+                                                </button>
+                                                <button
+                                                    onClick={() => void handleRetryOfflineItem(item)}
+                                                    disabled={isBusy || isSyncingOffline}
+                                                    className="h-9 rounded-lg border border-primary/20 bg-primary/10 text-[11px] text-primary font-serif font-bold tracking-wide hover:bg-primary/20 disabled:opacity-50 flex items-center justify-center gap-1"
+                                                >
+                                                    <span className={`material-symbols-outlined text-[15px] ${isBusy ? 'animate-spin' : ''}`}>
+                                                        {isBusy ? 'rotate_right' : 'sync'}
+                                                    </span>
+                                                    {item.syncStatus === 'PENDING' ? '同步' : '重试'}
+                                                </button>
+                                                <button
+                                                    onClick={() => void handleDiscardOfflineItem(item)}
+                                                    disabled={isBusy}
+                                                    className="h-9 rounded-lg border border-red-500/20 bg-red-500/10 text-[11px] text-red-200 font-serif font-bold tracking-wide hover:bg-red-500/20 disabled:opacity-50 flex items-center justify-center gap-1"
+                                                >
+                                                    <span className="material-symbols-outlined text-[15px]">delete</span>
+                                                    丢弃
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
                         </div>
                     </Modal>
                 );
@@ -308,18 +789,102 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                             <p className="text-white/40 text-xs font-serif tracking-widest mt-1">版本 {appVersionLabel}</p>
                         </div>
                         <div className="space-y-1 border-t border-white/5 pt-2">
-                            <div className="w-full py-3 flex items-center justify-between text-sm text-slate-500 px-2 rounded-lg font-serif font-bold tracking-wide">
-                                <span>用户协议</span>
-                                <DisabledBadge label="未接入" />
+                            {([
+                                ['terms', '用户协议'],
+                                ['privacy', '隐私政策'],
+                                ['ai_use', 'AI 使用说明'],
+                                ['health_disclaimer', '健康免责声明'],
+                                ['data_rights', '数据导出与删除说明'],
+                            ] as [ComplianceDocumentKey, string][]).map(([key, label]) => (
+                                <button
+                                    key={key}
+                                    type="button"
+                                    onClick={() => {
+                                        onOpenCompliance?.(key);
+                                        setActiveModal(null);
+                                    }}
+                                    className="w-full py-3 flex items-center justify-between text-sm text-white/80 hover:text-white px-2 rounded-lg font-serif font-bold tracking-wide"
+                                >
+                                    <span>{label}</span>
+                                    <span className="material-symbols-outlined text-white/20 text-lg">chevron_right</span>
+                                </button>
+                            ))}
+                        </div>
+                    </Modal>
+                );
+            case 'DELETE_DATA_CONFIRM':
+                return (
+                    <Modal title="删除云端个人内容" onClose={() => setActiveModal(null)}>
+                        <div className="space-y-4">
+                            <p className="text-slate-300 text-sm leading-relaxed font-serif tracking-wide">
+                                这会删除云端饮食记录、健康档案、聊天内容和消息提醒，并保留必要的安全审计记录。建议先导出数据。
+                            </p>
+                            {dataRightsNotice && (
+                                <p className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2 font-serif tracking-wide">
+                                    {dataRightsNotice}
+                                </p>
+                            )}
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => setActiveModal(null)}
+                                    className="flex-1 py-3 rounded-xl border border-white/10 text-slate-400 font-bold text-sm hover:bg-white/5 transition-colors font-serif tracking-wide"
+                                >
+                                    取消
+                                </button>
+                                <button
+                                    onClick={handleDeleteData}
+                                    disabled={dataRightsLoading === 'delete-data'}
+                                    className="flex-1 py-3 rounded-xl bg-red-500/20 border border-red-500/30 text-red-300 font-bold text-sm hover:bg-red-500/30 transition-colors font-serif tracking-wide disabled:opacity-50"
+                                >
+                                    {dataRightsLoading === 'delete-data' ? '删除中...' : '确认删除'}
+                                </button>
                             </div>
-                            <div className="w-full py-3 flex items-center justify-between text-sm text-slate-500 px-2 rounded-lg font-serif font-bold tracking-wide">
-                                <span>隐私政策</span>
-                                <DisabledBadge label="未接入" />
+                        </div>
+                    </Modal>
+                );
+            case 'DELETE_ACCOUNT_CONFIRM':
+                return (
+                    <Modal title="注销账户" onClose={() => setActiveModal(null)}>
+                        <div className="space-y-4">
+                            <p className="text-slate-300 text-sm leading-relaxed font-serif tracking-wide">
+                                注销将删除你的云端个人内容，并关闭当前账号。完成后你将无法再使用原手机号登录。
+                            </p>
+                            {dataRightsNotice && (
+                                <p className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2 font-serif tracking-wide">
+                                    {dataRightsNotice}
+                                </p>
+                            )}
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => setActiveModal(null)}
+                                    className="flex-1 py-3 rounded-xl border border-white/10 text-slate-400 font-bold text-sm hover:bg-white/5 transition-colors font-serif tracking-wide"
+                                >
+                                    取消
+                                </button>
+                                <button
+                                    onClick={handleDeleteAccount}
+                                    disabled={dataRightsLoading === 'delete-account'}
+                                    className="flex-1 py-3 rounded-xl bg-ochre/20 border border-ochre/30 text-ochre font-bold text-sm hover:bg-ochre/30 transition-colors font-serif tracking-wide disabled:opacity-50"
+                                >
+                                    {dataRightsLoading === 'delete-account' ? '注销中...' : '确认注销'}
+                                </button>
                             </div>
-                            <div className="w-full py-3 flex items-center justify-between text-sm text-slate-500 px-2 rounded-lg font-serif font-bold tracking-wide">
-                                <span>检查更新</span>
-                                <DisabledBadge label="未接入" />
-                            </div>
+                        </div>
+                    </Modal>
+                );
+            case 'DATA_RIGHTS_NOTICE':
+                return (
+                    <Modal title="提示" onClose={() => setActiveModal(null)}>
+                        <div className="space-y-4">
+                            <p className="text-slate-300 text-sm leading-relaxed font-serif tracking-wide">
+                                {dataRightsNotice || '操作已完成。'}
+                            </p>
+                            <button
+                                onClick={() => setActiveModal(null)}
+                                className="w-full py-3 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-sm transition-colors font-serif tracking-wide"
+                            >
+                                我知道了
+                            </button>
                         </div>
                     </Modal>
                 );
@@ -403,6 +968,12 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                             value="慢病 / 过敏"
                             onClick={() => onViewChange(View.MEDICAL_ARCHIVES)}
                         />
+                        <ListItem
+                            icon="monitor_heart"
+                            label="健康指标"
+                            value="体重 / 血压 / 血糖"
+                            onClick={() => onViewChange(View.HEALTH_METRICS)}
+                        />
                     </div>
                 </div>
 
@@ -412,16 +983,14 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                         <ListItem
                             icon="psychology"
                             label="全局助手偏好"
-                            value="请在 AI 页面临时切换"
-                            action={<DisabledBadge />}
-                            disabled
+                            value={assistantModeLabelMap[assistantMode]}
+                            onClick={openAssistantModeModal}
                         />
                         <ListItem
                             icon="tune"
                             label="干预强度"
-                            value="待后端规则接入"
-                            action={<DisabledBadge />}
-                            disabled
+                            value={assistantIntensityLabelMap[assistantIntensity]}
+                            onClick={openAssistantIntensityModal}
                         />
                     </div>
                 </div>
@@ -430,11 +999,40 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                     <SectionTitle title="数据与设备" />
                     <div className="bg-[#131b1d]/80 backdrop-blur-sm border border-mineral/20 rounded-xl px-4 overflow-hidden">
                         <ListItem
+                            icon="workspace_premium"
+                            label="订阅与权益"
+                            value="FREE / PRO / COACH"
+                            onClick={() => onViewChange(View.BILLING)}
+                        />
+                        <ListItem
                             icon="download"
-                            label="健康报表导出"
-                            value="PDF / CSV"
-                            action={<DisabledBadge />}
-                            disabled
+                            label="导出个人数据"
+                            value="JSON"
+                            onClick={handleExportData}
+                        />
+                        <ListItem
+                            icon="summarize"
+                            label="导出 7 天报告"
+                            value={dataRightsLoading === 'weekly-report' ? '生成中...' : 'JSON / CSV'}
+                            onClick={() => void handleExportReport('weekly')}
+                        />
+                        <ListItem
+                            icon="calendar_month"
+                            label="导出本月报告"
+                            value={dataRightsLoading === 'monthly-report' ? '生成中...' : 'JSON / CSV'}
+                            onClick={() => void handleExportReport('monthly')}
+                        />
+                        <ListItem
+                            icon="analytics"
+                            label="报告中心"
+                            value="周报 / 月报"
+                            onClick={() => onViewChange(View.REPORTS)}
+                        />
+                        <ListItem
+                            icon="admin_panel_settings"
+                            label="运营后台"
+                            value="管理员"
+                            onClick={() => onViewChange(View.ADMIN)}
                         />
                         <ListItem
                             icon="cleaning_services"
@@ -445,8 +1043,123 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                                 setActiveModal('CLEAN_DATA');
                             }}
                         />
+                        <ListItem
+                            icon="sync"
+                            label="离线同步队列"
+                            value={
+                                cacheStats
+                                    ? `待同步 ${cacheStats.pendingCount} / 失败 ${cacheStats.failedCount} / 冲突 ${cacheStats.conflictCount}`
+                                    : '无本地队列'
+                            }
+                            action={
+                                <button
+                                    type="button"
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        void handleRetryOfflineSync();
+                                    }}
+                                    disabled={!currentUserId || isSyncingOffline}
+                                    className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-[10px] font-serif font-bold tracking-wide text-primary transition-colors hover:bg-primary/15 disabled:opacity-50"
+                                >
+                                    {isSyncingOffline ? '同步中' : '立即重试'}
+                                </button>
+                            }
+                            onClick={() => {
+                                setQueueNotice(null);
+                                void loadCacheStats();
+                                setActiveModal('OFFLINE_QUEUE');
+                            }}
+                        />
+                        <ListItem
+                            icon="delete_forever"
+                            label="删除云端个人内容"
+                            value="云端清理"
+                            onClick={() => {
+                                setDataRightsNotice(null);
+                                setActiveModal('DELETE_DATA_CONFIRM');
+                            }}
+                        />
+                        <ListItem
+                            icon="gavel"
+                            label="注销账户"
+                            value="关闭账号"
+                            onClick={() => {
+                                setDataRightsNotice(null);
+                                setActiveModal('DELETE_ACCOUNT_CONFIRM');
+                            }}
+                        />
                     </div>
                 </div>
+
+                {currentUserId && (
+                    <div>
+                        <div className="mb-3 flex items-center justify-between px-1">
+                            <SectionTitle title="登录设备" />
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setSessionNotice(null);
+                                    void loadCacheStats();
+                                }}
+                                className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-serif font-bold tracking-wide text-slate-300 hover:bg-white/10"
+                            >
+                                刷新
+                            </button>
+                        </div>
+                        <div className="space-y-3">
+                            {sessionNotice && (
+                                <p className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200 leading-relaxed font-serif tracking-wide">
+                                    {sessionNotice}
+                                </p>
+                            )}
+                            {deviceSessions.length === 0 ? (
+                                <div className="rounded-xl border border-white/10 bg-[#131b1d]/80 px-4 py-5 text-center">
+                                    <p className="text-xs text-slate-500 font-serif font-bold tracking-wide">暂无可显示的设备会话</p>
+                                </div>
+                            ) : deviceSessions.map(session => {
+                                const isBusy = sessionActionId === session.session_id;
+                                return (
+                                    <div key={session.session_id} className="rounded-xl border border-mineral/20 bg-[#131b1d]/80 p-4">
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <p className="truncate text-sm text-white font-serif font-bold tracking-wide">
+                                                    {session.device_label || '未知设备'}
+                                                </p>
+                                                <p className="mt-1 text-[11px] text-slate-500 font-serif tracking-wide">
+                                                    最近活动 {formatSessionTime(session.last_seen_at)}
+                                                </p>
+                                            </div>
+                                            <span className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-serif font-bold tracking-wide ${
+                                                session.is_revoked
+                                                    ? 'border-red-400/20 bg-red-500/10 text-red-200'
+                                                    : session.is_current
+                                                        ? 'border-primary/20 bg-primary/10 text-primary'
+                                                        : 'border-emerald-300/20 bg-emerald-500/10 text-emerald-200'
+                                            }`}>
+                                                {session.is_revoked ? '已撤销' : session.is_current ? '当前设备' : '已登录'}
+                                            </span>
+                                        </div>
+                                        <div className="mt-3 flex items-center justify-between gap-3">
+                                            <p className="min-w-0 truncate text-[10px] text-slate-600 font-serif tracking-wide">
+                                                到期 {formatSessionTime(session.expires_at)}
+                                            </p>
+                                            {!session.is_current && !session.is_revoked && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void handleRevokeDeviceSession(session)}
+                                                    disabled={isBusy}
+                                                    className="shrink-0 rounded-full border border-red-500/20 bg-red-500/10 px-3 py-1.5 text-[10px] font-serif font-bold tracking-wide text-red-200 hover:bg-red-500/20 disabled:opacity-50"
+                                                >
+                                                    {isBusy ? '撤销中...' : '撤销会话'}
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
 
                 <div>
                     <SectionTitle title="通用设置" />
@@ -459,6 +1172,31 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                         />
                     </div>
                 </div>
+
+                {currentUserId && (
+                    <div>
+                        <SectionTitle title="同步状态" />
+                        <div className="bg-[#131b1d]/80 backdrop-blur-sm border border-mineral/20 rounded-xl px-4 overflow-hidden">
+                            <ListItem
+                                icon="event_available"
+                                label="最近同步"
+                                value={lastSyncTime || '暂无'}
+                                disabled
+                            />
+                            <ListItem
+                                icon="cloud_sync"
+                                label="当前状态"
+                                value={syncStatus || 'idle'}
+                                action={
+                                    <span className="text-[10px] bg-white/5 border border-white/10 px-2 py-0.5 rounded text-white/40 font-serif font-bold tracking-wide">
+                                        {cacheStats ? `${cacheStats.pendingCount} pending` : '0 pending'}
+                                    </span>
+                                }
+                                disabled
+                            />
+                        </div>
+                    </div>
+                )}
 
                 <div className="pt-4 pb-8">
                     <button

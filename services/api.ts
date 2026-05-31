@@ -4,9 +4,65 @@
  */
 
 import { AUTH_STORAGE_KEYS } from '../constants/storage';
-import { ChatStreamEvent, IntakeCandidate, IntakeDraftSession } from '../types';
+import { AdminActivationMetricsSummary, AdminAITelemetrySummary, AdminCommercializationSummary, AdminFeedbackItem, AdminKnowledgeBacklogSummary, AdminReleaseReadinessSummary, AdminUserItem, AIFeedbackItem, AIFeedbackType, BillingProviderItem, BillingUsageSnapshot, ChatStreamEvent, CheckoutSession, DataRightsRequestResponse, DeviceSessionItem, EntitlementSnapshot, FeedbackStatus, HealthMetric, HealthMetricCreateInput, HealthMetricProvider, HealthMetricType, InsightFeedbackPayload, IntakeCandidate, IntakeDraftSession, KnowledgeAuditItem, MetabolicReport, PlanCatalogItem, PlanTier, SecurityAuditItem, SubscriptionLifecycleResponse, SubscriptionStatus, UserDataExportBundle, UserRole } from '../types';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+const LOCAL_API_FALLBACK = 'http://127.0.0.1:8000/api';
+
+const isLocalHostname = (hostname?: string): boolean => {
+    if (!hostname) return true;
+    return hostname === 'localhost'
+        || hostname === '127.0.0.1'
+        || hostname === '0.0.0.0'
+        || hostname.endsWith('.local');
+};
+
+const parseApiUrl = (apiUrl: string, locationRef?: Location): { url: URL; isAbsolute: boolean } => {
+    const isAbsolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(apiUrl);
+    try {
+        return {
+            url: isAbsolute ? new URL(apiUrl) : new URL(apiUrl, locationRef?.origin || 'http://localhost'),
+            isAbsolute,
+        };
+    } catch (error) {
+        throw new Error('VITE_API_URL 必须是完整 API 地址或同源路径，例如 https://api.example.com/api');
+    }
+};
+
+export const resolveApiBaseUrl = (): string => {
+    const configuredApiUrl = (import.meta.env.VITE_API_URL || '').trim();
+    const apiUrl = configuredApiUrl || LOCAL_API_FALLBACK;
+    const locationRef = typeof window !== 'undefined' ? window.location : undefined;
+    const parsed = parseApiUrl(apiUrl, locationRef);
+    const appEnv = (import.meta.env.VITE_APP_ENV || '').toLowerCase();
+    const isProductionRuntime = appEnv === 'production'
+        || Boolean(locationRef && locationRef.protocol === 'https:' && !isLocalHostname(locationRef.hostname));
+
+    if (isProductionRuntime) {
+        if (!configuredApiUrl) {
+            throw new Error('生产前端必须配置 VITE_API_URL，不能回退到本地 API。');
+        }
+        if (parsed.isAbsolute && isLocalHostname(parsed.url.hostname)) {
+            throw new Error('生产前端的 VITE_API_URL 不能指向 localhost、127.0.0.1 或 0.0.0.0。');
+        }
+        if (locationRef?.protocol === 'https:' && parsed.isAbsolute && parsed.url.protocol === 'http:') {
+            throw new Error('HTTPS 前端必须使用 HTTPS API 地址，避免浏览器混合内容拦截。');
+        }
+    }
+
+    return apiUrl.replace(/\/+$/, '');
+};
+
+const API_BASE_URL = resolveApiBaseUrl();
+
+export const REGISTRATION_CONSENT_VERSION = '2026-05-30';
+
+export interface RegistrationConsentPayload {
+    terms_accepted: boolean;
+    privacy_accepted: boolean;
+    ai_use_accepted: boolean;
+    health_disclaimer_accepted: boolean;
+    consent_version: string;
+}
 
 export const TokenManager = {
     getAccessToken: (): string | null => {
@@ -46,6 +102,15 @@ type MealUpdatePayload = Partial<{
     category: 'STAPLE' | 'MEAT' | 'VEG' | 'DRINK' | 'SNACK';
     note: string;
 }>;
+
+type UploadOptions = {
+    signal?: AbortSignal;
+};
+
+type ChatPreferencePayload = {
+    aiMode?: 'STRICT' | 'GENTLE';
+    interventionIntensity?: 'LOW' | 'STANDARD' | 'HIGH';
+};
 
 class ApiClient {
     private baseUrl: string;
@@ -243,6 +308,40 @@ class ApiClient {
         return this.request<T>(endpoint, { method: 'GET' }, requiresAuth);
     }
 
+    async getText(endpoint: string, requiresAuth = true): Promise<string> {
+        const url = `${this.baseUrl}${endpoint}`;
+        const fetchText = async () => {
+            const headers = await this.getHeaders(requiresAuth);
+            return fetch(url, { method: 'GET', headers });
+        };
+
+        let response = await fetchText();
+
+        if (response.status === 401 && requiresAuth) {
+            if (!this.isRefreshing) {
+                this.isRefreshing = true;
+                this.refreshPromise = this.refreshAccessToken();
+            }
+
+            const refreshed = await this.refreshPromise;
+            this.isRefreshing = false;
+            this.refreshPromise = null;
+
+            if (!refreshed) {
+                window.dispatchEvent(new CustomEvent('auth:logout'));
+                throw new Error('登录已过期，请重新登录');
+            }
+
+            response = await fetchText();
+        }
+
+        if (!response.ok) {
+            throw new Error(await this.parseError(response));
+        }
+
+        return response.text();
+    }
+
     post<T>(endpoint: string, data?: unknown, requiresAuth = true): Promise<T> {
         return this.request<T>(endpoint, {
             method: 'POST',
@@ -257,6 +356,13 @@ class ApiClient {
         }, requiresAuth);
     }
 
+    patch<T>(endpoint: string, data?: unknown, requiresAuth = true): Promise<T> {
+        return this.request<T>(endpoint, {
+            method: 'PATCH',
+            body: data ? JSON.stringify(data) : undefined
+        }, requiresAuth);
+    }
+
     delete<T>(endpoint: string, requiresAuth = true): Promise<T> {
         return this.request<T>(endpoint, { method: 'DELETE' }, requiresAuth);
     }
@@ -265,7 +371,8 @@ class ApiClient {
         endpoint: string,
         file: File | Blob,
         fieldName = 'file',
-        fields?: Record<string, string | number | boolean | null | undefined>
+        fields?: Record<string, string | number | boolean | null | undefined>,
+        options: UploadOptions = {}
     ): Promise<T> {
         const buildFormData = () => {
             const formData = new FormData();
@@ -293,7 +400,8 @@ class ApiClient {
             return fetch(`${this.baseUrl}${endpoint}`, {
                 method: 'POST',
                 headers,
-                body: buildFormData()
+                body: buildFormData(),
+                signal: options.signal
             });
         };
 
@@ -329,8 +437,8 @@ class ApiClient {
 export const apiClient = new ApiClient(API_BASE_URL);
 
 export const AuthAPI = {
-    register: (phone: string, password: string, nickname?: string) =>
-        apiClient.post('/auth/register', { phone, password, nickname }, false),
+    register: (phone: string, password: string, consent: RegistrationConsentPayload, nickname?: string) =>
+        apiClient.post('/auth/register', { phone, password, nickname, ...consent }, false),
 
     login: (phone: string, password: string) =>
         apiClient.post('/auth/login', { phone, password }, false),
@@ -348,7 +456,31 @@ export const AuthAPI = {
             new_password: newPassword
         }, false),
 
+    logout: async () => {
+        const token = TokenManager.getAccessToken();
+        const headers: HeadersInit = { 'Content-Type': 'application/json' };
+        if (token) {
+            headers.Authorization = `Bearer ${token}`;
+        }
+        const response = await fetch(`${API_BASE_URL}/auth/logout`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({}),
+        });
+        if (!response.ok && response.status !== 401) {
+            throw new Error('退出登录失败');
+        }
+    },
+
     getProfile: () => apiClient.get('/auth/me'),
+
+    listSessions: () => apiClient.get<DeviceSessionItem[]>('/auth/sessions'),
+
+    revokeSession: (sessionId: string) =>
+        apiClient.request<DataRightsRequestResponse>(`/auth/sessions/${sessionId}`, {
+            method: 'DELETE',
+            body: JSON.stringify({ confirm: 'REVOKE_SESSION' }),
+        }),
 
     updateProfile: (data: {
         nickname?: string;
@@ -365,6 +497,112 @@ export const AuthAPI = {
         }),
 
     getDailyTargets: () => apiClient.get('/auth/daily-targets')
+};
+
+export const AccountAPI = {
+    exportData: () => apiClient.get<UserDataExportBundle>('/account/export'),
+
+    deleteData: () => apiClient.post<DataRightsRequestResponse>('/account/delete-data', {
+        confirm: 'DELETE_DATA',
+    }),
+
+    deleteAccount: () => apiClient.request<DataRightsRequestResponse>('/account', {
+        method: 'DELETE',
+        body: JSON.stringify({ confirm: 'DELETE_ACCOUNT' }),
+    }),
+};
+
+type ReportRequestOptions = {
+    endDate?: string;
+    targetMonth?: string;
+};
+
+function buildQuery(params: Record<string, string | undefined>): string {
+    const search = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+        if (value) search.set(key, value);
+    });
+    const query = search.toString();
+    return query ? `?${query}` : '';
+}
+
+export const ReportsAPI = {
+    getWeekly: (options: ReportRequestOptions = {}) =>
+        apiClient.get<MetabolicReport>(`/reports/weekly${buildQuery({ end_date: options.endDate })}`),
+    getMonthly: (options: ReportRequestOptions = {}) =>
+        apiClient.get<MetabolicReport>(`/reports/monthly${buildQuery({ target_month: options.targetMonth })}`),
+    getWeeklyCsv: (options: ReportRequestOptions = {}) =>
+        apiClient.getText(`/reports/weekly.csv${buildQuery({ end_date: options.endDate })}`),
+    getMonthlyCsv: (options: ReportRequestOptions = {}) =>
+        apiClient.getText(`/reports/monthly.csv${buildQuery({ target_month: options.targetMonth })}`),
+};
+
+export const BillingAPI = {
+    getPlans: () => apiClient.get<PlanCatalogItem[]>('/billing/plans'),
+    getProviders: () => apiClient.get<BillingProviderItem[]>('/billing/providers'),
+    getEntitlements: () => apiClient.get<EntitlementSnapshot>('/billing/entitlements'),
+    getUsage: () => apiClient.get<BillingUsageSnapshot>('/billing/usage'),
+    createCheckout: (plan: PlanTier) => apiClient.post<CheckoutSession>('/billing/checkout', { plan }),
+    cancelSubscription: () => apiClient.post<SubscriptionLifecycleResponse>('/billing/subscription/cancel', {
+        confirm: 'CANCEL_SUBSCRIPTION',
+    }),
+};
+
+export const AdminAPI = {
+    listSecurityAudit: (limit = 20, q?: string, eventStatus?: string) =>
+        apiClient.get<SecurityAuditItem[]>(`/admin/audit/security${buildQuery({ limit: String(limit), q, event_status: eventStatus })}`),
+    listKnowledgeAudit: (
+        limit = 20,
+        q?: string,
+        origin?: string,
+        fallbackStatus?: string,
+        calledCloud?: boolean,
+    ) =>
+        apiClient.get<KnowledgeAuditItem[]>(`/admin/audit/knowledge${buildQuery({
+            limit: String(limit),
+            q,
+            origin,
+            fallback_status: fallbackStatus,
+            called_cloud: calledCloud == null ? undefined : String(calledCloud),
+        })}`),
+    getKnowledgeBacklog: (limit = 50, includeClosed = false) =>
+        apiClient.get<AdminKnowledgeBacklogSummary>(`/admin/knowledge/backlog${buildQuery({
+            limit: String(limit),
+            include_closed: includeClosed ? 'true' : undefined,
+        })}`),
+    getActivationMetrics: (windowDays = 7) =>
+        apiClient.get<AdminActivationMetricsSummary>(`/admin/activation/metrics?window_days=${windowDays}`),
+    getCommercializationSummary: (windowDays = 30) =>
+        apiClient.get<AdminCommercializationSummary>(`/admin/commercialization/summary?window_days=${windowDays}`),
+    getAITelemetry: (limit = 50) => apiClient.get<AdminAITelemetrySummary>(`/admin/ai/telemetry?limit=${limit}`),
+    getReleaseReadiness: (limit = 50) => apiClient.get<AdminReleaseReadinessSummary>(`/admin/release/readiness?limit=${limit}`),
+    listFeedback: (status?: FeedbackStatus, limit = 30, feedbackType?: AIFeedbackType) =>
+        apiClient.get<AdminFeedbackItem[]>(`/admin/feedback${buildQuery({
+            status,
+            feedback_type: feedbackType,
+            limit: String(limit),
+        })}`),
+    updateFeedbackStatus: (feedbackId: number, status: FeedbackStatus) =>
+        apiClient.patch<AdminFeedbackItem>(`/admin/feedback/${feedbackId}/status`, { status }),
+    listUsers: (
+        limit = 30,
+        options: {
+            q?: string;
+            role?: UserRole;
+            subscriptionPlan?: PlanTier;
+            subscriptionStatus?: SubscriptionStatus;
+        } = {},
+    ) => apiClient.get<AdminUserItem[]>(`/admin/users${buildQuery({
+        limit: String(limit),
+        q: options.q,
+        role: options.role,
+        subscription_plan: options.subscriptionPlan,
+        subscription_status: options.subscriptionStatus,
+    })}`),
+    updateUserRole: (userId: number, role: UserRole) =>
+        apiClient.patch<AdminUserItem>(`/admin/users/${userId}/role`, { role }),
+    updateUserSubscription: (userId: number, plan: PlanTier, status: SubscriptionStatus) =>
+        apiClient.patch<AdminUserItem>(`/admin/users/${userId}/subscription`, { plan, status }),
 };
 
 export const MealsAPI = {
@@ -424,8 +662,8 @@ export const MealsAPI = {
 
     deleteMeal: (id: number) => apiClient.delete(`/meals/${id}`),
 
-    sync: (meals: unknown[], lastSyncAt?: string) =>
-        apiClient.post('/meals/sync', { meals, last_sync_at: lastSyncAt })
+    sync: (meals: unknown[], lastSyncAt?: string, operations: unknown[] = []) =>
+        apiClient.post('/meals/sync', { meals, operations, last_sync_at: lastSyncAt })
 };
 
 export const ChatAPI = {
@@ -438,15 +676,42 @@ export const ChatAPI = {
     getSession: (sessionId: number) =>
         apiClient.get(`/chat/sessions/${sessionId}`),
 
-    sendMessage: (sessionId: number, content: string, attachments?: Record<string, unknown>) =>
-        apiClient.post(`/chat/sessions/${sessionId}/messages`, { content, attachments }),
+    sendMessage: (
+        sessionId: number,
+        content: string,
+        attachments?: Record<string, unknown>,
+        assistantPreferences?: ChatPreferencePayload
+    ) =>
+        apiClient.post(`/chat/sessions/${sessionId}/messages`, {
+            content,
+            attachments,
+            ai_mode: assistantPreferences?.aiMode,
+            intervention_intensity: assistantPreferences?.interventionIntensity,
+        }),
 
     sendMessageStream: (
         sessionId: number,
         content: string,
         attachments: Record<string, unknown> | undefined,
+        assistantPreferences: ChatPreferencePayload | undefined,
         onEvent: (event: ChatStreamEvent) => void
-    ) => apiClient.streamSse(`/chat/sessions/${sessionId}/messages/stream`, { content, attachments }, onEvent),
+    ) => apiClient.streamSse(`/chat/sessions/${sessionId}/messages/stream`, {
+        content,
+        attachments,
+        ai_mode: assistantPreferences?.aiMode,
+        intervention_intensity: assistantPreferences?.interventionIntensity,
+    }, onEvent),
+
+    sendMessageFeedback: (messageId: number, payload: {
+        feedback_type: AIFeedbackType;
+        rating?: number;
+        tags?: string[];
+        correction_text?: string;
+        metadata?: Record<string, unknown>;
+    }) => apiClient.post(`/chat/messages/${messageId}/feedback`, payload),
+
+    listMessageFeedback: (messageId: number) =>
+        apiClient.get<AIFeedbackItem[]>(`/chat/messages/${messageId}/feedback`),
 
     deleteSession: (sessionId: number) =>
         apiClient.delete(`/chat/sessions/${sessionId}`),
@@ -458,8 +723,8 @@ export const ChatAPI = {
             prompt
         }),
 
-    recognizeFoodUpload: (file: File, prompt?: string) =>
-        apiClient.upload('/chat/recognize-food/upload', file, 'file', { prompt }),
+    recognizeFoodUpload: (file: File, prompt?: string, sessionId?: number, options: UploadOptions = {}) =>
+        apiClient.upload('/chat/recognize-food/upload', file, 'file', { prompt, session_id: sessionId }, options),
 
     quickLog: (
         foodItem: {
@@ -485,14 +750,37 @@ export const ChatAPI = {
     })
 };
 
+export const HealthMetricsAPI = {
+    listProviders: () => apiClient.get<HealthMetricProvider[]>('/health-metrics/providers'),
+
+    list: (metricType?: HealthMetricType, limit = 50) => {
+        const params = new URLSearchParams({ limit: String(limit) });
+        if (metricType) params.set('metric_type', metricType);
+        return apiClient.get<HealthMetric[]>(`/health-metrics?${params.toString()}`);
+    },
+
+    latest: () => apiClient.get<Partial<Record<HealthMetricType, HealthMetric>>>('/health-metrics/latest'),
+
+    create: (data: HealthMetricCreateInput) =>
+        apiClient.post<HealthMetric>('/health-metrics', data),
+
+    delete: (id: number) => apiClient.delete(`/health-metrics/${id}`),
+};
+
 export const IntakeAPI = {
-    recognizeAndParsePhotoUpload: (file: File, prompt?: string, mealTimeHint?: string, recordDate?: string) =>
+    recognizeAndParsePhotoUpload: (
+        file: File,
+        prompt?: string,
+        mealTimeHint?: string,
+        recordDate?: string,
+        options: UploadOptions = {}
+    ) =>
         apiClient.upload<IntakeDraftSession>('/intake/photo/recognize-parse-upload', file, 'file', {
             prompt,
             meal_time_hint: mealTimeHint,
             record_date: recordDate,
             fast: true,
-        }),
+        }, options),
 
     parseVoice: (
         transcript: string,
@@ -501,6 +789,19 @@ export const IntakeAPI = {
     ) =>
         apiClient.post<IntakeDraftSession>('/intake/voice/parse', {
             transcript,
+            meal_time_hint: mealTimeHint,
+            record_date: recordDate,
+        }),
+
+    parseText: (
+        text: string,
+        contextText?: string,
+        mealTimeHint?: string,
+        recordDate?: string
+    ) =>
+        apiClient.post<IntakeDraftSession>('/intake/text/parse', {
+            text,
+            context_text: contextText,
             meal_time_hint: mealTimeHint,
             record_date: recordDate,
         }),
@@ -599,6 +900,18 @@ export const MessagesAPI = {
     markAllAsRead: () => apiClient.post('/messages/read-all'),
 
     delete: (id: number) => apiClient.delete(`/messages/${id}`)
+};
+
+export const InsightsAPI = {
+    refresh: () => apiClient.post('/insights/refresh'),
+
+    getToday: () => apiClient.get('/insights/today'),
+
+    sendFeedback: (messageId: number, payload: InsightFeedbackPayload) =>
+        apiClient.post<AIFeedbackItem>(`/insights/${messageId}/feedback`, payload),
+
+    listFeedback: (messageId: number) =>
+        apiClient.get<AIFeedbackItem[]>(`/insights/${messageId}/feedback`)
 };
 
 export default apiClient;

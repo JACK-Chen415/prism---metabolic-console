@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Meal, DailyTargets, AppMessage } from '../../types';
+import { AIFeedbackType, View, Meal, DailyTargets, AppMessage } from '../../types';
+import { InsightsAPI } from '../../services/api';
 
 interface HomeViewProps {
   onViewChange: (view: View) => void;
@@ -9,7 +10,20 @@ interface HomeViewProps {
   appMessages: AppMessage[];
 }
 
+type InsightFeedbackChoice = Extract<AIFeedbackType, 'helpful' | 'not_helpful' | 'knowledge_gap'>;
+
+const INSIGHT_FEEDBACK_CHOICES: Array<{ type: InsightFeedbackChoice; label: string; icon: string; rating: number; tags: string[] }> = [
+  { type: 'helpful', label: '有用', icon: 'thumb_up', rating: 5, tags: ['insight', 'helpful'] },
+  { type: 'not_helpful', label: '没用', icon: 'thumb_down', rating: 2, tags: ['insight', 'not_helpful'] },
+  { type: 'knowledge_gap', label: '补充', icon: 'travel_explore', rating: 3, tags: ['insight', 'knowledge_gap'] },
+];
+
 const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, latestMessage, appMessages }) => {
+  const [insightFeedbackByMessage, setInsightFeedbackByMessage] = React.useState<Record<number, InsightFeedbackChoice>>({});
+  const [submittingInsightFeedbackId, setSubmittingInsightFeedbackId] = React.useState<number | null>(null);
+  const [insightFeedbackError, setInsightFeedbackError] = React.useState<string | null>(null);
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const mealDates = Array.from(new Set(meals.map(meal => meal.recordDate).filter(Boolean))) as string[];
   // Calculate Totals
   const totalConsumed = meals.reduce((acc, meal) => ({
     calories: acc.calories + meal.calories,
@@ -24,6 +38,66 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
     calories: calorieTarget > 0 ? calorieTarget - totalConsumed.calories : 0,
     sodium: dailyTargets.sodium - totalConsumed.sodium,
     purine: dailyTargets.purine - totalConsumed.purine
+  };
+
+  const latestInsightFeedback = latestMessage ? insightFeedbackByMessage[latestMessage.id] : undefined;
+
+  React.useEffect(() => {
+    if (!latestMessage?.id) return;
+
+    let cancelled = false;
+    void InsightsAPI.listFeedback(latestMessage.id)
+      .then(items => {
+        if (cancelled) return;
+        const latestFeedback = items.find(item => (
+          item.feedback_type === 'helpful'
+          || item.feedback_type === 'not_helpful'
+          || item.feedback_type === 'knowledge_gap'
+        ));
+        if (latestFeedback) {
+          setInsightFeedbackByMessage(prev => ({
+            ...prev,
+            [latestMessage.id]: latestFeedback.feedback_type as InsightFeedbackChoice,
+          }));
+        }
+      })
+      .catch(() => {
+        // Feedback state is advisory UI only; the insight itself should still render.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [latestMessage?.id]);
+
+  const submitInsightFeedback = async (choice: InsightFeedbackChoice) => {
+    if (!latestMessage || submittingInsightFeedbackId === latestMessage.id) return;
+
+    const meta = INSIGHT_FEEDBACK_CHOICES.find(item => item.type === choice);
+    if (!meta) return;
+
+    setSubmittingInsightFeedbackId(latestMessage.id);
+    setInsightFeedbackError(null);
+    try {
+      const feedback = await InsightsAPI.sendFeedback(latestMessage.id, {
+        feedback_type: choice,
+        rating: meta.rating,
+        tags: meta.tags,
+        metadata: {
+          source: 'home',
+          surface: 'latest_insight',
+          context: latestMessage.type,
+        },
+      });
+      setInsightFeedbackByMessage(prev => ({
+        ...prev,
+        [latestMessage.id]: feedback.feedback_type as InsightFeedbackChoice,
+      }));
+    } catch (error) {
+      setInsightFeedbackError(error instanceof Error ? error.message : '洞察反馈提交失败。');
+    } finally {
+      setSubmittingInsightFeedbackId(null);
+    }
   };
 
   // Helper for progress percentage (for the ring visual)
@@ -85,6 +159,41 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
   };
 
   const msgStyle = getMessageCardStyle(latestMessage?.type || 'ADVICE');
+  const unreadCount = appMessages.filter(m => !m.isRead).length;
+  const streakDays = (() => {
+    const dateSet = new Set(mealDates);
+    let streak = 0;
+    const cursor = new Date();
+    while (true) {
+      const key = cursor.toISOString().slice(0, 10);
+      if (!dateSet.has(key)) break;
+      streak += 1;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+    return streak;
+  })();
+  const sevenDayTrend = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date();
+    date.setDate(date.getDate() - (6 - index));
+    const key = date.toISOString().slice(0, 10);
+    return {
+      key,
+      label: `${date.getMonth() + 1}/${date.getDate()}`,
+      count: meals.filter(meal => meal.recordDate === key).length,
+    };
+  });
+  const riskNotes = [
+    remaining.sodium < 0 ? '钠摄入已超出建议上限' : null,
+    remaining.purine < 0 ? '嘌呤摄入已超出建议上限' : null,
+    remaining.calories < 0 ? '热量已超出今日目标' : null,
+  ].filter(Boolean) as string[];
+  const nextStep = riskNotes[0]
+    ? riskNotes[0].includes('钠')
+      ? '下一餐优先清淡，少盐少酱油。'
+      : riskNotes[0].includes('嘌呤')
+        ? '下一餐优先低嘌呤、少汤少内脏。'
+        : '下一餐适当减量主食和油脂。'
+    : '保持当前节奏，继续记录下一餐。';
 
   return (
     <div className="flex flex-col w-full h-full pb-28">
@@ -100,6 +209,26 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
           <span className="material-symbols-outlined">settings</span>
         </button>
       </header>
+
+      <section className="px-4 pb-2">
+        <div className="grid grid-cols-3 gap-2 rounded-2xl border border-white/5 bg-[#101719]/80 p-3">
+          <div className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
+            <p className="text-[10px] font-serif font-bold tracking-[0.2em] text-slate-500">连续记录</p>
+            <p className="mt-1 text-xl font-serif font-bold tracking-wide text-white">{streakDays}</p>
+            <p className="mt-0.5 text-[11px] text-slate-400">天</p>
+          </div>
+          <div className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
+            <p className="text-[10px] font-serif font-bold tracking-[0.2em] text-slate-500">风险摘要</p>
+            <p className="mt-1 text-xs leading-relaxed text-white">
+              {riskNotes[0] || '当前未见明显超标'}
+            </p>
+          </div>
+          <div className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
+            <p className="text-[10px] font-serif font-bold tracking-[0.2em] text-slate-500">下一步</p>
+            <p className="mt-1 text-xs leading-relaxed text-white">{nextStep}</p>
+          </div>
+        </div>
+      </section>
 
       {/* Ring Charts Section */}
       <section className="px-6 pt-8 pb-4">
@@ -182,27 +311,51 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
 
       <div className="relative h-px w-full my-6 bg-gradient-to-r from-transparent via-white/10 to-transparent"></div>
 
+      <section className="px-4 pb-2">
+        <div className="rounded-2xl border border-white/5 bg-[#101719]/80 p-4">
+          <div className="flex items-center justify-between">
+            <h3 className="font-serif text-base font-bold tracking-wide text-white">7 天记录</h3>
+            <span className="text-[10px] font-serif font-bold tracking-[0.2em] text-slate-500">{todayKey}</span>
+          </div>
+          <div className="mt-4 flex items-end gap-2">
+            {sevenDayTrend.map(day => {
+              const height = Math.max(12, Math.min(56, day.count * 14 + 12));
+              const isToday = day.key === todayKey;
+              return (
+                <div key={day.key} className="flex min-w-0 flex-1 flex-col items-center gap-2">
+                  <div className="flex h-16 w-full items-end justify-center">
+                    <div
+                      className={`w-full max-w-[18px] rounded-t-md ${isToday ? 'bg-primary shadow-glow-cyan' : 'bg-white/20'}`}
+                      style={{ height }}
+                      title={`${day.label} ${day.count} 条`}
+                    />
+                  </div>
+                  <span className={`text-[10px] font-serif font-bold tracking-wide ${isToday ? 'text-primary' : 'text-slate-500'}`}>{day.label}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
       {/* AI Insights Section */}
       <section className="px-4 flex flex-col gap-5">
         <div className="flex items-center justify-between px-2">
           <div className="flex items-center gap-3">
             <h3 className="text-white font-serif font-bold text-xl tracking-wide">AI 智能洞察</h3>
-            <button
-              onClick={() => onViewChange(View.MESSAGES)}
-              className="group flex items-center gap-0.5 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs text-slate-400 hover:text-white hover:bg-white/10 hover:border-white/20 transition-all active:scale-95"
-            >
-              <span className="tracking-wide font-serif font-bold">所有消息</span>
-              <span className="material-symbols-outlined text-[14px] text-slate-500 group-hover:text-white group-hover:translate-x-0.5 transition-transform">chevron_right</span>
-            </button>
           </div>
           <button
             onClick={() => onViewChange(View.MESSAGES)}
-            className="text-xs text-primary/80 border border-primary/30 px-2 py-1 rounded-full bg-primary/5 font-serif font-bold tracking-wide active:scale-95 transition-transform hover:bg-primary/10"
+            className="group flex items-center gap-1.5 text-xs text-slate-400 hover:text-white font-serif font-bold tracking-wide active:scale-95 transition-all"
+            aria-label={unreadCount > 0 ? `查看洞察记录，${unreadCount} 条未读` : '查看洞察记录'}
           >
-            {(() => {
-              const unreadCount = appMessages.filter(m => !m.isRead).length;
-              return unreadCount > 0 ? `${unreadCount} 条新消息` : '暂无新消息';
-            })()}
+            {unreadCount > 0 && (
+              <span className="min-w-5 h-5 px-1.5 rounded-full bg-primary/10 border border-primary/20 text-primary/90 flex items-center justify-center text-[10px] leading-none">
+                {unreadCount}
+              </span>
+            )}
+            <span>洞察记录</span>
+            <span className="material-symbols-outlined text-[14px] text-slate-500 group-hover:text-white group-hover:translate-x-0.5 transition-transform">chevron_right</span>
           </button>
         </div>
 
@@ -236,48 +389,43 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
                 </p>
               </div>
 
-              {/* Footer / Action (Optional, for future layout) */}
-              {/* <div className="mt-3 pt-3 border-t border-white/5 flex justify-end">
-                <span className="text-[10px] text-white/40 font-serif tracking-widest">JUST NOW</span>
-              </div> */}
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-white/5 pt-3">
+                <div className="flex min-w-0 flex-wrap gap-1.5">
+                  {INSIGHT_FEEDBACK_CHOICES.map(choice => {
+                    const isSelected = latestInsightFeedback === choice.type;
+                    return (
+                      <button
+                        key={choice.type}
+                        type="button"
+                        onClick={() => void submitInsightFeedback(choice.type)}
+                        disabled={submittingInsightFeedbackId === latestMessage.id}
+                        aria-pressed={isSelected}
+                        className={`inline-flex h-8 items-center gap-1 rounded-full border px-2.5 font-serif text-[11px] font-bold tracking-wide transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${isSelected
+                          ? 'border-primary/45 bg-primary/15 text-primary'
+                          : 'border-white/10 bg-white/[0.03] text-slate-400 hover:border-primary/25 hover:text-slate-200'
+                          }`}
+                      >
+                        <span className="material-symbols-outlined text-[14px]">{choice.icon}</span>
+                        {choice.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {submittingInsightFeedbackId === latestMessage.id && (
+                  <span className="font-serif text-[11px] font-bold tracking-wide text-primary">提交中</span>
+                )}
+                {latestInsightFeedback && submittingInsightFeedbackId !== latestMessage.id && (
+                  <span className="font-serif text-[11px] font-bold tracking-wide text-primary/80">已记录</span>
+                )}
+              </div>
+              {insightFeedbackError && (
+                <p className="mt-2 font-serif text-[11px] leading-relaxed tracking-wide text-[#fa5c38]">
+                  {insightFeedbackError}
+                </p>
+              )}
             </div>
           </div>
         )}
-
-        {/* Recommendation Guardrail Card */}
-        <div className="group relative overflow-hidden rounded-2xl border border-white/5 p-0 shadow-lg transition-all duration-500 hover:shadow-2xl hover:shadow-glow-purple hover:-translate-y-0.5 bg-surface-dark">
-          {/* Background Effects */}
-          <div className="absolute inset-0 bg-surface-dark opacity-90"></div>
-          <div className="absolute inset-0 bg-gradient-to-br from-purple/10 to-transparent opacity-40"></div>
-          <div className="absolute -top-10 -right-10 w-32 h-32 bg-purple/20 rounded-full blur-[60px] opacity-40"></div>
-
-          <div className="relative z-10 p-4">
-            <div className="flex items-stretch gap-4">
-              <div className="w-24 h-24 shrink-0 rounded-xl bg-black/20 relative overflow-hidden shadow-md ring-1 ring-white/10 flex items-center justify-center">
-                <span className="material-symbols-outlined text-purple/70 text-4xl">rule</span>
-              </div>
-
-              <div className="flex flex-col justify-between py-1 flex-1 min-w-0">
-                <div>
-                  <div className="flex justify-between items-start">
-                    <h4 className="text-white text-base font-bold font-serif tracking-wide truncate pr-2 transition-colors">推荐安全提示</h4>
-                    <div className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">
-                      <span className="text-[10px] text-white/40 font-bold font-serif tracking-wide">未开放</span>
-                    </div>
-                  </div>
-                  <p className="text-slate-400 text-sm mt-1.5 line-clamp-2 font-serif tracking-wide leading-snug">
-                    个性化菜谱推荐需先经过过敏与慢病规则校验。当前仅展示摄入余额，不再输出未经校验的具体菜品。
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="text-[10px] px-2 py-0.5 rounded-md border border-purple/20 text-purple/90 bg-purple/10 font-bold tracking-wide backdrop-blur-sm">规则引擎待接入</span>
-                  <span className="text-[10px] px-2 py-0.5 rounded-md border border-ochre/20 text-ochre/90 bg-ochre/10 font-bold tracking-wide backdrop-blur-sm">嘌呤余额 {remaining.purine}mg</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
 
       </section>
     </div>
