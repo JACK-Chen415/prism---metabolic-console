@@ -41,3 +41,9 @@ uploads/
 .runtime/
 backend/.runtime/
 *.pid
+
+# Local backups and test cache artifacts
+*.env.backup*
+backend/.env.backup*
+backend/pytest-cache-files-*/
+backend/.pytest_cache/

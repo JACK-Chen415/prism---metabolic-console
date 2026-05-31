@@ -4,10 +4,13 @@
 
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import re
 
-from app.models.user import Gender
+from app.models.user import Gender, SubscriptionPlan, SubscriptionStatus, UserRole
+
+
+CONSENT_VERSION = "2026-05-30"
 
 
 # ==================== 请求 Schema ====================
@@ -17,6 +20,11 @@ class UserRegister(BaseModel):
     phone: str = Field(..., min_length=11, max_length=11, description="手机号")
     password: str = Field(..., min_length=6, max_length=50, description="密码")
     nickname: Optional[str] = Field(None, max_length=50, description="昵称")
+    terms_accepted: bool = Field(False, description="已同意用户协议")
+    privacy_accepted: bool = Field(False, description="已同意隐私政策")
+    ai_use_accepted: bool = Field(False, description="已阅读并同意 AI 使用说明")
+    health_disclaimer_accepted: bool = Field(False, description="已阅读并同意健康免责声明")
+    consent_version: str = Field(CONSENT_VERSION, min_length=1, max_length=40, description="协议版本")
     
     @field_validator("phone")
     @classmethod
@@ -24,6 +32,20 @@ class UserRegister(BaseModel):
         if not re.match(r"^1[3-9]\d{9}$", v):
             raise ValueError("手机号格式不正确")
         return v
+
+    @model_validator(mode="after")
+    def validate_required_consents(self) -> "UserRegister":
+        if not all([
+            self.terms_accepted,
+            self.privacy_accepted,
+            self.ai_use_accepted,
+            self.health_disclaimer_accepted,
+        ]):
+            raise ValueError("必须同意用户协议、隐私政策、AI 使用说明和健康免责声明")
+        self.consent_version = self.consent_version.strip()
+        if not self.consent_version:
+            raise ValueError("协议版本不能为空")
+        return self
 
 
 class UserLogin(BaseModel):
@@ -93,10 +115,17 @@ class ResetPasswordRequest(BaseModel):
         return v
 
 
+class RevokeSessionRequest(BaseModel):
+    """撤销设备会话请求。"""
+    confirm: str = Field("REVOKE_SESSION", pattern="^REVOKE_SESSION$")
+
+
 # ==================== 响应 Schema ====================
 
 class UserResponse(BaseModel):
     """用户信息响应"""
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     phone: str
     nickname: Optional[str] = None
@@ -107,10 +136,11 @@ class UserResponse(BaseModel):
     weight: Optional[float] = None
     is_active: bool
     is_verified: bool
+    role: UserRole = UserRole.USER
+    subscription_plan: SubscriptionPlan = SubscriptionPlan.FREE
+    subscription_status: SubscriptionStatus = SubscriptionStatus.INACTIVE
+    subscription_updated_at: Optional[datetime] = None
     created_at: datetime
-    
-    class Config:
-        from_attributes = True
 
 
 class CalorieRange(BaseModel):
@@ -131,6 +161,22 @@ class LoginResponse(BaseModel):
     """登录响应"""
     user: UserResponse
     tokens: TokenResponse
+
+
+class DeviceSessionResponse(BaseModel):
+    """设备会话响应，不暴露 token 或原始 UA/IP。"""
+    model_config = ConfigDict(from_attributes=True)
+
+    session_id: str
+    device_label: Optional[str] = None
+    is_current: bool
+    is_revoked: bool
+    expires_at: datetime
+    created_at: datetime
+    last_seen_at: datetime
+    revoked_at: Optional[datetime] = None
+    revoke_reason: Optional[str] = None
+
 
 
 class DailyTargets(BaseModel):

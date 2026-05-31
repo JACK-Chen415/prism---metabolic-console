@@ -33,6 +33,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
+      APP_ENV: ${APP_ENV:-development}
+      OTP_PROVIDER: ${OTP_PROVIDER:-dev}
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://prism:prism123@host.docker.internal:5433/prism_metabolic}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-in-production}
       ARK_API_KEY: ${ARK_API_KEY}
@@ -43,7 +45,7 @@ services:
     ports:
       - "8000:8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/api/health')"]
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/api/ready').raise_for_status()"]
       interval: 30s
       timeout: 10s
       retries: 3

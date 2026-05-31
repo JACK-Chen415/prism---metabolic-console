@@ -3,18 +3,14 @@
 """
 
 from datetime import datetime, timezone
-from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import DbSession, CurrentUser
+from app.api.deps import CurrentTokenPayload, CurrentUser, DbSession
 from app.core.security import (
     verify_password,
     get_password_hash,
-    create_access_token,
-    create_refresh_token,
     decode_token
 )
 from app.core.config import settings
@@ -28,20 +24,56 @@ from app.schemas.user import (
     UserProfileUpdate,
     PasswordChange,
     RefreshTokenRequest,
+    RevokeSessionRequest,
     UserResponse,
+    DeviceSessionResponse,
     TokenResponse,
     LoginResponse,
     DailyTargets
 )
 from app.services.verification_service import verification_service
 from app.services.target_service import calculate_daily_targets
+from app.services.auth_security import (
+    audit_security_event,
+    create_session_token_pair,
+    revoke_all_device_sessions,
+    revoke_device_session,
+    rotate_refresh_session,
+)
 from app.models.health_condition import ConditionStatus
+from app.models.security import DeviceSession
 
 router = APIRouter(prefix="/auth", tags=["认证"])
 
 
+def _device_session_response(row: DeviceSession, *, current_session_id: str | None) -> DeviceSessionResponse:
+    return DeviceSessionResponse(
+        session_id=row.session_id,
+        device_label=row.device_label,
+        is_current=bool(current_session_id and row.session_id == current_session_id),
+        is_revoked=row.revoked_at is not None,
+        expires_at=row.expires_at,
+        created_at=row.created_at,
+        last_seen_at=row.last_seen_at,
+        revoked_at=row.revoked_at,
+        revoke_reason=row.revoke_reason,
+    )
+
+
+def _send_code_response_payload(result) -> dict:
+    payload = {
+        "success": True,
+        "message": result.message,
+        "expires_in": result.expires_in,
+    }
+    if result.debug_code and settings.is_development:
+        payload["debug_code"] = result.debug_code
+        payload["message"] = f"{result.message}（开发环境验证码：{result.debug_code}）"
+    return payload
+
+
 @router.post("/register", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
-async def register(data: UserRegister, db: DbSession):
+async def register(data: UserRegister, request: Request, db: DbSession):
     """
     用户注册
     
@@ -52,24 +84,56 @@ async def register(data: UserRegister, db: DbSession):
     # 检查手机号是否已注册
     result = await db.execute(select(User).where(User.phone == data.phone))
     if result.scalar_one_or_none():
+        await audit_security_event(
+            db,
+            event_type="auth.register",
+            event_status="duplicate_phone",
+            request=request,
+            actor=data.phone,
+            route_name="/api/auth/register",
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="该手机号已注册"
         )
     
     # 创建用户
+    consent_accepted_at = datetime.now(timezone.utc)
     user = User(
         phone=data.phone,
         password_hash=get_password_hash(data.password),
-        nickname=data.nickname or f"用户{data.phone[-4:]}"
+        nickname=data.nickname or f"用户{data.phone[-4:]}",
+        consent_version=data.consent_version,
+        consent_accepted_at=consent_accepted_at,
+        consent_terms_accepted=data.terms_accepted,
+        consent_privacy_accepted=data.privacy_accepted,
+        consent_ai_use_accepted=data.ai_use_accepted,
+        consent_health_disclaimer_accepted=data.health_disclaimer_accepted,
     )
     db.add(user)
     await db.flush()
     await db.refresh(user)
     
-    # 生成 Token
-    access_token = create_access_token(user.id)
-    refresh_token = create_refresh_token(user.id)
+    access_token, refresh_token, device_session = await create_session_token_pair(
+        db,
+        user=user,
+        request=request,
+    )
+    await audit_security_event(
+        db,
+        event_type="auth.register",
+        event_status="success",
+        user_id=user.id,
+        request=request,
+        actor=data.phone,
+        session_id=device_session.session_id,
+        route_name="/api/auth/register",
+        metadata={
+            "consent_version": data.consent_version,
+            "consent_document_count": 4,
+            "consent_accepted_at": consent_accepted_at.isoformat(),
+        },
+    )
     
     return LoginResponse(
         user=UserResponse.model_validate(user),
@@ -82,7 +146,7 @@ async def register(data: UserRegister, db: DbSession):
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(data: UserLogin, db: DbSession):
+async def login(data: UserLogin, request: Request, db: DbSession):
     """
     用户登录
     
@@ -94,6 +158,15 @@ async def login(data: UserLogin, db: DbSession):
     user = result.scalar_one_or_none()
     
     if not user or not verify_password(data.password, user.password_hash):
+        await audit_security_event(
+            db,
+            event_type="auth.password_login",
+            event_status="failure",
+            user_id=user.id if user else None,
+            request=request,
+            actor=data.phone,
+            route_name="/api/auth/login",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="手机号或密码错误"
@@ -109,9 +182,21 @@ async def login(data: UserLogin, db: DbSession):
     user.last_login_at = datetime.now(timezone.utc)
     await db.flush()
     
-    # 生成 Token
-    access_token = create_access_token(user.id)
-    refresh_token = create_refresh_token(user.id)
+    access_token, refresh_token, device_session = await create_session_token_pair(
+        db,
+        user=user,
+        request=request,
+    )
+    await audit_security_event(
+        db,
+        event_type="auth.password_login",
+        event_status="success",
+        user_id=user.id,
+        request=request,
+        actor=data.phone,
+        session_id=device_session.session_id,
+        route_name="/api/auth/login",
+    )
     
     return LoginResponse(
         user=UserResponse.model_validate(user),
@@ -124,7 +209,7 @@ async def login(data: UserLogin, db: DbSession):
 
 
 @router.post("/send-code")
-async def send_code(data: SendCodeRequest, db: DbSession):
+async def send_code(data: SendCodeRequest, request: Request, db: DbSession):
     """
     发送验证码（开发模式）
 
@@ -146,21 +231,46 @@ async def send_code(data: SendCodeRequest, db: DbSession):
                 detail="该手机号未注册"
             )
 
-    code = verification_service.issue_code(data.phone, data.purpose)
-    return {
-        "success": True,
-        "message": f"验证码已发送（开发环境验证码：{code}）",
-        "expires_in": 300
-    }
+    result = verification_service.send_code(data.phone, data.purpose)
+    await audit_security_event(
+        db,
+        event_type=f"otp.{data.purpose}.send",
+        event_status="success" if result.success else "limited",
+        request=request,
+        actor=data.phone,
+        route_name="/api/auth/send-code",
+        metadata={
+            "provider": result.provider_name,
+            "retry_after_seconds": result.retry_after_seconds,
+        },
+    )
+
+    if not result.success:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=result.message,
+            headers={"Retry-After": str(result.retry_after_seconds or 60)},
+        )
+
+    return _send_code_response_payload(result)
 
 
 @router.post("/login-code", response_model=LoginResponse)
-async def login_with_code(data: CodeLoginRequest, db: DbSession):
+async def login_with_code(data: CodeLoginRequest, request: Request, db: DbSession):
     """验证码登录"""
     if not verification_service.verify(data.phone, "login", data.code):
+        locked = verification_service.is_locked(data.phone, "login")
+        await audit_security_event(
+            db,
+            event_type="auth.otp_login",
+            event_status="failure_locked" if locked else "failure",
+            request=request,
+            actor=data.phone,
+            route_name="/api/auth/login-code",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="验证码无效或已过期"
+            detail="验证码错误次数过多，请稍后再试" if locked else "验证码无效或已过期"
         )
 
     result = await db.execute(select(User).where(User.phone == data.phone))
@@ -180,8 +290,21 @@ async def login_with_code(data: CodeLoginRequest, db: DbSession):
     user.last_login_at = datetime.now(timezone.utc)
     await db.flush()
 
-    access_token = create_access_token(user.id)
-    refresh_token = create_refresh_token(user.id)
+    access_token, refresh_token, device_session = await create_session_token_pair(
+        db,
+        user=user,
+        request=request,
+    )
+    await audit_security_event(
+        db,
+        event_type="auth.otp_login",
+        event_status="success",
+        user_id=user.id,
+        request=request,
+        actor=data.phone,
+        session_id=device_session.session_id,
+        route_name="/api/auth/login-code",
+    )
 
     return LoginResponse(
         user=UserResponse.model_validate(user),
@@ -194,12 +317,21 @@ async def login_with_code(data: CodeLoginRequest, db: DbSession):
 
 
 @router.post("/reset-password")
-async def reset_password(data: ResetPasswordRequest, db: DbSession):
+async def reset_password(data: ResetPasswordRequest, request: Request, db: DbSession):
     """通过验证码重置密码"""
     if not verification_service.verify(data.phone, "reset_password", data.code):
+        locked = verification_service.is_locked(data.phone, "reset_password")
+        await audit_security_event(
+            db,
+            event_type="auth.reset_password",
+            event_status="otp_failure_locked" if locked else "otp_failure",
+            request=request,
+            actor=data.phone,
+            route_name="/api/auth/reset-password",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="验证码无效或已过期"
+            detail="验证码错误次数过多，请稍后再试" if locked else "验证码无效或已过期"
         )
 
     result = await db.execute(select(User).where(User.phone == data.phone))
@@ -211,12 +343,27 @@ async def reset_password(data: ResetPasswordRequest, db: DbSession):
         )
 
     user.password_hash = get_password_hash(data.new_password)
+    revoked_count = await revoke_all_device_sessions(
+        db,
+        user_id=user.id,
+        reason="password_reset",
+    )
     await db.flush()
-    return {"success": True, "message": "密码重置成功"}
+    await audit_security_event(
+        db,
+        event_type="auth.reset_password",
+        event_status="success",
+        user_id=user.id,
+        request=request,
+        actor=data.phone,
+        route_name="/api/auth/reset-password",
+        metadata={"revoked_sessions": revoked_count},
+    )
+    return {"success": True, "message": "密码重置成功，请重新登录所有设备"}
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh_token(data: RefreshTokenRequest, db: DbSession):
+async def refresh_token(data: RefreshTokenRequest, request: Request, db: DbSession):
     """
     刷新 Access Token
     
@@ -225,26 +372,99 @@ async def refresh_token(data: RefreshTokenRequest, db: DbSession):
     payload = decode_token(data.refresh_token)
     
     if payload is None or payload.get("type") != "refresh":
+        await audit_security_event(
+            db,
+            event_type="auth.refresh",
+            event_status="invalid_token",
+            request=request,
+            route_name="/api/auth/refresh",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="无效或过期的Refresh Token"
         )
     
     user_id = payload.get("sub")
+    if user_id is None:
+        await audit_security_event(
+            db,
+            event_type="auth.refresh",
+            event_status="missing_subject",
+            request=request,
+            session_id=payload.get("sid"),
+            route_name="/api/auth/refresh",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效或过期的Refresh Token"
+        )
     
+    try:
+        parsed_user_id = int(user_id)
+    except (TypeError, ValueError):
+        await audit_security_event(
+            db,
+            event_type="auth.refresh",
+            event_status="invalid_subject",
+            request=request,
+            session_id=payload.get("sid"),
+            route_name="/api/auth/refresh",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效或过期的Refresh Token"
+        )
+
     # 验证用户是否存在且有效
-    result = await db.execute(select(User).where(User.id == int(user_id)))
+    result = await db.execute(select(User).where(User.id == parsed_user_id))
     user = result.scalar_one_or_none()
     
     if not user or not user.is_active:
+        await audit_security_event(
+            db,
+            event_type="auth.refresh",
+            event_status="user_inactive",
+            user_id=parsed_user_id,
+            request=request,
+            session_id=payload.get("sid"),
+            route_name="/api/auth/refresh",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户不存在或已被禁用"
         )
     
-    # 生成新的 Token
-    access_token = create_access_token(user.id)
-    new_refresh_token = create_refresh_token(user.id)
+    try:
+        access_token, new_refresh_token, device_session = await rotate_refresh_session(
+            db,
+            user=user,
+            refresh_payload=payload,
+            request=request,
+        )
+    except ValueError as exc:
+        await audit_security_event(
+            db,
+            event_type="auth.refresh",
+            event_status="revoked_or_reused",
+            user_id=user.id,
+            request=request,
+            session_id=payload.get("sid"),
+            route_name="/api/auth/refresh",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
+
+    await audit_security_event(
+        db,
+        event_type="auth.refresh",
+        event_status="success",
+        user_id=user.id,
+        request=request,
+        session_id=device_session.session_id,
+        route_name="/api/auth/refresh",
+    )
     
     return TokenResponse(
         access_token=access_token,
@@ -253,10 +473,125 @@ async def refresh_token(data: RefreshTokenRequest, db: DbSession):
     )
 
 
+@router.post("/logout")
+async def logout(
+    request: Request,
+    current_user: CurrentUser,
+    token_payload: CurrentTokenPayload,
+    db: DbSession,
+):
+    """退出登录并撤销当前设备会话。"""
+    session_id = token_payload.get("sid")
+    revoked = await revoke_device_session(
+        db,
+        user_id=current_user.id,
+        session_id=session_id,
+        reason="user_logout",
+    )
+    await audit_security_event(
+        db,
+        event_type="auth.logout",
+        event_status="success" if revoked else "legacy_token",
+        user_id=current_user.id,
+        request=request,
+        session_id=session_id,
+        route_name="/api/auth/logout",
+    )
+    return {"success": True, "message": "已退出登录"}
+
+
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(current_user: CurrentUser):
     """获取当前用户信息"""
     return UserResponse.model_validate(current_user)
+
+
+@router.get("/sessions", response_model=list[DeviceSessionResponse])
+async def list_device_sessions(
+    request: Request,
+    current_user: CurrentUser,
+    token_payload: CurrentTokenPayload,
+    db: DbSession,
+):
+    """列出当前用户的设备会话。"""
+    result = await db.execute(
+        select(DeviceSession)
+        .where(DeviceSession.user_id == current_user.id)
+        .order_by(DeviceSession.last_seen_at.desc(), DeviceSession.created_at.desc())
+    )
+    rows = list(result.scalars().all())
+    await audit_security_event(
+        db,
+        event_type="auth.session.list",
+        event_status="success",
+        user_id=current_user.id,
+        request=request,
+        session_id=token_payload.get("sid"),
+        route_name="/api/auth/sessions",
+        metadata={"returned": len(rows)},
+    )
+    return [_device_session_response(row, current_session_id=token_payload.get("sid")) for row in rows]
+
+
+@router.delete("/sessions/{session_id}")
+async def revoke_device_session_route(
+    session_id: str,
+    data: RevokeSessionRequest,
+    request: Request,
+    current_user: CurrentUser,
+    token_payload: CurrentTokenPayload,
+    db: DbSession,
+):
+    """撤销指定设备会话，但不允许撤销当前会话以外的其他用户会话。"""
+    if not session_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="会话标识不能为空")
+
+    if session_id == token_payload.get("sid"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请使用退出登录关闭当前会话")
+
+    result = await db.execute(
+        select(DeviceSession).where(
+            DeviceSession.user_id == current_user.id,
+            DeviceSession.session_id == session_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        await audit_security_event(
+            db,
+            event_type="auth.session.revoke",
+            event_status="not_found",
+            user_id=current_user.id,
+            request=request,
+            session_id=token_payload.get("sid"),
+            route_name="/api/auth/sessions/{session_id}",
+            metadata={"target_session_id": session_id},
+        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+
+    revoked = await revoke_device_session(
+        db,
+        user_id=current_user.id,
+        session_id=session_id,
+        reason="user_revocation",
+    )
+    if not revoked:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="会话无法撤销")
+
+    await audit_security_event(
+        db,
+        event_type="auth.session.revoke",
+        event_status="success",
+        user_id=current_user.id,
+        request=request,
+        session_id=token_payload.get("sid"),
+        route_name="/api/auth/sessions/{session_id}",
+        metadata={
+            "target_session_id": session_id,
+            "confirm": data.confirm,
+        },
+    )
+    return {"success": True, "message": "会话已撤销"}
 
 
 @router.put("/me", response_model=UserResponse)
@@ -280,20 +615,46 @@ async def update_profile(
 @router.post("/change-password")
 async def change_password(
     data: PasswordChange,
+    request: Request,
     current_user: CurrentUser,
-    db: DbSession
+    token_payload: CurrentTokenPayload,
+    db: DbSession,
 ):
-    """修改密码"""
+    """修改密码，并撤销所有已登录设备会话。"""
     if not verify_password(data.old_password, current_user.password_hash):
+        await audit_security_event(
+            db,
+            event_type="auth.change_password",
+            event_status="failure",
+            user_id=current_user.id,
+            request=request,
+            session_id=token_payload.get("sid"),
+            route_name="/api/auth/change-password",
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="原密码错误"
         )
     
     current_user.password_hash = get_password_hash(data.new_password)
+    revoked_count = await revoke_all_device_sessions(
+        db,
+        user_id=current_user.id,
+        reason="password_change",
+    )
     await db.flush()
+    await audit_security_event(
+        db,
+        event_type="auth.change_password",
+        event_status="success",
+        user_id=current_user.id,
+        request=request,
+        session_id=token_payload.get("sid"),
+        route_name="/api/auth/change-password",
+        metadata={"revoked_sessions": revoked_count},
+    )
     
-    return {"success": True, "message": "密码修改成功"}
+    return {"success": True, "message": "密码修改成功，请重新登录所有设备"}
 
 
 @router.get("/daily-targets", response_model=DailyTargets)

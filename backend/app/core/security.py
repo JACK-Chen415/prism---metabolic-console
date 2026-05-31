@@ -3,6 +3,9 @@
 """
 
 from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
+import secrets
 from typing import Optional, Any, Union
 
 from jose import jwt, JWTError
@@ -27,7 +30,8 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(
     subject: Union[str, Any],
-    expires_delta: Optional[timedelta] = None
+    expires_delta: Optional[timedelta] = None,
+    session_id: Optional[str] = None,
 ) -> str:
     """
     创建 JWT Access Token
@@ -51,6 +55,8 @@ def create_access_token(
         "exp": expire,
         "type": "access"
     }
+    if session_id:
+        to_encode["sid"] = session_id
     
     return jwt.encode(
         to_encode,
@@ -61,8 +67,10 @@ def create_access_token(
 
 def create_refresh_token(
     subject: Union[str, Any],
-    expires_delta: Optional[timedelta] = None
-) -> str:
+    expires_delta: Optional[timedelta] = None,
+    session_id: Optional[str] = None,
+    jti: Optional[str] = None,
+) -> tuple[str, str]:
     """
     创建 JWT Refresh Token
     
@@ -80,17 +88,22 @@ def create_refresh_token(
             days=settings.jwt_refresh_token_expire_days
         )
     
+    token_jti = jti or create_token_jti()
     to_encode = {
         "sub": str(subject),
         "exp": expire,
-        "type": "refresh"
+        "type": "refresh",
+        "jti": token_jti,
     }
+    if session_id:
+        to_encode["sid"] = session_id
     
-    return jwt.encode(
+    token = jwt.encode(
         to_encode,
         settings.jwt_secret_key,
         algorithm=settings.jwt_algorithm
     )
+    return token, token_jti
 
 
 def decode_token(token: str) -> Optional[dict]:
@@ -112,3 +125,24 @@ def decode_token(token: str) -> Optional[dict]:
         return payload
     except JWTError:
         return None
+
+
+def create_token_jti() -> str:
+    """Create a refresh-token unique identifier."""
+    return secrets.token_urlsafe(32)
+
+
+def create_session_id() -> str:
+    """Create an opaque device session id."""
+    return secrets.token_urlsafe(24)
+
+
+def hash_sensitive_value(value: Optional[str]) -> Optional[str]:
+    """HMAC identifiers before storing them in logs or session metadata."""
+    if not value:
+        return None
+    return hmac.new(
+        settings.jwt_secret_key.encode("utf-8"),
+        value.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()

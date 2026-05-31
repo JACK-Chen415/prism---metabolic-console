@@ -9,6 +9,11 @@ services:
     dockerContext: ./backend
     plan: free
     envVars:
+      # 应用环境（生产必须触发强配置校验）
+      - key: APP_ENV
+        value: production
+      - key: OTP_PROVIDER
+        value: audit_only
       # 数据库连接（在 Neon 控制台获取）
       - key: DATABASE_URL
         sync: false
@@ -22,7 +27,7 @@ services:
         sync: false
       # CORS
       - key: CORS_ORIGINS
-        value: '["https://prism-metabolic-console.vercel.app","http://localhost:3000"]'
+        value: '["https://prism-metabolic-console.vercel.app"]'
       # 应用配置
       - key: DEBUG
         value: "false"

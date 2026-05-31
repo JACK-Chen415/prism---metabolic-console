@@ -1,12 +1,14 @@
 """Database models."""
 
 from app.models.chat import ChatMessage, ChatSession, MessageRole
+from app.models.feedback import AIFeedback, AIFeedbackStatus, AIFeedbackType
 from app.models.health_condition import (
     ConditionStatus,
     ConditionType,
     HealthCondition,
     TrendType,
 )
+from app.models.health_metric import HealthMetric, HealthMetricType
 from app.models.knowledge import (
     ConditionScopeField,
     Disease,
@@ -28,10 +30,14 @@ from app.models.knowledge import (
 )
 from app.models.meal import FoodCategory, Meal, MealSource, MealType, SyncStatus
 from app.models.message import AppMessage, MessageType
-from app.models.user import Gender, User
+from app.models.security import DeviceSession, SecurityAuditLog
+from app.models.user import Gender, SubscriptionPlan, SubscriptionStatus, User, UserRole
 
 __all__ = [
     "AppMessage",
+    "AIFeedback",
+    "AIFeedbackStatus",
+    "AIFeedbackType",
     "ChatMessage",
     "ChatSession",
     "ConditionScopeField",
@@ -39,12 +45,15 @@ __all__ = [
     "ConditionType",
     "Disease",
     "DiseaseFoodRule",
+    "DeviceSession",
     "FallbackStatus",
     "FoodCategory",
     "FoodItem",
     "Gender",
     "HealthCondition",
     "HealthConditionMapping",
+    "HealthMetric",
+    "HealthMetricType",
     "KnowledgeAuditLog",
     "KnowledgeOrigin",
     "KnowledgeSource",
@@ -57,11 +66,15 @@ __all__ = [
     "MessageType",
     "RecommendationLevel",
     "RuleSourceMap",
+    "SecurityAuditLog",
     "SourceConfidence",
     "SourceField",
     "SourceTier",
     "SourceType",
+    "SubscriptionPlan",
+    "SubscriptionStatus",
     "SyncStatus",
     "TrendType",
     "User",
+    "UserRole",
 ]
