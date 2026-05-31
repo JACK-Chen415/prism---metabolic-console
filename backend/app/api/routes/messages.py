@@ -10,7 +10,7 @@ from sqlalchemy import select, func
 
 from app.api.deps import DbSession, CurrentUser
 from app.models.message import AppMessage, MessageType
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 
 
@@ -26,6 +26,8 @@ class MessageCreate(BaseModel):
 
 class MessageResponse(BaseModel):
     """消息响应"""
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     message_type: MessageType
     title: str
@@ -34,9 +36,6 @@ class MessageResponse(BaseModel):
     is_read: bool
     created_at: datetime
     read_at: Optional[datetime] = None
-    
-    class Config:
-        from_attributes = True
 
 
 router = APIRouter(prefix="/messages", tags=["消息通知"])

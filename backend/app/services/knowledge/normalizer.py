@@ -10,6 +10,55 @@ from app.models.knowledge import HealthConditionMapping, MatchType, SourceField
 from app.services.knowledge.contracts import NormalizedConditions
 
 
+ALLERGY_ALIASES: dict[str, tuple[str, ...]] = {
+    "shellfish": (
+        "虾",
+        "虾仁",
+        "虾类",
+        "海虾",
+        "河虾",
+        "贝类",
+        "贝壳类",
+        "甲壳类",
+        "shellfish",
+        "shrimp",
+        "prawn",
+        "crustacean",
+        "seafood",
+    ),
+    "shrimp": ("虾", "虾仁", "虾类", "海虾", "河虾", "shrimp", "prawn"),
+    "seafood": ("海鲜", "水产", "海产品", "seafood"),
+    "fish": ("鱼", "鱼类", "鱼肉", "fish", "seafood"),
+    "peanut": ("花生", "花生米", "peanut", "peanuts"),
+    "tree_nut": ("坚果", "树坚果", "nut", "nuts", "tree_nut"),
+    "dairy": (
+        "牛奶",
+        "奶",
+        "奶制品",
+        "乳制品",
+        "乳糖",
+        "乳品",
+        "dairy",
+        "milk",
+        "lactose",
+    ),
+    "egg": ("鸡蛋", "鸭蛋", "蛋", "蛋类", "egg", "eggs"),
+    "soy": ("大豆", "黄豆", "豆制品", "豆腐", "豆浆", "soy", "soybean"),
+    "wheat": ("小麦", "面粉", "麸质", "面筋", "wheat", "gluten", "flour"),
+    "sesame": ("芝麻", "芝麻酱", "麻酱", "sesame"),
+}
+
+ALLERGY_CONTEXT_SUFFIXES = (
+    "过敏史",
+    "过敏",
+    "不耐受",
+    "忌口",
+    "避免",
+    "allergy",
+    "intolerance",
+)
+
+
 DEFAULT_ALIASES: dict[str, tuple[str, ...]] = {
     "hypertension": ("hypertension", "high_blood_pressure", "高血压", "血压高"),
     "hyperlipidemia": (
@@ -148,10 +197,33 @@ class HealthConditionNormalizer:
     def _extract_allergy_terms(self, condition: HealthCondition) -> list[str]:
         values = [condition.condition_code, condition.title]
         terms = []
+        suffixes = tuple(_normalize_text(suffix) for suffix in ALLERGY_CONTEXT_SUFFIXES)
         for value in values:
             normalized = _normalize_text(value)
-            if normalized:
+            if not normalized:
+                continue
+
+            variants = [normalized]
+            for suffix in suffixes:
+                if normalized.endswith(suffix):
+                    stripped = normalized[: -len(suffix)]
+                    if stripped:
+                        variants.append(stripped)
+
+            if not any(suffix and normalized.endswith(suffix) for suffix in suffixes):
                 terms.append(normalized)
+
+            terms.extend(variant for variant in variants[1:] if variant)
+
+            for canonical, aliases in ALLERGY_ALIASES.items():
+                normalized_aliases = [_normalize_text(alias) for alias in aliases]
+                if any(
+                    alias and (alias == variant or alias in variant or variant in alias)
+                    for variant in variants
+                    for alias in normalized_aliases
+                ):
+                    terms.append(_normalize_text(canonical))
+                    terms.extend(normalized_aliases)
         return terms
 
     @staticmethod

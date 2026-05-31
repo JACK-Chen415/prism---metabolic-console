@@ -15,6 +15,7 @@ from app.schemas.meal import (
     MealCreate,
     MealUpdate,
     MealResponse,
+    MealSyncOperation,
     MealSyncRequest,
     MealSyncResponse,
     DailyIntakeSummary
@@ -41,6 +42,28 @@ async def _get_meal_or_404(meal_id: int, current_user: CurrentUser, db: DbSessio
         )
 
     return meal
+
+
+async def _get_meal_by_client_id_or_server_id(
+    db: DbSession,
+    *,
+    user_id: int,
+    client_id: str,
+    server_id: Optional[int] = None,
+) -> Meal | None:
+    query = select(Meal).where(Meal.user_id == user_id)
+    if server_id is not None:
+        query = query.where(Meal.id == server_id)
+    else:
+        query = query.where(Meal.client_id == client_id)
+
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
+def _apply_meal_update(meal: Meal, update_data: dict) -> None:
+    for field, value in update_data.items():
+        setattr(meal, field, value)
 
 
 @router.post("", response_model=MealResponse, status_code=status.HTTP_201_CREATED)
@@ -221,6 +244,7 @@ async def sync_meals(
     """
     synced_count = 0
     conflicts = []
+    deleted_client_ids: list[str] = []
     
     for meal_data in data.meals:
         # 检查是否已存在
@@ -244,6 +268,39 @@ async def sync_meals(
             )
             db.add(meal)
             synced_count += 1
+
+    for operation in data.operations:
+        target = await _get_meal_by_client_id_or_server_id(
+            db,
+            user_id=current_user.id,
+            client_id=operation.client_id,
+            server_id=operation.server_id,
+        )
+
+        if operation.op_type == "update":
+            if not target:
+                conflicts.append(operation.client_id)
+                continue
+
+            if data.last_sync_at and target.updated_at and target.updated_at > data.last_sync_at:
+                conflicts.append(operation.client_id)
+                continue
+
+            update_data = operation.changes.model_dump(exclude_unset=True) if operation.changes else {}
+            _apply_meal_update(target, update_data)
+            target.sync_status = SyncStatus.SYNCED
+            synced_count += 1
+            continue
+
+        if operation.op_type == "delete":
+            if target and data.last_sync_at and target.updated_at and target.updated_at > data.last_sync_at:
+                conflicts.append(operation.client_id)
+                continue
+
+            if target:
+                await db.delete(target)
+            deleted_client_ids.append(operation.client_id)
+            synced_count += 1
     
     await db.flush()
     
@@ -259,5 +316,6 @@ async def sync_meals(
     return MealSyncResponse(
         synced_count=synced_count,
         conflicts=conflicts,
+        deleted_client_ids=deleted_client_ids,
         server_meals=[MealResponse.model_validate(m) for m in server_meals]
     )

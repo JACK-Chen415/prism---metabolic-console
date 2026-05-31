@@ -100,9 +100,16 @@ class CloudKnowledgeService(LocalKnowledgeService):
             local_decisions=[],
         )
 
+    async def post_review_llm_output_for_user(self, *_args, **kwargs):
+        return kwargs["llm_text"], kwargs["query_summary"]
+
 
 class FakeDoubaoService:
+    def __init__(self):
+        self.last_kwargs = None
+
     async def chat(self, *_args, **kwargs):
+        self.last_kwargs = kwargs
         metrics = kwargs.get("metrics")
         if metrics is not None:
             metrics.update(
@@ -155,22 +162,33 @@ async def test_stream_route_returns_local_rule_answer(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_stream_route_can_proxy_cloud_chunks(monkeypatch):
+async def test_stream_route_buffers_cloud_until_post_review(monkeypatch):
     monkeypatch.setattr(chat_route, "knowledge_service", CloudKnowledgeService())
-    monkeypatch.setattr(chat_route, "doubao_service", FakeDoubaoService())
+    fake_doubao = FakeDoubaoService()
+    monkeypatch.setattr(chat_route, "doubao_service", fake_doubao)
     monkeypatch.setattr(chat_route, "write_knowledge_audit_log", fake_audit)
 
+    db = FakeDb()
     response = await chat_route.send_message_stream(
         1,
-        ChatMessageCreate(content="晚餐怎么搭配"),
+        ChatMessageCreate(content="晚餐怎么搭配", ai_mode="gentle", intervention_intensity="high"),
         User(id=1, phone="13800138001", password_hash="x"),
-        FakeDb(),
+        db,
     )
 
     body = await collect_stream(response)
 
-    assert body.count("event: delta") == 2
+    assert body.count("event: delta") == 1
+    assert "local_post_review" in body
     assert "云端" in body
     assert "回复" in body
     assert "event: done" in body
     assert "NO_LOCAL_MATCH_ALLOW_CLOUD" in body
+    assert fake_doubao.last_kwargs["assistant_preferences"] == {
+        "ai_mode": "GENTLE",
+        "intervention_intensity": "HIGH",
+    }
+    assert db.messages[-1].attachments["ui_preferences"] == {
+        "ai_mode": "GENTLE",
+        "intervention_intensity": "HIGH",
+    }

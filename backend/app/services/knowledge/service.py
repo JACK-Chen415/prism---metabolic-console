@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 from dataclasses import dataclass
+import re
 from typing import Iterable, Optional, Sequence, Tuple
 
 from sqlalchemy import select
@@ -33,6 +34,29 @@ SEVERITY_ORDER = {
     RecommendationLevel.LIMIT: 4,
     RecommendationLevel.AVOID: 5,
 }
+
+FALLBACK_PRIORITY = {
+    FallbackStatus.NO_LOCAL_MATCH_ALLOW_CLOUD: 0,
+    FallbackStatus.LOCAL_PARTIAL_ALLOW_CLOUD: 1,
+    FallbackStatus.LOCAL_COMPLETE: 2,
+    FallbackStatus.LOCAL_BLOCKED_NO_CLOUD: 3,
+}
+
+NON_RELAXABLE_LEVELS = {
+    RecommendationLevel.AVOID,
+    RecommendationLevel.LIMIT,
+    RecommendationLevel.INSUFFICIENT,
+}
+
+RELAXING_LANGUAGE_PATTERNS = (
+    r"(?<!不)可以放心(?:吃|食用|喝|饮用)?",
+    r"(?<!不)放心(?:吃|食用|喝|饮用)",
+    r"(?<!不)(?:可以|适合|安全)(?:吃|食用|喝|饮用)",
+    r"(?:无|无需|不用|不需要)(?:忌口|限制|避开)",
+    r"没有(?:禁忌|风险|限制)",
+    r"no\s+(?:restriction|contraindication|risk)",
+    r"safe\s+to\s+(?:eat|drink|consume)",
+)
 
 
 @dataclass
@@ -423,6 +447,95 @@ class KnowledgeService:
     def _level_label(level: Optional[RecommendationLevel]) -> str:
         return level.value if level is not None else "未判定"
 
+    def _build_safety_notice_lines(self, records: Sequence[object]) -> list[str]:
+        lines: list[str] = []
+        for record in records:
+            level = self._record_level(record)
+            hard_blocks = self._record_hard_blocks(record)
+            if level is None and not hard_blocks:
+                continue
+
+            food_name = str(getattr(record, "food_name", None) or "相关食物")
+            summary = self._record_summary(record)
+            if level in NON_RELAXABLE_LEVELS or hard_blocks:
+                pieces = [f"{food_name}: {self._level_label(level)}"]
+                if hard_blocks:
+                    pieces.append("；".join(hard_blocks))
+                if summary:
+                    pieces.append(summary)
+                pieces.append("本地结论不得被云端文案放宽。")
+                lines.append("；".join(pieces))
+            elif level is not None:
+                pieces = [f"{food_name}: {self._level_label(level)}"]
+                if summary:
+                    pieces.append(summary)
+                lines.append("；".join(pieces))
+        return self._unique(lines)
+
+    def _has_non_relaxable_record(self, records: Sequence[object]) -> bool:
+        for record in records:
+            level = self._record_level(record)
+            if level in NON_RELAXABLE_LEVELS or self._record_hard_blocks(record):
+                return True
+        return False
+
+    @staticmethod
+    def _contains_relaxing_language(text: str) -> bool:
+        if not text:
+            return False
+        compact = re.sub(r"\s+", "", text).lower()
+        spaced = re.sub(r"\s+", " ", text).lower()
+        return any(
+            re.search(pattern, compact) or re.search(pattern, spaced)
+            for pattern in RELAXING_LANGUAGE_PATTERNS
+        )
+
+    @staticmethod
+    def _record_level(record: object) -> Optional[RecommendationLevel]:
+        raw_level = getattr(record, "recommendation_level", None)
+        if raw_level is None:
+            return None
+        if isinstance(raw_level, RecommendationLevel):
+            return raw_level
+        try:
+            return RecommendationLevel(raw_level)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _record_hard_blocks(record: object) -> list[str]:
+        hard_blocks = list(getattr(record, "hard_blocks", None) or [])
+        warnings = list(getattr(record, "warnings", None) or [])
+        hard_blocks.extend(
+            warning
+            for warning in warnings
+            if any(token in warning for token in ("过敏", "忌口", "绝对", "本地规则"))
+        )
+        return KnowledgeService._unique(hard_blocks)
+
+    @staticmethod
+    def _record_summary(record: object) -> Optional[str]:
+        for attr in ("summary", "caution_note", "conflict_note"):
+            value = getattr(record, attr, None)
+            if value:
+                return str(value)
+        warnings = list(getattr(record, "warnings", None) or [])
+        return "；".join(warnings[:3]) or None
+
+    def _unique_decisions(self, decisions: list[LocalDecision]) -> list[LocalDecision]:
+        seen: set[tuple[Optional[str], str, Optional[RecommendationLevel]]] = set()
+        result: list[LocalDecision] = []
+        for decision in decisions:
+            key = (decision.food_code, decision.food_name, decision.recommendation_level)
+            if key not in seen:
+                seen.add(key)
+                result.append(decision)
+        return result
+
+    @staticmethod
+    def _strictest_fallback_status(statuses: Sequence[FallbackStatus]) -> FallbackStatus:
+        return max(statuses, key=lambda status: FALLBACK_PRIORITY[status])
+
     def build_local_guardrail(self, summary: KnowledgeSummary) -> str:
         lines = [
             "以下内容来自本地规则与知识库，必须优先遵守：",
@@ -438,6 +551,126 @@ class KnowledgeService:
         if summary.unmapped_conditions:
             lines.append(f"- 未标准化映射的健康档案：{'、'.join(summary.unmapped_conditions)}")
         return "\n".join(lines)
+
+    async def post_review_llm_output_for_user(
+        self,
+        db: AsyncSession,
+        *,
+        user: User,
+        conditions: Sequence[HealthCondition],
+        query_summary: KnowledgeSummary,
+        llm_text: str,
+        explicit_condition_codes: Optional[list[str]] = None,
+        manual_restrictions: Optional[list[str]] = None,
+        context_label: str = "AI 回复",
+    ) -> tuple[str, KnowledgeSummary]:
+        """Re-run local knowledge checks on model output before returning it."""
+        output_summary = await self.summarize_query_for_user(
+            db,
+            user=user,
+            conditions=conditions,
+            query=llm_text or "",
+            explicit_condition_codes=explicit_condition_codes,
+            manual_restrictions=manual_restrictions,
+        )
+        combined = self.merge_output_review_summary(query_summary, output_summary)
+        reviewed_text = self.enforce_llm_output_safety(
+            llm_text,
+            local_decisions=combined.local_decisions,
+            fallback_status=combined.fallback_status,
+            context_label=context_label,
+        )
+        return reviewed_text, combined
+
+    def merge_output_review_summary(
+        self,
+        query_summary: KnowledgeSummary,
+        output_summary: KnowledgeSummary,
+    ) -> KnowledgeSummary:
+        """Combine pre-call query checks with post-call output checks for auditing."""
+        local_decisions = self._unique_decisions(
+            [*query_summary.local_decisions, *output_summary.local_decisions]
+        )
+        matched_disease_codes = self._unique(
+            [*query_summary.matched_disease_codes, *output_summary.matched_disease_codes]
+        )
+        matched_food_codes = self._unique(
+            [*query_summary.matched_food_codes, *output_summary.matched_food_codes]
+        )
+        citations = self._merge_citations([query_summary.citations, output_summary.citations])
+        unmapped_conditions = self._unique(
+            [*query_summary.unmapped_conditions, *output_summary.unmapped_conditions]
+        )
+        fallback_status = self._strictest_fallback_status(
+            [query_summary.fallback_status, output_summary.fallback_status]
+        )
+        origin = query_summary.origin
+        if output_summary.local_decisions:
+            origin = KnowledgeOrigin.MIXED
+        elif query_summary.origin == KnowledgeOrigin.CLOUD_SUPPLEMENT:
+            origin = output_summary.origin
+
+        return query_summary.model_copy(
+            update={
+                "matched_disease_codes": matched_disease_codes,
+                "matched_food_codes": matched_food_codes,
+                "local_decisions": local_decisions,
+                "citations": citations,
+                "unmapped_conditions": unmapped_conditions,
+                "fallback_status": fallback_status,
+                "origin": origin,
+                "can_call_cloud": query_summary.can_call_cloud and output_summary.can_call_cloud,
+            }
+        )
+
+    def enforce_llm_output_safety(
+        self,
+        llm_text: Optional[str],
+        *,
+        local_decisions: Sequence[object] = (),
+        fallback_status: Optional[FallbackStatus] = None,
+        context_label: str = "AI 回复",
+    ) -> str:
+        """Overlay non-relaxable local decisions on top of any cloud text."""
+        text = (llm_text or "").strip()
+        records = list(local_decisions or [])
+        notice_lines = self._build_safety_notice_lines(records)
+        if not notice_lines:
+            return text
+
+        notice = "\n".join(["### 本地规则复核", *[f"- {line}" for line in notice_lines]])
+        has_non_relaxable = self._has_non_relaxable_record(records)
+        if has_non_relaxable and self._contains_relaxing_language(text):
+            return "\n".join(
+                [
+                    notice,
+                    "",
+                    f"{context_label}包含可能放宽本地过敏、忌口、AVOID/LIMIT/INSUFFICIENT 结论的表述，已由本地规则拦截。",
+                    "请以上述本地规则为准；云端只能解释原因或提供替代方案，不能把禁忌或限制说成可放心食用。",
+                ]
+            )
+
+        if has_non_relaxable:
+            return "\n".join(
+                [
+                    notice,
+                    "",
+                    "以下云端补充仅作解释或替代建议，不改变上述本地结论：",
+                    text,
+                ]
+            ).strip()
+
+        if fallback_status == FallbackStatus.LOCAL_PARTIAL_ALLOW_CLOUD:
+            return "\n".join(
+                [
+                    notice,
+                    "",
+                    "以下云端补充需服从上述本地规则：",
+                    text,
+                ]
+            ).strip()
+
+        return "\n".join([notice, "", text]).strip()
 
     def render_local_markdown(self, summary: KnowledgeSummary) -> str:
         risk_label = "✅ 安全"

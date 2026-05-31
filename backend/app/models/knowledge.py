@@ -55,6 +55,14 @@ class SourceConfidence(str, enum.Enum):
     LOW = "LOW"
 
 
+DEFAULT_NUTRITION_SOURCE_CODE = "core_v1_food_nutrition_estimate"
+DEFAULT_NUTRITION_SOURCE_DETAIL = (
+    "Core v1 estimate from public composition references, labels, and recipe normalization."
+)
+DEFAULT_NUTRITION_ESTIMATE_QUALITY = "MIXED_REFERENCE_AND_RECIPE_ESTIMATE"
+DEFAULT_NUTRITION_REVIEW_STATUS = "REVIEWED"
+
+
 class KnowledgeOrigin(str, enum.Enum):
     LOCAL_RULE = "LOCAL_RULE"
     LOCAL_KNOWLEDGE = "LOCAL_KNOWLEDGE"
@@ -118,6 +126,26 @@ class FoodItem(Base):
     fiber_per_100g: Mapped[Optional[float]] = mapped_column(nullable=True)
     sodium_per_100g: Mapped[Optional[float]] = mapped_column(nullable=True)
     purine_per_100g: Mapped[Optional[float]] = mapped_column(nullable=True)
+    nutrition_source_code: Mapped[str] = mapped_column(
+        String(120),
+        default=DEFAULT_NUTRITION_SOURCE_CODE,
+        nullable=False,
+    )
+    nutrition_source_detail: Mapped[str] = mapped_column(
+        String(255),
+        default=DEFAULT_NUTRITION_SOURCE_DETAIL,
+        nullable=False,
+    )
+    nutrition_estimate_quality: Mapped[str] = mapped_column(
+        String(50),
+        default=DEFAULT_NUTRITION_ESTIMATE_QUALITY,
+        nullable=False,
+    )
+    nutrition_review_status: Mapped[str] = mapped_column(
+        String(50),
+        default=DEFAULT_NUTRITION_REVIEW_STATUS,
+        nullable=False,
+    )
     allergen_tags_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     risk_tags_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     seed_version: Mapped[str] = mapped_column(String(50), default="core_v1")

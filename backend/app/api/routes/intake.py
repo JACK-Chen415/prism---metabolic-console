@@ -15,11 +15,13 @@ from app.schemas.intake import (
     IntakeConfirmResponse,
     IntakeDraftSessionResponse,
     PhotoParseRequest,
+    TextParseRequest,
     VoiceAutoLogRequest,
     VoiceParseRequest,
 )
 from app.services.ai_service import doubao_service
 from app.services.intake import IntakeService
+from app.services.upload_security import sanitize_image_upload
 
 
 router = APIRouter(prefix="/intake", tags=["多模态录入"])
@@ -39,6 +41,21 @@ async def parse_voice_intake(
 ):
     conditions = await get_user_conditions(current_user.id, db)
     return await intake_service.parse_voice(
+        db,
+        user=current_user,
+        conditions=conditions,
+        data=data,
+    )
+
+
+@router.post("/text/parse", response_model=IntakeDraftSessionResponse)
+async def parse_text_intake(
+    data: TextParseRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+):
+    conditions = await get_user_conditions(current_user.id, db)
+    return await intake_service.parse_text(
         db,
         user=current_user,
         conditions=conditions,
@@ -117,31 +134,31 @@ async def recognize_and_parse_photo_upload(
     2. 后端只请求一次多模态模型；
     3. 本地知识规则只在 parse 阶段执行一次。
     """
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="请上传图片文件",
-        )
-
     content = await file.read()
-    if not content:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="图片内容为空",
-        )
-
     from app.core.config import settings
 
     max_size = settings.max_upload_size_mb * 1024 * 1024
-    if len(content) > max_size:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"文件大小超过限制（最大 {settings.max_upload_size_mb}MB）",
+    try:
+        image = sanitize_image_upload(
+            content,
+            content_type=file.content_type or "",
+            max_size_bytes=max_size,
+            max_pixels=settings.max_upload_image_pixels,
         )
+    except ValueError as exc:
+        status_code = (
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+            if "大小超过限制" in str(exc) or "像素超过限制" in str(exc)
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(
+            status_code=status_code,
+            detail=str(exc),
+        ) from exc
 
     conditions = await get_user_conditions(current_user.id, db)
-    image_base64 = base64.b64encode(content).decode("utf-8")
-    image_type = file.content_type.split("/", 1)[1] if file.content_type else "jpeg"
+    image_base64 = base64.b64encode(image.content).decode("utf-8")
+    image_type = "jpeg" if image.format == "JPEG" else "png"
 
     foods, ai_response = await doubao_service.recognize_food(
         image_base64=image_base64,

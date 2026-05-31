@@ -40,6 +40,10 @@ class FoodItemResponse(BaseModel):
     fiber_per_100g: Optional[float] = None
     sodium_per_100g: Optional[float] = None
     purine_per_100g: Optional[float] = None
+    nutrition_source_code: str
+    nutrition_source_detail: str
+    nutrition_estimate_quality: str
+    nutrition_review_status: str
 
 
 class SourceResponse(BaseModel):

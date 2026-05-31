@@ -9,6 +9,7 @@ from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import hash_sensitive_value
 from app.models.health_condition import HealthCondition
 from app.models.knowledge import FallbackStatus, KnowledgeOrigin, RecommendationLevel
 from app.models.meal import FoodCategory, Meal, MealType, SyncStatus
@@ -20,14 +21,17 @@ from app.schemas.intake import (
     IntakeConfirmRequest,
     IntakeConfirmResponse,
     IntakeDraftSessionResponse,
+    IntakeParseStatus,
     IntakeSource,
     PhotoParseRequest,
+    TextParseRequest,
     VoiceAutoLogRequest,
     VoiceParseRequest,
 )
 from app.schemas.meal import MealResponse
 from app.services.knowledge import KnowledgeService, write_knowledge_audit_log
 from app.services.knowledge.contracts import LocalDecision, NormalizedConditions
+from app.services.knowledge.matcher import normalize_food_text
 
 
 CATEGORY_ALIAS_MAP = {
@@ -51,7 +55,15 @@ MEAL_TYPE_HINTS = [
 ]
 
 AMOUNT_PATTERN = re.compile(
-    r"(?P<amount>(?:\d+(?:\.\d+)?)|半|两|一|二|三|四|五|六|七|八|九|十|少量|一点)\s*(?P<unit>毫升|ml|mL|克|g|杯|碗|个|根|份|包|瓶|听|块)"
+    r"(?P<amount>(?:\d+(?:\.\d+)?)|半|两|一|二|三|四|五|六|七|八|九|十)\s*(?P<unit>毫升|ml|mL|克|g|杯|碗|个|根|份|包|瓶|听|块)"
+)
+
+FUZZY_AMOUNT_PATTERN = re.compile(
+    r"(?P<amount>小半|一小|一大|几)\s*(?P<unit>碗|杯|份|块|口)"
+)
+
+TASTE_CUE_PATTERN = re.compile(
+    r"(有点咸|偏咸|比较咸|清淡|很淡|偏淡|有点淡|淡一点)"
 )
 
 SEPARATOR_PATTERN = re.compile(
@@ -61,6 +73,99 @@ SEPARATOR_PATTERN = re.compile(
 LEADING_CONTEXT_PATTERN = re.compile(
     r"^(今天|今日|刚才|刚刚|我|上午|下午|早上|早晨|中午|晚上|早餐|午餐|晚餐|加餐|夜宵|早饭|午饭|晚饭|吃了|喝了|吃|喝)+"
 )
+
+TEXT_LOG_PREFIXES = (
+    "帮我记录一下",
+    "帮我记录",
+    "帮我记一下",
+    "帮我记",
+    "麻烦记录一下",
+    "麻烦记录",
+    "麻烦记一下",
+    "麻烦记",
+    "请记录一下",
+    "请记录",
+    "请记一下",
+    "请记",
+    "记录一下",
+    "记录",
+    "记一下",
+    "记个",
+    "记上",
+    "录入一下",
+    "录入",
+    "登记一下",
+    "登记",
+    "添加",
+)
+
+TEXT_LOG_INTENT_KEYWORDS = (
+    "记录",
+    "记一下",
+    "记个",
+    "记上",
+    "帮我记",
+    "帮我记录",
+    "录入",
+    "登记",
+    "添加到饮食",
+    "log",
+)
+
+TEXT_MEAL_LOG_KEYWORDS = (
+    "吃了",
+    "喝了",
+    "吃过",
+    "喝过",
+    "刚吃",
+    "刚喝",
+    "早餐",
+    "午餐",
+    "晚餐",
+    "加餐",
+    "夜宵",
+    "早饭",
+    "午饭",
+    "晚饭",
+)
+
+TEXT_NON_LOG_KEYWORDS = (
+    "能不能",
+    "可以吗",
+    "适合",
+    "推荐",
+    "建议",
+    "怎么吃",
+    "吃什么",
+    "喝什么",
+    "为什么",
+    "为何",
+    "热量",
+    "卡路里",
+    "营养",
+    "?",
+    "？",
+)
+
+GENERIC_FOOD_SEGMENTS = {
+    "早餐",
+    "午餐",
+    "晚餐",
+    "加餐",
+    "夜宵",
+    "早饭",
+    "午饭",
+    "晚饭",
+    "饭",
+    "菜",
+    "东西",
+    "食物",
+    "这顿",
+    "这餐",
+    "一顿",
+    "一点东西",
+    "点东西",
+}
 
 GENERIC_CATEGORY_HINTS = {
     FoodCategory.STAPLE: {
@@ -169,6 +274,7 @@ UNIT_BASE_WEIGHTS = {
     "瓶": 500.0,
     "听": 330.0,
     "块": 80.0,
+    "口": 15.0,
 }
 
 NUMBER_WORDS = {
@@ -186,6 +292,22 @@ NUMBER_WORDS = {
     "十": 10.0,
 }
 
+FUZZY_AMOUNT_VALUES = {
+    "小半": 0.4,
+    "一小": 0.75,
+    "一大": 1.5,
+    "少量": 0.25,
+    "一点": 0.2,
+}
+
+FUZZY_UNIT_COUNTS = {
+    ("几", "口"): 2.0,
+    ("几", "块"): 3.0,
+    ("几", "份"): 1.5,
+    ("几", "碗"): 2.0,
+    ("几", "杯"): 2.0,
+}
+
 STRICTNESS_ORDER = {
     RecommendationLevel.RECOMMEND: 0,
     RecommendationLevel.MODERATE: 1,
@@ -200,6 +322,91 @@ FALLBACK_PRIORITY = {
     FallbackStatus.LOCAL_PARTIAL_ALLOW_CLOUD: 1,
     FallbackStatus.LOCAL_COMPLETE: 2,
     FallbackStatus.LOCAL_BLOCKED_NO_CLOUD: 3,
+}
+
+PREP_HIGH_SODIUM_TERMS = (
+    "酱油",
+    "生抽",
+    "老抽",
+    "蚝油",
+    "豆瓣酱",
+    "黄豆酱",
+    "豆豉",
+    "腐乳",
+    "鱼露",
+    "咸菜",
+    "榨菜",
+    "腌菜",
+    "腌制",
+    "盐焗",
+    "卤",
+    "火锅底料",
+    "麻辣锅底",
+    "牛油锅底",
+)
+
+PREP_HIGH_SUGAR_TERMS = (
+    "白糖",
+    "冰糖",
+    "砂糖",
+    "红糖",
+    "蜂蜜",
+    "糖醋",
+    "甜酱",
+    "炼乳",
+    "焦糖",
+)
+
+PREP_HIGH_FAT_TERMS = (
+    "油炸",
+    "煎炸",
+    "炸",
+    "油煎",
+    "干煸",
+    "油焖",
+    "红烧",
+    "烧烤",
+    "奶油",
+    "黄油",
+    "牛油锅底",
+)
+
+PREP_ULTRA_PROCESSED_TERMS = (
+    "火锅底料",
+    "麻辣锅底",
+    "牛油锅底",
+    "方便酱包",
+    "复合调味料",
+)
+
+PREP_ALLERGEN_TERMS: dict[str, tuple[str, ...]] = {
+    "peanut": ("花生", "花生米", "花生碎", "花生酱", "peanut", "peanuts"),
+    "seafood": ("海鲜", "鱼露", "虾", "虾仁", "虾皮", "蟹", "螃蟹", "贝类", "鱼肉", "seafood"),
+    "shellfish": ("虾", "虾仁", "虾皮", "蟹", "螃蟹", "贝类", "shellfish", "shrimp", "crab"),
+    "dairy": ("牛奶", "奶油", "黄油", "芝士", "奶酪", "乳制品", "炼乳", "dairy", "milk"),
+    "egg": ("鸡蛋", "蛋液", "蛋黄", "蛋清", "蛋", "egg"),
+    "soy": ("酱油", "生抽", "老抽", "豆瓣酱", "黄豆酱", "豆豉", "豆腐", "黄豆", "大豆", "soy"),
+    "wheat": ("小麦", "面粉", "麸质", "面包糠", "wheat", "gluten"),
+}
+
+PREP_ALLERGEN_DISPLAY = {
+    "peanut": "花生",
+    "seafood": "海鲜",
+    "shellfish": "贝类/甲壳类",
+    "dairy": "乳制品",
+    "egg": "鸡蛋",
+    "soy": "大豆",
+    "wheat": "小麦",
+}
+
+PREP_ALLERGEN_RISK_TAGS = {
+    "peanut": ("high_fat", "plant_protein"),
+    "seafood": ("seafood", "moderate_purine"),
+    "shellfish": ("shellfish", "seafood", "moderate_purine"),
+    "dairy": ("dairy",),
+    "egg": ("egg", "animal_protein"),
+    "soy": ("soy", "plant_protein"),
+    "wheat": ("starchy_staple",),
 }
 
 
@@ -244,6 +451,146 @@ class IntakeService:
         return IntakeDraftSessionResponse(
             source=IntakeSource.VOICE,
             raw_input_text=data.transcript,
+            record_date=record_date,
+            meal_time_hint=time_hint,
+            candidates=candidates,
+            summary_warning=self._build_session_warning(candidates),
+        )
+
+    async def parse_text(
+        self,
+        db: AsyncSession,
+        *,
+        user: User,
+        conditions: list[HealthCondition],
+        data: TextParseRequest,
+    ) -> IntakeDraftSessionResponse:
+        normalized = await self.knowledge_service.normalize_conditions(db, conditions)
+        record_date = data.record_date or date.today()
+        current_text = data.text.strip()
+        context_text = (data.context_text or "").strip()
+        current_segments = self._extract_text_food_segments(current_text)
+        context_segments = self._extract_text_food_segments(context_text)
+        use_context_completion = self._should_use_context_completion(
+            current_text=current_text,
+            context_text=context_text,
+            current_segments=current_segments,
+            context_segments=context_segments,
+        )
+        time_hint = (
+            data.meal_time_hint
+            or self._detect_time_hint(current_text)
+            or self._detect_time_hint(context_text)
+        )
+
+        if not self._looks_like_meal_log_text(current_text) and not use_context_completion:
+            await self._write_parse_audit(
+                db,
+                route_name="/api/intake/text/parse",
+                user_id=user.id,
+                query_excerpt=current_text,
+                candidates=[],
+            )
+            return IntakeDraftSessionResponse(
+                source=IntakeSource.AI_QUICK_LOG,
+                status=IntakeParseStatus.REFUSED,
+                raw_input_text=current_text,
+                record_date=record_date,
+                meal_time_hint=time_hint,
+                refusal_reason="这条消息不像是在记录饮食，我先不生成餐食草稿。",
+            )
+
+        meal_type = self._infer_meal_type(
+            current_text if current_segments or not context_text else context_text,
+            data.meal_time_hint,
+        )
+        food_segments = current_segments or (context_segments if use_context_completion else [])
+        global_taste_notes = self._extract_taste_cues(current_text)[1]
+        if not food_segments:
+            await self._write_parse_audit(
+                db,
+                route_name="/api/intake/text/parse",
+                user_id=user.id,
+                query_excerpt=current_text,
+                candidates=[],
+            )
+            return IntakeDraftSessionResponse(
+                source=IntakeSource.AI_QUICK_LOG,
+                status=IntakeParseStatus.NEEDS_CLARIFICATION,
+                raw_input_text=current_text,
+                record_date=record_date,
+                meal_time_hint=time_hint,
+                missing_fields=["foods"],
+                follow_up_prompt="请补充这餐具体吃了什么，我再帮你生成待确认记录。",
+            )
+
+        follow_up_detail = self._extract_follow_up_detail(current_text) if use_context_completion else None
+        candidates: list[IntakeCandidate] = []
+        for segment in food_segments:
+            candidate_segment = segment
+            note_override = None
+            estimated_note_overrides: list[str] = []
+            inferred_amount = False
+
+            if follow_up_detail is not None:
+                candidate_segment = self._merge_context_food_segment(
+                    context_segment=segment,
+                    amount_text=follow_up_detail["amount_text"],
+                )
+                note_override = self._compose_note(follow_up_detail["taste_notes"])
+                estimated_note_overrides = self._build_follow_up_estimated_notes(
+                    amount_text=follow_up_detail["amount_text"],
+                    taste_notes=follow_up_detail["taste_notes"],
+                )
+                inferred_amount = follow_up_detail["normalized_amount"] is not None
+            elif len(food_segments) == 1 and global_taste_notes:
+                note_override = self._compose_note(global_taste_notes)
+
+            candidate = await self._candidate_from_voice_segment(
+                db,
+                user=user,
+                normalized=normalized,
+                segment=candidate_segment,
+                meal_type=meal_type,
+                time_hint=time_hint,
+                source=IntakeSource.AI_QUICK_LOG,
+                note_override=note_override,
+                estimated_note_overrides=estimated_note_overrides,
+                inferred_amount=inferred_amount,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+
+        if not candidates:
+            await self._write_parse_audit(
+                db,
+                route_name="/api/intake/text/parse",
+                user_id=user.id,
+                query_excerpt=current_text,
+                candidates=[],
+            )
+            return IntakeDraftSessionResponse(
+                source=IntakeSource.AI_QUICK_LOG,
+                status=IntakeParseStatus.NEEDS_CLARIFICATION,
+                raw_input_text=current_text,
+                record_date=record_date,
+                meal_time_hint=time_hint,
+                missing_fields=["foods"],
+                follow_up_prompt="请补充这餐具体吃了什么，我再帮你生成待确认记录。",
+            )
+
+        await self._write_parse_audit(
+            db,
+            route_name="/api/intake/text/parse",
+            user_id=user.id,
+            query_excerpt=current_text,
+            candidates=candidates,
+        )
+
+        return IntakeDraftSessionResponse(
+            source=IntakeSource.AI_QUICK_LOG,
+            status=IntakeParseStatus.READY,
+            raw_input_text=current_text,
             record_date=record_date,
             meal_time_hint=time_hint,
             candidates=candidates,
@@ -337,17 +684,29 @@ class IntakeService:
                 )
             )
 
+        strictest_fallback = max(
+            (candidate.fallback_status for candidate in candidates),
+            key=lambda value: FALLBACK_PRIORITY[value],
+            default=FallbackStatus.NO_LOCAL_MATCH_ALLOW_CLOUD,
+        )
+        reviewed_summary = self.knowledge_service.enforce_llm_output_safety(
+            data.ai_response,
+            local_decisions=candidates,
+            fallback_status=strictest_fallback,
+            context_label="图片识别摘要",
+        )
+
         await self._write_parse_audit(
             db,
             route_name="/api/intake/photo/parse-result",
             user_id=user.id,
-            query_excerpt=data.ai_response or "recognized_foods",
+            query_excerpt=reviewed_summary or "recognized_foods",
             candidates=candidates,
         )
 
         return IntakeDraftSessionResponse(
             source=IntakeSource.PHOTO,
-            raw_summary=data.ai_response,
+            raw_summary=reviewed_summary,
             record_date=record_date,
             meal_time_hint=time_hint,
             candidates=candidates,
@@ -443,13 +802,19 @@ class IntakeService:
         segment: str,
         meal_type: MealType,
         time_hint: Optional[str],
+        source: IntakeSource = IntakeSource.VOICE,
+        note_override: Optional[str] = None,
+        estimated_note_overrides: Optional[list[str]] = None,
+        inferred_amount: bool = False,
     ) -> Optional[IntakeCandidate]:
         raw_segment = segment.strip()
         if not raw_segment:
             return None
 
-        amount_text, normalized_amount, unit, food_text = self._extract_amount(raw_segment)
-        food_name = food_text or raw_segment
+        cleaned_segment, inline_taste_notes = self._extract_taste_cues(raw_segment)
+        amount_text, normalized_amount, unit, food_text = self._extract_amount(cleaned_segment)
+        food_name = (food_text or cleaned_segment).strip()
+        note = self._compose_note([*inline_taste_notes, *(note_override and [note_override] or [])])
 
         matched_food = await self.knowledge_service.matcher.find_by_name_or_code(
             db,
@@ -478,12 +843,17 @@ class IntakeService:
         )
 
         estimated_fields = estimate["estimated_fields"]
+        estimated_notes = list(estimate["estimated_notes"])
         if normalized_amount is not None:
             estimated_fields = self._unique(["amount", *estimated_fields])
+        if inferred_amount:
+            estimated_notes.append(f"分量根据补充回答按“{amount_text}”估算。")
+        if estimated_note_overrides:
+            estimated_notes.extend(estimated_note_overrides)
 
         return IntakeCandidate(
             draft_id=str(uuid.uuid4()),
-            source=IntakeSource.VOICE,
+            source=source,
             meal_type=meal_type,
             category=category,
             food_name=food_name,
@@ -492,6 +862,7 @@ class IntakeService:
             normalized_amount=normalized_amount,
             unit=unit,
             time_hint=time_hint,
+            note=note,
             confidence=0.9 if matched_food else 0.62,
             calories=estimate["nutrition"].get("calories"),
             protein=estimate["nutrition"].get("protein"),
@@ -504,7 +875,7 @@ class IntakeService:
             allergen_tags=list(matched_food.allergen_tags_json or []) if matched_food else [],
             risk_tags=list(matched_food.risk_tags_json or []) if matched_food else [],
             estimated_fields=estimated_fields,
-            estimated_notes=estimate["estimated_notes"],
+            estimated_notes=self._unique(estimated_notes),
             local_rule_hit=bool(decision.matched_disease_codes or decision.hard_blocks),
             matched_disease_codes=decision.matched_disease_codes,
             recommendation_level=decision.recommendation_level,
@@ -572,6 +943,7 @@ class IntakeService:
             confidence=float(food.confidence or 0),
             ingredients=list(food.ingredients or []),
             cooking_method=food.cooking_method,
+            seasonings=[],
             calories=food.nutrition.calories,
             protein=food.nutrition.protein,
             carbs=food.nutrition.carbs,
@@ -663,6 +1035,38 @@ class IntakeService:
         matched_allergen_tags = list(matched_food.allergen_tags_json or []) if matched_food else []
         matched_risk_tags = list(matched_food.risk_tags_json or []) if matched_food else []
         warnings = self._build_warnings(decision)
+        prep_adjustments = self._build_prep_detail_adjustments(
+            item=item,
+            estimate=estimate,
+            normalized=normalized,
+        )
+
+        warnings = self._unique([*warnings, *prep_adjustments["warnings"], *prep_adjustments["hard_blocks"]])
+        allergen_tags = self._unique(
+            [
+                *item.allergen_tags,
+                *matched_allergen_tags,
+                *prep_adjustments["allergen_tags"],
+            ]
+        )
+        risk_tags = self._unique(
+            [
+                *item.risk_tags,
+                *decision.risk_tags,
+                *matched_risk_tags,
+                *prep_adjustments["risk_tags"],
+            ]
+        )
+        recommendation_level = decision.recommendation_level
+        fallback_status = decision.fallback_status
+        origin = decision.origin
+        if prep_adjustments["hard_blocks"]:
+            recommendation_level = self._pick_stricter_level(
+                recommendation_level,
+                RecommendationLevel.AVOID,
+            )
+            fallback_status = FallbackStatus.LOCAL_BLOCKED_NO_CLOUD
+            origin = KnowledgeOrigin.LOCAL_RULE
 
         return IntakeCandidate(
             draft_id=item.draft_id,
@@ -678,25 +1082,26 @@ class IntakeService:
             confidence=float(item.confidence or 0),
             ingredients=item.ingredients,
             cooking_method=item.cooking_method,
-            calories=estimate["nutrition"].get("calories"),
-            protein=estimate["nutrition"].get("protein"),
-            carbs=estimate["nutrition"].get("carbs"),
-            fat=estimate["nutrition"].get("fat"),
-            fiber=estimate["nutrition"].get("fiber"),
-            sodium=estimate["nutrition"].get("sodium"),
-            sugar=estimate["nutrition"].get("sugar"),
-            purine=estimate["nutrition"].get("purine"),
-            allergen_tags=self._unique([*item.allergen_tags, *matched_allergen_tags]),
-            risk_tags=self._unique([*item.risk_tags, *decision.risk_tags, *matched_risk_tags]),
-            estimated_fields=estimate["estimated_fields"],
-            estimated_notes=estimate["estimated_notes"],
-            local_rule_hit=bool(decision.matched_disease_codes or decision.hard_blocks),
+            seasonings=item.seasonings,
+            calories=prep_adjustments["nutrition"].get("calories"),
+            protein=prep_adjustments["nutrition"].get("protein"),
+            carbs=prep_adjustments["nutrition"].get("carbs"),
+            fat=prep_adjustments["nutrition"].get("fat"),
+            fiber=prep_adjustments["nutrition"].get("fiber"),
+            sodium=prep_adjustments["nutrition"].get("sodium"),
+            sugar=prep_adjustments["nutrition"].get("sugar"),
+            purine=prep_adjustments["nutrition"].get("purine"),
+            allergen_tags=allergen_tags,
+            risk_tags=risk_tags,
+            estimated_fields=prep_adjustments["estimated_fields"],
+            estimated_notes=prep_adjustments["estimated_notes"],
+            local_rule_hit=bool(decision.matched_disease_codes or decision.hard_blocks or prep_adjustments["hard_blocks"]),
             matched_disease_codes=decision.matched_disease_codes,
-            recommendation_level=decision.recommendation_level,
+            recommendation_level=recommendation_level,
             warnings=warnings,
             citations=decision.citations,
-            origin=decision.origin,
-            fallback_status=decision.fallback_status,
+            origin=origin,
+            fallback_status=fallback_status,
             conflict_note=decision.conflict_note,
             caution_note=decision.caution_note,
         )
@@ -747,6 +1152,7 @@ class IntakeService:
                 "unit": candidate.unit,
                 "ingredients": candidate.ingredients,
                 "cooking_method": candidate.cooking_method,
+                "seasonings": candidate.seasonings,
                 "origin": candidate.origin.value,
                 "fallback_status": candidate.fallback_status.value,
                 "citations": [citation.model_dump() for citation in candidate.citations],
@@ -754,8 +1160,8 @@ class IntakeService:
                 "allergen_tags": candidate.allergen_tags,
                 "estimated_notes": candidate.estimated_notes,
                 "sugar": candidate.sugar,
-                "raw_input_excerpt": (raw_input_text or "")[:300] or None,
-                "raw_summary_excerpt": (raw_summary or "")[:300] or None,
+                "raw_input_hash": hash_sensitive_value(raw_input_text),
+                "raw_summary_hash": hash_sensitive_value(raw_summary),
             },
             sync_status=SyncStatus.SYNCED,
         )
@@ -890,9 +1296,60 @@ class IntakeService:
         return [part for part in parts if part]
 
     def _clean_segment(self, segment: str) -> str:
-        stripped = segment.strip(" 。.!！？?，,、；;")
+        stripped = segment.strip(" 。.!！？?，,、；;:：-")
         stripped = LEADING_CONTEXT_PATTERN.sub("", stripped)
         return stripped.strip()
+
+    def _looks_like_meal_log_text(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", text or "")
+        if not normalized:
+            return False
+
+        explicit_log_intent = any(keyword in normalized for keyword in TEXT_LOG_INTENT_KEYWORDS)
+        if explicit_log_intent:
+            return True
+
+        if any(keyword in normalized for keyword in TEXT_NON_LOG_KEYWORDS):
+            return False
+
+        return any(keyword in normalized for keyword in TEXT_MEAL_LOG_KEYWORDS)
+
+    def _extract_text_food_segments(self, text: str) -> list[str]:
+        segments: list[str] = []
+
+        for segment in self._split_voice_segments(text):
+            cleaned_segment = self._strip_text_log_prefix(segment)
+            if not self._is_specific_food_segment(cleaned_segment):
+                continue
+            segments.append(cleaned_segment)
+
+        return segments
+
+    def _strip_text_log_prefix(self, segment: str) -> str:
+        cleaned = segment.strip(" 。.!！？?，,、；;:：-")
+
+        changed = True
+        while changed and cleaned:
+            changed = False
+            for prefix in TEXT_LOG_PREFIXES:
+                if cleaned.startswith(prefix):
+                    cleaned = cleaned[len(prefix) :].strip(" 。.!！？?，,、；;:：-")
+                    cleaned = self._clean_segment(cleaned)
+                    changed = True
+
+        return cleaned.strip(" 。.!！？?，,、；;:：-")
+
+    def _is_specific_food_segment(self, segment: str) -> bool:
+        if not segment:
+            return False
+
+        cleaned_segment, _ = self._extract_taste_cues(segment)
+        amount_text, _, _, food_name = self._extract_amount(cleaned_segment)
+        normalized_food_name = re.sub(r"\s+", "", food_name)
+        if amount_text != "1份" and not normalized_food_name:
+            return False
+        normalized_food_name = normalized_food_name or re.sub(r"\s+", "", cleaned_segment)
+        return bool(normalized_food_name) and normalized_food_name not in GENERIC_FOOD_SEGMENTS
 
     def _infer_meal_type(self, text: str, meal_time_hint: Optional[str]) -> MealType:
         haystack = f"{meal_time_hint or ''} {text or ''}"
@@ -919,6 +1376,18 @@ class IntakeService:
         return None
 
     def _extract_amount(self, segment: str) -> tuple[str, Optional[float], Optional[str], str]:
+        fuzzy_match = FUZZY_AMOUNT_PATTERN.search(segment)
+        if fuzzy_match:
+            amount_token = fuzzy_match.group("amount")
+            unit = self._normalize_unit(fuzzy_match.group("unit"))
+            normalized_amount = FUZZY_AMOUNT_VALUES.get(amount_token) or FUZZY_UNIT_COUNTS.get(
+                (amount_token, unit or "")
+            )
+            food_text = (segment[: fuzzy_match.start()] + segment[fuzzy_match.end() :]).strip(
+                " 。.!！？?，,、；;:：-"
+            )
+            return fuzzy_match.group(0).strip(), normalized_amount, unit, food_text
+
         match = AMOUNT_PATTERN.search(segment)
 
         if match:
@@ -926,7 +1395,9 @@ class IntakeService:
             unit = self._normalize_unit(match.group("unit"))
             normalized_amount = self._parse_numeric_token(amount_token)
 
-            food_text = (segment[: match.start()] + segment[match.end() :]).strip()
+            food_text = (segment[: match.start()] + segment[match.end() :]).strip(
+                " 。.!！？?，,、；;:：-"
+            )
             food_text = re.sub(
                 r"^(约|大约|差不多|左右|一份|一碗|一杯)",
                 "",
@@ -935,10 +1406,89 @@ class IntakeService:
 
             return match.group(0).strip(), normalized_amount, unit, food_text
 
-        if segment.startswith(("少量", "一点")):
-            return "少量", None, "份", segment[2:].strip()
+        fuzzy_prefix_match = re.search(r"(?P<amount>少量|一点)", segment)
+        if fuzzy_prefix_match:
+            amount_token = fuzzy_prefix_match.group("amount")
+            normalized_amount = FUZZY_AMOUNT_VALUES[amount_token]
+            food_text = (segment[: fuzzy_prefix_match.start()] + segment[fuzzy_prefix_match.end() :]).strip(
+                " 。.!！？?，,、；;:：-"
+            )
+            return amount_token, normalized_amount, "份", food_text
 
         return "1份", None, "份", segment.strip()
+
+    def _extract_taste_cues(self, text: str) -> tuple[str, list[str]]:
+        if not text:
+            return "", []
+
+        cues = [match.group(0) for match in TASTE_CUE_PATTERN.finditer(text)]
+        cleaned = TASTE_CUE_PATTERN.sub(" ", text)
+        cleaned = re.sub(r"(味道|口味)(?:上)?", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        cleaned = cleaned.strip(" 。.!！？?，,、；;:：-")
+        return cleaned, self._unique(cues)
+
+    def _extract_follow_up_detail(self, text: str) -> Optional[dict]:
+        stripped = self._strip_text_log_prefix(text)
+        cleaned_text, taste_notes = self._extract_taste_cues(stripped)
+        amount_text, normalized_amount, unit, food_text = self._extract_amount(cleaned_text)
+        has_amount = normalized_amount is not None or amount_text != "1份"
+        residual_text = re.sub(r"\s+", "", food_text)
+
+        if not has_amount and not taste_notes:
+            return None
+
+        if residual_text and residual_text not in GENERIC_FOOD_SEGMENTS:
+            return None
+
+        return {
+            "amount_text": amount_text if has_amount else None,
+            "normalized_amount": normalized_amount,
+            "unit": unit if has_amount else None,
+            "taste_notes": taste_notes,
+        }
+
+    def _should_use_context_completion(
+        self,
+        *,
+        current_text: str,
+        context_text: str,
+        current_segments: list[str],
+        context_segments: list[str],
+    ) -> bool:
+        if current_segments or not context_text or len(context_segments) != 1:
+            return False
+
+        if not self._looks_like_meal_log_text(context_text):
+            return False
+
+        return self._extract_follow_up_detail(current_text) is not None
+
+    def _merge_context_food_segment(self, context_segment: str, amount_text: Optional[str]) -> str:
+        cleaned_context, _ = self._extract_taste_cues(context_segment)
+        _, _, _, context_food_name = self._extract_amount(cleaned_context)
+        base_food_name = (context_food_name or cleaned_context).strip()
+        if not amount_text:
+            return base_food_name
+        return f"{amount_text}{base_food_name}".strip()
+
+    def _build_follow_up_estimated_notes(
+        self,
+        *,
+        amount_text: Optional[str],
+        taste_notes: list[str],
+    ) -> list[str]:
+        notes: list[str] = ["食物名称沿用上一轮上下文补全。"]
+        if amount_text:
+            notes.append(f"分量来自补充回答：{amount_text}。")
+        if taste_notes:
+            notes.append(f"口味描述来自补充回答：{'；'.join(taste_notes)}。")
+        return notes
+
+    def _compose_note(self, notes: list[str]) -> Optional[str]:
+        if not notes:
+            return None
+        return "；".join(self._unique(notes))
 
     def _normalize_unit(self, unit: Optional[str]) -> Optional[str]:
         if unit in {"ml", "mL"}:
@@ -1043,6 +1593,150 @@ class IntakeService:
             warnings.append(decision.conflict_note)
 
         return self._unique(warnings)
+
+    def _build_prep_detail_adjustments(
+        self,
+        *,
+        item: IntakeConfirmItem,
+        estimate: dict,
+        normalized: NormalizedConditions,
+    ) -> dict:
+        detail_text = self._compose_prep_detail_text(item)
+        normalized_detail = normalize_food_text(detail_text)
+        nutrition = dict(estimate["nutrition"])
+        estimated_fields = list(estimate["estimated_fields"])
+        estimated_notes = list(estimate["estimated_notes"])
+        warnings: list[str] = []
+        hard_blocks: list[str] = []
+        allergen_tags: list[str] = []
+        risk_tags: list[str] = []
+
+        if not normalized_detail:
+            return {
+                "nutrition": nutrition,
+                "estimated_fields": estimated_fields,
+                "estimated_notes": estimated_notes,
+                "warnings": warnings,
+                "hard_blocks": hard_blocks,
+                "allergen_tags": allergen_tags,
+                "risk_tags": risk_tags,
+            }
+
+        if self._contains_any_term(normalized_detail, PREP_HIGH_SODIUM_TERMS):
+            self._bump_nutrition(nutrition, "sodium", 350.0)
+            self._add_unique(risk_tags, "high_sodium")
+            self._add_unique(estimated_fields, "sodium")
+            warnings.append("配料或调料包含高钠项，已按更保守钠负担复核。")
+
+        if self._contains_any_term(normalized_detail, PREP_HIGH_SUGAR_TERMS):
+            self._bump_nutrition(nutrition, "sugar", 10.0)
+            self._bump_nutrition(nutrition, "carbs", 10.0)
+            self._bump_nutrition(nutrition, "calories", 40.0)
+            self._add_unique(risk_tags, "high_sugar")
+            self._add_unique(estimated_fields, "sugar")
+            self._add_unique(estimated_fields, "carbs")
+            self._add_unique(estimated_fields, "calories")
+            warnings.append("配料或调料包含加糖项，已按更保守糖负担复核。")
+
+        if self._contains_any_term(normalized_detail, PREP_HIGH_FAT_TERMS):
+            self._bump_nutrition(nutrition, "fat", 8.0)
+            self._bump_nutrition(nutrition, "calories", 80.0)
+            self._add_unique(risk_tags, "high_fat")
+            self._add_unique(estimated_fields, "fat")
+            self._add_unique(estimated_fields, "calories")
+            warnings.append("烹饪方式包含高油脂做法，已按更保守脂肪负担复核。")
+
+        if self._contains_any_term(normalized_detail, PREP_ULTRA_PROCESSED_TERMS):
+            self._add_unique(risk_tags, "ultra_processed")
+            warnings.append("配料或调料包含高加工度项，已按本地规则保守标记。")
+
+        for tag, terms in PREP_ALLERGEN_TERMS.items():
+            if self._contains_any_term(normalized_detail, terms):
+                self._add_unique(allergen_tags, tag)
+                for risk_tag in PREP_ALLERGEN_RISK_TAGS.get(tag, ()):
+                    self._add_unique(risk_tags, risk_tag)
+
+        for allergy in normalized.allergy_terms:
+            allergy_norm = normalize_food_text(allergy)
+            if not allergy_norm:
+                continue
+            if self._constraint_matches_prep_tags(allergy_norm, allergen_tags, normalized_detail):
+                hard_blocks.append(f"过敏约束命中：{allergy}")
+
+        for restriction in item.manual_restrictions:
+            restriction_norm = normalize_food_text(restriction)
+            if not restriction_norm:
+                continue
+            if restriction_norm in normalized_detail or self._constraint_matches_prep_tags(
+                restriction_norm,
+                allergen_tags,
+                normalized_detail,
+            ):
+                hard_blocks.append(f"显式忌口命中：{restriction}")
+
+        if warnings:
+            estimated_notes.append("已根据配料、调料和烹饪方式做本地保守复核。")
+        if hard_blocks:
+            estimated_notes.append("配料或调料命中了本地过敏/忌口约束。")
+
+        return {
+            "nutrition": nutrition,
+            "estimated_fields": estimated_fields,
+            "estimated_notes": estimated_notes,
+            "warnings": warnings,
+            "hard_blocks": self._unique(hard_blocks),
+            "allergen_tags": allergen_tags,
+            "risk_tags": risk_tags,
+        }
+
+    def _compose_prep_detail_text(self, item: IntakeConfirmItem) -> str:
+        parts = [item.food_name]
+        parts.extend(item.ingredients or [])
+        if item.cooking_method:
+            parts.append(item.cooking_method)
+        parts.extend(item.seasonings or [])
+        if item.note:
+            parts.append(item.note)
+        return " ".join(part for part in parts if part)
+
+    def _contains_any_term(self, normalized_text: str, terms: tuple[str, ...]) -> bool:
+        if not normalized_text:
+            return False
+        return any(normalize_food_text(term) in normalized_text for term in terms if term)
+
+    def _constraint_matches_prep_tags(
+        self,
+        constraint_norm: str,
+        allergen_tags: list[str],
+        normalized_detail: str,
+    ) -> bool:
+        if constraint_norm in normalized_detail:
+            return True
+        for tag in allergen_tags:
+            aliases = PREP_ALLERGEN_TERMS.get(tag, ())
+            normalized_aliases = [normalize_food_text(alias) for alias in aliases if alias]
+            if constraint_norm == tag:
+                return True
+            if any(
+                constraint_norm == alias
+                or constraint_norm in alias
+                or alias in constraint_norm
+                for alias in normalized_aliases
+                if alias
+            ):
+                return True
+        return False
+
+    def _add_unique(self, items: list[str], value: str) -> None:
+        if value and value not in items:
+            items.append(value)
+
+    def _bump_nutrition(self, nutrition: dict, field: str, delta: float) -> None:
+        current = nutrition.get(field)
+        if current is None:
+            nutrition[field] = round(delta, 1)
+            return
+        nutrition[field] = round(float(current) + delta, 1)
 
     def _build_session_warning(self, candidates: list[IntakeCandidate]) -> Optional[str]:
         if not candidates:

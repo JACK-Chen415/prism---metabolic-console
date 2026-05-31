@@ -4,6 +4,7 @@ from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import hash_sensitive_value
 from app.models.knowledge import FallbackStatus, KnowledgeAuditLog, KnowledgeOrigin, RecommendationLevel
 
 
@@ -30,7 +31,7 @@ async def write_knowledge_audit_log(
         route_name=route_name,
         chat_session_id=chat_session_id,
         chat_message_id=chat_message_id,
-        query_excerpt=(query_excerpt or "")[:500] or None,
+        query_excerpt=hash_sensitive_value((query_excerpt or "")[:500]),
         origin=origin,
         fallback_status=fallback_status,
         matched_disease_codes_json=matched_disease_codes,

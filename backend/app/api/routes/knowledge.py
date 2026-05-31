@@ -7,7 +7,15 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession
 from app.models.health_condition import HealthCondition
-from app.models.knowledge import Disease, FoodItem, KnowledgeSource
+from app.models.knowledge import (
+    DEFAULT_NUTRITION_ESTIMATE_QUALITY,
+    DEFAULT_NUTRITION_REVIEW_STATUS,
+    DEFAULT_NUTRITION_SOURCE_CODE,
+    DEFAULT_NUTRITION_SOURCE_DETAIL,
+    Disease,
+    FoodItem,
+    KnowledgeSource,
+)
 from app.schemas.knowledge import (
     DiseaseResponse,
     EvaluateFoodRequest,
@@ -20,6 +28,7 @@ from app.schemas.knowledge import (
     SourceResponse,
 )
 from app.services.knowledge import KnowledgeService, write_knowledge_audit_log
+from app.services.knowledge.matcher import normalize_food_text
 
 router = APIRouter(prefix="/knowledge", tags=["知识库"])
 knowledge_service = KnowledgeService()
@@ -49,6 +58,10 @@ def _food_to_response(food: FoodItem) -> FoodItemResponse:
         fiber_per_100g=food.fiber_per_100g,
         sodium_per_100g=food.sodium_per_100g,
         purine_per_100g=food.purine_per_100g,
+        nutrition_source_code=food.nutrition_source_code or DEFAULT_NUTRITION_SOURCE_CODE,
+        nutrition_source_detail=food.nutrition_source_detail or DEFAULT_NUTRITION_SOURCE_DETAIL,
+        nutrition_estimate_quality=food.nutrition_estimate_quality or DEFAULT_NUTRITION_ESTIMATE_QUALITY,
+        nutrition_review_status=food.nutrition_review_status or DEFAULT_NUTRITION_REVIEW_STATUS,
     )
 
 
@@ -103,14 +116,15 @@ async def list_foods(
         await db.execute(select(FoodItem).where(FoodItem.is_enabled.is_(True)))
     ).scalars().all()
     results = []
-    q_norm = (q or "").strip().lower()
+    q_norm = normalize_food_text(q)
     risk_norm = (risk_tag or "").strip().lower()
     for food in foods:
         if category and food.category != category:
             continue
         if q_norm:
             candidates = [food.food_code, food.name_zh, *(food.aliases_json or [])]
-            if not any(q_norm in str(candidate).lower() for candidate in candidates):
+            normalized_candidates = [normalize_food_text(candidate) for candidate in candidates if candidate]
+            if not any(q_norm in candidate for candidate in normalized_candidates):
                 continue
         if risk_norm and not any(risk_norm == str(tag).lower() for tag in food.risk_tags_json or []):
             continue

@@ -4,8 +4,9 @@ AI 对话相关 Pydantic Schema
 
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.models.feedback import AIFeedbackStatus, AIFeedbackType
 from app.models.chat import MessageRole
 
 
@@ -15,6 +16,36 @@ class ChatMessageCreate(BaseModel):
     """发送聊天消息请求"""
     content: str = Field(..., max_length=4000, description="消息内容")
     attachments: Optional[Dict[str, Any]] = Field(None, description="附件信息")
+    ai_mode: Optional[str] = Field(
+        None,
+        max_length=16,
+        description="聊天模式：STRICT 或 GENTLE",
+    )
+    intervention_intensity: Optional[str] = Field(
+        None,
+        max_length=16,
+        description="干预强度：LOW、STANDARD 或 HIGH",
+    )
+
+    @field_validator("ai_mode")
+    @classmethod
+    def normalize_ai_mode(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        if normalized not in {"STRICT", "GENTLE"}:
+            raise ValueError("ai_mode 仅支持 STRICT 或 GENTLE")
+        return normalized
+
+    @field_validator("intervention_intensity")
+    @classmethod
+    def normalize_intervention_intensity(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        if normalized not in {"LOW", "STANDARD", "HIGH"}:
+            raise ValueError("intervention_intensity 仅支持 LOW、STANDARD 或 HIGH")
+        return normalized
 
 
 class ChatSessionCreate(BaseModel):
@@ -33,6 +64,8 @@ class FoodRecognitionRequest(BaseModel):
 
 class ChatMessageResponse(BaseModel):
     """聊天消息响应"""
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     role: MessageRole
     content: str
@@ -40,33 +73,28 @@ class ChatMessageResponse(BaseModel):
     model: Optional[str] = None
     tokens_used: Optional[int] = None
     created_at: datetime
-    
-    class Config:
-        from_attributes = True
 
 
 class ChatSessionResponse(BaseModel):
     """对话会话响应"""
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     title: str
     created_at: datetime
     updated_at: datetime
     message_count: int = 0
-    
-    class Config:
-        from_attributes = True
 
 
 class ChatSessionDetailResponse(BaseModel):
     """对话会话详情响应（含消息列表）"""
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     title: str
     created_at: datetime
     updated_at: datetime
     messages: List[ChatMessageResponse]
-    
-    class Config:
-        from_attributes = True
 
 
 class NutritionInfo(BaseModel):
@@ -103,6 +131,7 @@ class FoodRecognitionResponse(BaseModel):
     foods: List[FoodRecognitionResult] = Field(default_factory=list)
     ai_response: str = Field(description="AI的对话式回复")
     image_url: Optional[str] = Field(None, description="上传图片的URL")
+    message_id: Optional[int] = Field(None, description="可用于反馈的识别结果消息ID")
 
 
 class QuickLogFoodItem(BaseModel):
@@ -116,6 +145,31 @@ class QuickLogRequest(BaseModel):
     session_id: Optional[int] = None
     meal_type: str = Field(default="DINNER", description="BREAKFAST/LUNCH/DINNER/SNACK")
     food_item: QuickLogFoodItem
+
+
+class AIFeedbackCreate(BaseModel):
+    """AI 回复/识别结果反馈。"""
+
+    feedback_type: AIFeedbackType
+    rating: Optional[int] = Field(None, ge=1, le=5)
+    tags: List[str] = Field(default_factory=list, max_length=12)
+    correction_text: Optional[str] = Field(None, max_length=2000)
+    metadata: Optional[Dict[str, Any]] = Field(default=None)
+
+
+class AIFeedbackResponse(BaseModel):
+    """AI 反馈写入结果。"""
+
+    id: int
+    session_id: Optional[int] = None
+    message_id: Optional[int] = None
+    app_message_id: Optional[int] = None
+    feedback_type: AIFeedbackType
+    rating: Optional[int] = None
+    tags: List[str] = Field(default_factory=list)
+    status: AIFeedbackStatus
+    has_correction: bool = False
+    created_at: datetime
 
 
 class AIStreamChunk(BaseModel):

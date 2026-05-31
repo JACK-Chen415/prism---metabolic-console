@@ -14,7 +14,7 @@ from app.models.health_condition import (
     ConditionStatus,
     TrendType
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 from datetime import datetime
 
@@ -47,6 +47,8 @@ class ConditionUpdate(BaseModel):
 
 class ConditionResponse(BaseModel):
     """健康状况响应"""
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     condition_code: str
     title: str
@@ -60,9 +62,6 @@ class ConditionResponse(BaseModel):
     attribution: Optional[str] = None
     created_at: datetime
     updated_at: datetime
-    
-    class Config:
-        from_attributes = True
 
 
 router = APIRouter(prefix="/conditions", tags=["健康档案"])

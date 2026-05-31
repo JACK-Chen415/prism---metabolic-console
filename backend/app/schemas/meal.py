@@ -3,8 +3,8 @@
 """
 
 from datetime import datetime, date
-from typing import Optional, List, Any
-from pydantic import BaseModel, Field
+from typing import Literal, Optional, List, Any
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.meal import MealType, FoodCategory, SyncStatus
 
@@ -58,9 +58,21 @@ class MealUpdate(BaseModel):
     recognition_meta_json: Optional[dict[str, Any]] = None
 
 
+class MealSyncOperation(BaseModel):
+    """离线编辑/删除操作。"""
+    op_type: Literal["update", "delete"]
+    client_id: str = Field(..., max_length=36)
+    server_id: Optional[int] = Field(None, ge=1)
+    changes: Optional[MealUpdate] = None
+
+
 class MealSyncRequest(BaseModel):
     """离线数据同步请求"""
-    meals: List[MealCreate]
+    meals: List[MealCreate] = Field(default_factory=list)
+    operations: List[MealSyncOperation] = Field(
+        default_factory=list,
+        description="离线编辑/删除操作，兼容旧客户端的增量协议",
+    )
     last_sync_at: Optional[datetime] = Field(None, description="上次同步时间")
 
 
@@ -68,6 +80,8 @@ class MealSyncRequest(BaseModel):
 
 class MealResponse(BaseModel):
     """饮食记录响应"""
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     client_id: str
     name: str
@@ -94,9 +108,6 @@ class MealResponse(BaseModel):
     sync_status: SyncStatus
     created_at: datetime
     updated_at: datetime
-    
-    class Config:
-        from_attributes = True
 
 
 class DailyIntakeSummary(BaseModel):
@@ -115,4 +126,5 @@ class MealSyncResponse(BaseModel):
     """离线数据同步响应"""
     synced_count: int
     conflicts: List[str] = Field(default_factory=list, description="冲突的client_id列表")
+    deleted_client_ids: List[str] = Field(default_factory=list, description="服务端确认删除的client_id")
     server_meals: List[MealResponse] = Field(description="服务器端新增/更新的记录")

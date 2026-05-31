@@ -34,6 +34,7 @@ class SyncStatus(str, enum.Enum):
     PENDING = "PENDING"    # 待同步
     SYNCED = "SYNCED"      # 已同步
     CONFLICT = "CONFLICT"  # 冲突
+    FAILED = "FAILED"      # 同步失败，等待用户重试或处理
 
 
 class MealSource(str, enum.Enum):
