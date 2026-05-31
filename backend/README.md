@@ -5,6 +5,7 @@
 - **框架**: FastAPI (Python 3.9+)
 - **数据库**: PostgreSQL 16 + SQLAlchemy 2.0 (异步)
 - **认证**: JWT (python-jose + passlib + bcrypt)
+- **安全**: refresh token 设备会话、OTP provider 抽象、结构化审计日志
 - **AI服务**: 豆包主多模态大模型 (Volcengine ARK SDK)
 - **PDF生成**: WeasyPrint
 - **部署**: Docker + Docker Compose
@@ -94,6 +95,7 @@ backend/
 │   │   ├── deps.py       # 依赖注入 (认证、数据库)
 │   │   └── routes/       # 各模块路由
 │   │       ├── auth.py   # 认证 API
+│   │       ├── account.py # 数据导出/删除/注销 API
 │   │       ├── meals.py  # 饮食记录 API
 │   │       ├── chat.py   # AI 对话 API
 │   │       ├── conditions.py  # 健康档案 API
@@ -123,6 +125,15 @@ backend/
 | `chat_sessions` | 对话会话 |
 | `chat_messages` | 对话消息 |
 | `app_messages` | 系统通知 |
+| `device_sessions` | 可撤销 refresh token 设备会话 |
+| `security_audit_logs` | 登录、OTP、注销、数据权利安全审计 |
+
+## 生产安全配置
+
+- `APP_ENV=production` 会强制校验强随机 `JWT_SECRET_KEY`、HTTPS CORS、远程 PostgreSQL 和非开发 OTP provider。
+- `OTP_PROVIDER=dev` 仅用于本地开发，会在响应中返回 `debug_code`；生产环境启动会拒绝该配置。
+- `BILLING_PROVIDER=mock` 是当前唯一可启用支付 provider；真实支付 provider 接入前必须先实现签名校验、幂等、发票、退款/取消和审计事件。
+- `POST /api/auth/logout` 会撤销当前设备会话；`GET /api/account/export`、`POST /api/account/delete-data`、`DELETE /api/account` 提供数据导出、删除和账户注销能力。
 
 ## 豆包 AI 配置
 

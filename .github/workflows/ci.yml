@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: prism
+          POSTGRES_PASSWORD: prism_ci_password
+          POSTGRES_DB: prism_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U prism -d prism_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      APP_ENV: ci
+      OTP_PROVIDER: audit_only
+      DATABASE_URL: postgresql+asyncpg://prism:prism_ci_password@localhost:5432/prism_ci
+      JWT_SECRET_KEY: ci-only-secret-key-at-least-32-characters
+      ARK_API_KEY: ci-placeholder
+      DOUBAO_MODEL: ci-placeholder
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend tests
+        run: npm run test
+
+      - name: Typecheck frontend
+        run: npm run typecheck
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Create backend virtual environment
+        run: python -m venv backend/.venv
+
+      - name: Install backend dependencies
+        run: backend/.venv/bin/python -m pip install -r backend/requirements.txt
+
+      - name: Validate Alembic migration chain
+        working-directory: backend
+        run: .venv/bin/python -m alembic heads
+
+      - name: Smoke test Alembic upgrade
+        working-directory: backend
+        run: .venv/bin/python -m alembic upgrade head
+
+      - name: Run backend tests
+        run: backend/.venv/bin/python -m pytest -q backend/tests

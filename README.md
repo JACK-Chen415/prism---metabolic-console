@@ -134,6 +134,8 @@ npm run dev
 
 ## 🔍 功能实现说明（本次更新）
 
+商业化/灰度就绪进展详见 [`docs/COMMERCIALIZATION_READINESS.md`](docs/COMMERCIALIZATION_READINESS.md)，其中记录了认证安全、数据权利、AI 复核、报告中心、健康指标、反馈闭环和离线队列状态。
+
 ### 1) 饮食 AI 估算：确定性规则（非随机）
 
 位置：`components/views/LogView.tsx`
@@ -157,13 +159,15 @@ npm run dev
 - 验证码服务：`backend/app/services/verification_service.py`
 
 当前是谁在“发送验证码”？
-- **开发版由后端服务自己生成并返回验证码文本**（`message` 字段），用于本地调试。
-- 还**没有接入真实短信网关**（如阿里云短信、腾讯云短信、Twilio）。
+- **开发环境**使用 `OTP_PROVIDER=dev`，后端会在响应中额外返回 `debug_code` 用于本地调试。
+- **生产环境**启动时会拒绝 `OTP_PROVIDER=dev`，验证码不会回传给前端。
+- 验证码服务已具备 provider 抽象、发送频控、失败锁定和安全审计；真实短信网关可接入 provider 适配器。
 
 生产环境建议：
-- 将 `VerificationService` 替换为外部短信服务适配器
-- 验证码只记录日志，不回传给前端
-- 增加频控、IP 限流、设备指纹、防刷策略
+- 接入外部短信服务适配器并设置非 dev 的 `OTP_PROVIDER`
+- 确认 `APP_ENV=production`、强随机 `JWT_SECRET_KEY`、可信 HTTPS CORS 和远程 PostgreSQL
+- 确认 `ARK_API_KEY` 和 `DOUBAO_MODEL` 不是占位值，并且都已为生产环境单独配置
+- 持续监控 `security_audit_logs` 中的 OTP、登录、refresh、注销和数据权利事件
 
 ---
 
@@ -197,7 +201,9 @@ prism---metabolic-console/
 
 ```env
 DATABASE_URL=postgresql+asyncpg://prism:prism123@localhost:5433/prism_metabolic
+APP_ENV=development
 JWT_SECRET_KEY=your-secret-key
+OTP_PROVIDER=dev
 ARK_API_KEY=your-volcengine-api-key
 DOUBAO_MODEL=your-multimodal-endpoint-id
 DOUBAO_TIMEOUT_SECONDS=60

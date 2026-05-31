@@ -57,7 +57,7 @@ EXPOSE 8000
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/api/health')" || exit 1
+    CMD python -c "import httpx; httpx.get('http://localhost:8000/api/ready').raise_for_status()" || exit 1
 
 # 启动命令 (shell 形式支持 $PORT 环境变量, Render 等云平台会注入 PORT)
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}

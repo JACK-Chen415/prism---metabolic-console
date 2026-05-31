@@ -54,6 +54,8 @@
 
    | Key | Value |
    |-----|-------|
+   | `APP_ENV` | `production`（必须设置，触发生产强校验） |
+   | `OTP_PROVIDER` | `audit_only`（真实短信接入前使用不回传验证码的审计 provider） |
    | `DATABASE_URL` | `postgresql+asyncpg://...?ssl=require`（第一步获取的 Neon 连接字符串） |
    | `JWT_SECRET_KEY` | 一个随机强密码（如用 `openssl rand -hex 32` 生成） |
    | `ARK_API_KEY` | 你的豆包 AI API Key |
@@ -62,13 +64,13 @@
    | `DOUBAO_MAX_RETRIES` | 可选，豆包请求重试次数，默认 `1` |
    | `DOUBAO_CHAT_MAX_TOKENS` | 可选，普通聊天输出上限，默认 `800` |
    | `CHAT_HISTORY_LIMIT` | 可选，普通聊天最近历史消息数，默认 `12` |
-   | `CORS_ORIGINS` | `["https://prism-metabolic-console.vercel.app","http://localhost:3000"]` |
+   | `CORS_ORIGINS` | `["https://prism-metabolic-console.vercel.app"]`（生产不得包含 localhost） |
    | `DEBUG` | `false` |
 
 7. 点击 **"Create Web Service"** 开始部署
 8. 等待部署完成（首次约 5-10 分钟）
 9. 部署完成后会获得一个 URL，类似：`https://prism-backend-xxxx.onrender.com`
-10. 验证：访问 `https://prism-backend-xxxx.onrender.com/api/health` 应返回 JSON
+10. 验证：访问 `https://prism-backend-xxxx.onrender.com/api/ready` 应返回 `status=ready`；若 DB 或生产配置阻断，会返回 HTTP 503。
 
 ---
 
@@ -112,7 +114,12 @@
 - 计算：每月 191 小时活跃时间
 - 对个人项目完全够用
 
+### 数据库迁移
+- 后端容器启动会先执行 `alembic upgrade head`，确保会话、安全审计、数据权利、订阅、反馈和同意记录表已迁移后再启动 API。
+- CI 会检查 Alembic migration head；部署前仍建议在 Render 日志确认 migration 成功。
+
 ### 安全提醒
 - ❌ 不要将 `.env` 文件提交到 Git
 - ✅ 确保 `.gitignore` 中包含 `.env`
 - ✅ 生产环境使用强随机 `JWT_SECRET_KEY`
+- ✅ 生产环境必须设置 `APP_ENV=production` 和非 dev 的 `OTP_PROVIDER`，否则强校验会阻止启动
