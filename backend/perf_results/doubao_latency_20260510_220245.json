@@ -8,7 +8,7 @@
     {
       "request_id": "5c99b8b3d2ee",
       "scenario": "long_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -27,7 +27,7 @@
     {
       "request_id": "599c7ec7e97e",
       "scenario": "long_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -46,7 +46,7 @@
     {
       "request_id": "ff411c5de175",
       "scenario": "long_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -66,7 +66,7 @@
   "summary": [
     {
       "scenario": "long_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "max_tokens": 800,
       "temperature": 0.5,
       "prompt_chars": 7011,

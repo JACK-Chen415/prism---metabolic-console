@@ -40,34 +40,34 @@ DEV_OTP_PROVIDERS = {"dev", "development", "console"}
 
 class Settings(BaseSettings):
     """应用全局配置"""
-    
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore"
     )
-    
+
     # 应用基本信息
     app_name: str = "Prism Metabolic Console"
     app_version: str = "1.0.0"
     debug: bool = False
     app_env: str = "development"
-    
+
     # 服务器配置
     host: str = "0.0.0.0"
     port: int = 8000
-    
+
     # 数据库配置
     database_url: str = "postgresql+asyncpg://prism:prism123@localhost:5433/prism_metabolic"
-    
+
     # JWT 认证配置
     jwt_secret_key: str = "your-super-secret-key-change-in-production"
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 30
     jwt_refresh_token_expire_days: int = 7
     otp_provider: str = "dev"
-    
+
     # 豆包 AI 配置 (Volcengine ARK)
     ark_api_key: Optional[str] = None  # ARK API Key
     doubao_model: Optional[str] = None  # 主多模态模型 endpoint/model
@@ -96,12 +96,12 @@ class Settings(BaseSettings):
     # Gray-release entitlement enforcement is off by default so operators can
     # observe pressure before turning on hard gating at the call sites.
     entitlement_enforce_limits: bool = False
-    
+
     # 文件存储配置
     upload_dir: str = "./uploads"
     max_upload_size_mb: int = 10
     max_upload_image_pixels: int = 20_000_000
-    
+
     # CORS 配置
     cors_origins: list[str] = [
         "http://localhost:5173",

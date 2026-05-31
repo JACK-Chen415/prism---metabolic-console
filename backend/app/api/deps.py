@@ -49,7 +49,7 @@ async def get_current_user(
 ) -> User:
     """
     获取当前登录用户
-    
+
     从 Authorization Header 中提取 JWT Token，验证后返回用户对象
     """
     user_id = token_payload.get("sub")
@@ -59,18 +59,18 @@ async def get_current_user(
             detail="无效的Token",
             headers={"WWW-Authenticate": "Bearer"}
         )
-    
+
     # 查询用户
     result = await db.execute(select(User).where(User.id == int(user_id)))
     user = result.scalar_one_or_none()
-    
+
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户不存在",
             headers={"WWW-Authenticate": "Bearer"}
         )
-    
+
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -85,7 +85,7 @@ async def get_current_user(
             detail=str(exc),
             headers={"WWW-Authenticate": "Bearer"}
         ) from exc
-    
+
     return user
 
 

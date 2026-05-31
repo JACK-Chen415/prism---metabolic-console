@@ -159,4 +159,3 @@ docker exec prism-postgres psql -U prism -d prism_metabolic -c "SELECT * FROM us
 # 重启后端
 uvicorn app.main:app --reload --port 8000
 ```
-

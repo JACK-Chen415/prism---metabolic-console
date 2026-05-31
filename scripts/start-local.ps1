@@ -108,7 +108,20 @@ function Resolve-NpmCmd {
     throw "npm.cmd not found. Install Node.js or add npm.cmd to PATH."
 }
 
-function Stop-ProcessFromPidFile([string]$PidFile, [string]$Label) {
+function Test-ProcessCommandToken([int]$ProcessId, [string]$ExpectedCommandToken) {
+    if (-not $ExpectedCommandToken) {
+        return $true
+    }
+
+    try {
+        $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        return ($processInfo.CommandLine -like "*$ExpectedCommandToken*")
+    } catch {
+        return $false
+    }
+}
+
+function Stop-ProcessFromPidFile([string]$PidFile, [string]$Label, [string]$ExpectedCommandToken) {
     if (-not (Test-Path $PidFile)) {
         return
     }
@@ -121,6 +134,10 @@ function Stop-ProcessFromPidFile([string]$PidFile, [string]$Label) {
 
     try {
         $proc = Get-Process -Id ([int]$rawPid) -ErrorAction Stop
+        if (-not (Test-ProcessCommandToken -ProcessId $proc.Id -ExpectedCommandToken $ExpectedCommandToken)) {
+            Write-Step "Refusing to stop $Label process ($($proc.Id)): pid file does not match this Prism runtime"
+            return
+        }
         Write-Step "Stopping existing $Label process ($($proc.Id))"
         Stop-Process -Id $proc.Id -Force
     } catch {
@@ -252,8 +269,8 @@ try {
     Pop-Location
 }
 
-Stop-ProcessFromPidFile -PidFile $backendPidFile -Label "backend"
-Stop-ProcessFromPidFile -PidFile $frontendPidFile -Label "frontend"
+Stop-ProcessFromPidFile -PidFile $backendPidFile -Label "backend" -ExpectedCommandToken $backendLogFile
+Stop-ProcessFromPidFile -PidFile $frontendPidFile -Label "frontend" -ExpectedCommandToken $frontendLogFile
 
 if (-not $SkipBackend) {
     Write-Step "Starting backend on http://localhost:$BackendPort"

@@ -35,11 +35,11 @@ def create_access_token(
 ) -> str:
     """
     创建 JWT Access Token
-    
+
     Args:
         subject: Token 主题，通常是用户 ID
         expires_delta: 过期时间增量
-    
+
     Returns:
         编码后的 JWT Token
     """
@@ -49,7 +49,7 @@ def create_access_token(
         expire = datetime.now(timezone.utc) + timedelta(
             minutes=settings.jwt_access_token_expire_minutes
         )
-    
+
     to_encode = {
         "sub": str(subject),
         "exp": expire,
@@ -57,7 +57,7 @@ def create_access_token(
     }
     if session_id:
         to_encode["sid"] = session_id
-    
+
     return jwt.encode(
         to_encode,
         settings.jwt_secret_key,
@@ -73,11 +73,11 @@ def create_refresh_token(
 ) -> tuple[str, str]:
     """
     创建 JWT Refresh Token
-    
+
     Args:
         subject: Token 主题，通常是用户 ID
         expires_delta: 过期时间增量
-    
+
     Returns:
         编码后的 JWT Refresh Token
     """
@@ -87,7 +87,7 @@ def create_refresh_token(
         expire = datetime.now(timezone.utc) + timedelta(
             days=settings.jwt_refresh_token_expire_days
         )
-    
+
     token_jti = jti or create_token_jti()
     to_encode = {
         "sub": str(subject),
@@ -97,7 +97,7 @@ def create_refresh_token(
     }
     if session_id:
         to_encode["sid"] = session_id
-    
+
     token = jwt.encode(
         to_encode,
         settings.jwt_secret_key,
@@ -109,10 +109,10 @@ def create_refresh_token(
 def decode_token(token: str) -> Optional[dict]:
     """
     解码 JWT Token
-    
+
     Args:
         token: JWT Token 字符串
-    
+
     Returns:
         解码后的 payload，失败则返回 None
     """

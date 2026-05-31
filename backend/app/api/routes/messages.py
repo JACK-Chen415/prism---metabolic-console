@@ -51,18 +51,18 @@ async def list_messages(
 ):
     """获取消息列表"""
     query = select(AppMessage).where(AppMessage.user_id == current_user.id)
-    
+
     if unread_only:
         query = query.where(AppMessage.is_read == False)
-    
+
     if message_type:
         query = query.where(AppMessage.message_type == message_type)
-    
+
     query = query.order_by(AppMessage.created_at.desc()).limit(limit)
-    
+
     result = await db.execute(query)
     messages = result.scalars().all()
-    
+
     return [MessageResponse.model_validate(m) for m in messages]
 
 
@@ -89,13 +89,13 @@ async def get_message(message_id: int, current_user: CurrentUser, db: DbSession)
         )
     )
     message = result.scalar_one_or_none()
-    
+
     if not message:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="消息不存在"
         )
-    
+
     return MessageResponse.model_validate(message)
 
 
@@ -109,18 +109,18 @@ async def mark_as_read(message_id: int, current_user: CurrentUser, db: DbSession
         )
     )
     message = result.scalar_one_or_none()
-    
+
     if not message:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="消息不存在"
         )
-    
+
     if not message.is_read:
         message.is_read = True
         message.read_at = datetime.now(timezone.utc)
         await db.flush()
-    
+
     return {"success": True, "message": "已标记为已读"}
 
 
@@ -134,14 +134,14 @@ async def mark_all_as_read(current_user: CurrentUser, db: DbSession):
         )
     )
     messages = result.scalars().all()
-    
+
     now = datetime.now(timezone.utc)
     for msg in messages:
         msg.is_read = True
         msg.read_at = now
-    
+
     await db.flush()
-    
+
     return {"success": True, "message": f"已标记 {len(messages)} 条消息为已读"}
 
 
@@ -155,14 +155,14 @@ async def delete_message(message_id: int, current_user: CurrentUser, db: DbSessi
         )
     )
     message = result.scalar_one_or_none()
-    
+
     if not message:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="消息不存在"
         )
-    
+
     await db.delete(message)
     await db.flush()
-    
+
     return {"success": True, "message": "删除成功"}

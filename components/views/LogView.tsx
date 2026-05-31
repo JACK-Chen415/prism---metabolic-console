@@ -366,7 +366,7 @@ const LogView: React.FC<LogViewProps> = ({
 
         {/* Main Insight Card */}
         <div className="relative overflow-hidden rounded-2xl shadow-lg group">
-          <div 
+          <div
             className="absolute inset-0 bg-cover bg-center transition-transform duration-700 group-hover:scale-105"
             style={{ backgroundImage: 'url("/images/log-header.png")' }}
           />
@@ -374,7 +374,7 @@ const LogView: React.FC<LogViewProps> = ({
           <div className="relative z-10 flex flex-col items-start justify-end pt-[140px] p-5">
             <div className="flex items-center justify-between w-full mb-2">
                 <h3 className="text-white tracking-wide text-2xl font-bold leading-tight font-serif">每日健康建议</h3>
-                <button 
+                <button
                     onClick={refreshDailyTip}
                     className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 border border-white/10 backdrop-blur-md transition-all active:scale-95 group"
                 >
@@ -413,7 +413,7 @@ const LogView: React.FC<LogViewProps> = ({
                 </div>
               </div>
             </div>
-            
+
             {/* BMR returned by backend target service */}
             <div className="flex flex-col justify-between gap-3 rounded-2xl p-4 bg-surface-dark shadow-sm border border-white/5">
               <div className="flex items-start justify-between">
@@ -438,7 +438,7 @@ const LogView: React.FC<LogViewProps> = ({
         <div className="flex flex-col mt-6">
             <div className="flex items-center justify-between px-2 pb-3 pt-2">
                 <h3 className="text-white tracking-wide text-lg font-bold leading-tight font-serif">热量统计</h3>
-                <button 
+                <button
                     onClick={() => setIsAdding(true)}
                     className="flex items-center gap-1 text-primary text-xs font-bold px-3 py-1.5 bg-primary/10 rounded-full border border-primary/20 hover:bg-primary/20 transition-colors active:scale-95 font-serif tracking-wide"
                 >
@@ -446,7 +446,7 @@ const LogView: React.FC<LogViewProps> = ({
                     记一笔
                 </button>
             </div>
-            
+
             {/* Calorie Summary Card */}
             <div className="bg-surface-dark border border-white/5 rounded-2xl p-4 sm:p-5 shadow-sm relative overflow-hidden mb-4">
                  {/* Decorative background glow */}
@@ -455,8 +455,8 @@ const LogView: React.FC<LogViewProps> = ({
                  <div className="grid gap-3 mb-4 relative z-10 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
                      <div className="min-w-0">
                          <p className="text-slate-400 text-xs font-serif font-bold tracking-wide mb-1.5 flex items-center gap-1">
-                             {isViewingToday ? '今日摄入' : '所选日期摄入'} 
-                             <span className="text-white/20">/</span> 
+                             {isViewingToday ? '今日摄入' : '所选日期摄入'}
+                             <span className="text-white/20">/</span>
                              <span className="text-slate-500">目标 {targetCalories > 0 ? targetCalories : '--'}</span>
                          </p>
                          <div className="flex items-baseline gap-2">
@@ -473,11 +473,11 @@ const LogView: React.FC<LogViewProps> = ({
                          </span>
                      </div>
                  </div>
-                 
+
                  {/* Progress Bar */}
                  <div className="h-2.5 w-full bg-black/40 rounded-full overflow-hidden mb-4 border border-white/5 relative z-10">
-                     <div 
-                        className={`h-full rounded-full transition-all duration-1000 ease-out relative ${targetCalories > 0 && totalCalories > targetCalories ? 'bg-gradient-to-r from-ochre to-red-400' : 'bg-gradient-to-r from-emerald-500 to-primary'}`} 
+                     <div
+                        className={`h-full rounded-full transition-all duration-1000 ease-out relative ${targetCalories > 0 && totalCalories > targetCalories ? 'bg-gradient-to-r from-ochre to-red-400' : 'bg-gradient-to-r from-emerald-500 to-primary'}`}
                         style={{ width: `${progress}%` }}
                      >
                          <div className="absolute inset-0 bg-white/20 animate-[pulse_2s_infinite]"></div>
@@ -601,7 +601,7 @@ const LogView: React.FC<LogViewProps> = ({
                                 删除
                               </button>
                             </div>
-                            
+
                             {/* Nutrients Detail Line */}
                             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/5 pt-3">
                                 <div className="flex flex-wrap items-center gap-2">
@@ -642,7 +642,7 @@ const LogView: React.FC<LogViewProps> = ({
                     </div>
                   </div>
                 ))}
-                
+
                 {meals.length === 0 && (
                     <div className="py-8 text-center border border-dashed border-white/10 rounded-xl">
                         <p className="text-slate-500 text-xs font-serif font-bold tracking-wide">{dateLabel}暂无饮食记录</p>
@@ -657,19 +657,19 @@ const LogView: React.FC<LogViewProps> = ({
       {isAdding && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
               <div className="bg-[#131b1d] border border-white/10 w-full max-w-xs rounded-2xl p-5 shadow-2xl relative max-h-[90vh] overflow-y-auto">
-                  <button 
+                  <button
                       onClick={() => setIsAdding(false)}
                       className="absolute top-4 right-4 text-white/40 hover:text-white transition-colors"
                   >
                       <span className="material-symbols-outlined">close</span>
                   </button>
                   <h3 className="text-white font-serif tracking-wide text-lg font-bold mb-5 text-center">记录餐食</h3>
-                  
+
                   <div className="space-y-5">
                        {/* Time Selector */}
                        <div className="flex gap-2 p-1 bg-black/20 rounded-lg">
                            {['BREAKFAST', 'LUNCH', 'DINNER', 'SNACK'].map((t) => (
-                               <button 
+                               <button
                                  key={t}
                                  onClick={() => setMealInput({...mealInput, type: t as any})}
                                  className={`flex-1 py-2 rounded-md text-[10px] font-bold tracking-wide font-serif transition-all ${mealInput.type === t ? 'bg-primary text-[#080c0d] shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
@@ -688,8 +688,8 @@ const LogView: React.FC<LogViewProps> = ({
                                         key={cat.id}
                                         onClick={() => setMealInput({...mealInput, category: cat.id})}
                                         className={`flex flex-col items-center justify-center gap-1 py-2 rounded-xl border transition-all ${
-                                            mealInput.category === cat.id 
-                                            ? 'bg-white/10 border-primary/50 text-primary' 
+                                            mealInput.category === cat.id
+                                            ? 'bg-white/10 border-primary/50 text-primary'
                                             : 'bg-black/20 border-transparent text-slate-500 hover:bg-white/5'
                                         }`}
                                     >
@@ -701,12 +701,12 @@ const LogView: React.FC<LogViewProps> = ({
                                 ))}
                             </div>
                        </div>
-                       
+
                        <div className="space-y-3">
                            <div>
                                <label className="text-xs text-slate-500 ml-1 mb-1 block font-serif font-bold tracking-wide">食物名称</label>
-                               <input 
-                                  type="text" 
+                               <input
+                                  type="text"
                                   placeholder="如: 牛肉面"
                                   value={mealInput.name}
                                   onChange={e => setMealInput({...mealInput, name: e.target.value})}
@@ -715,8 +715,8 @@ const LogView: React.FC<LogViewProps> = ({
                            </div>
                            <div>
                                <label className="text-xs text-slate-500 ml-1 mb-1 block font-serif font-bold tracking-wide">分量估算</label>
-                               <input 
-                                  type="text" 
+                               <input
+                                  type="text"
                                   placeholder="如: 1碗, 200g"
                                   value={mealInput.portion}
                                   onChange={e => setMealInput({...mealInput, portion: e.target.value})}
@@ -726,7 +726,7 @@ const LogView: React.FC<LogViewProps> = ({
                            {/* Note Input */}
                            <div>
                                <label className="text-xs text-slate-500 ml-1 mb-1 block font-serif font-bold tracking-wide">备注信息 (口味/特殊说明)</label>
-                               <textarea 
+                               <textarea
                                   placeholder="如: 多放了酱油, 比较咸, 少油..."
                                   value={mealInput.note}
                                   onChange={e => setMealInput({...mealInput, note: e.target.value})}
@@ -737,7 +737,7 @@ const LogView: React.FC<LogViewProps> = ({
                        </div>
 
                        <div className="pt-2 flex flex-col gap-3">
-                           <button 
+                           <button
                               onClick={addMeal}
                               disabled={isSavingAdd || !mealInput.name.trim()}
                               className="w-full bg-gradient-to-r from-primary to-[#45b7aa] text-background-dark font-bold py-3.5 rounded-xl hover:shadow-[0_0_20px_rgba(17,196,212,0.4)] transition-all active:scale-[0.98] flex items-center justify-center gap-2 font-serif tracking-wide disabled:opacity-50 disabled:cursor-not-allowed"
@@ -745,7 +745,7 @@ const LogView: React.FC<LogViewProps> = ({
                                <span className="material-symbols-outlined text-lg">auto_awesome</span>
                                 {isSavingAdd ? '保存中...' : `记录到${dateLabel}`}
                            </button>
-                           <button 
+                           <button
                               onClick={() => setIsAdding(false)}
                               className="w-full text-slate-500 text-xs py-2 hover:text-white transition-colors font-serif font-bold tracking-wide"
                            >

@@ -1,6 +1,6 @@
 Prism Metabolic Console AI Retest Report
 Generated: 2026-05-22 23:20 Asia/Shanghai
-Workspace: /home/win/Project/prism---metabolic-console
+Workspace: [REDACTED_LOCAL_WORKSPACE]
 
 Sanitization
 - ARK_API_KEY: [REDACTED]
@@ -8,7 +8,7 @@ Sanitization
 
 Requested Temporary AI Config
 - ARK_API_KEY=[REDACTED]
-- endpoint/model id: ep-20260428104424-hsw26
+- endpoint/model id: [REDACTED]
 
 Config Path Actually Used
 - backend/app/core/config.py defines Settings.model_config env_file=".env".
@@ -16,11 +16,11 @@ Config Path Actually Used
 - Therefore the live backend reads backend/.env when launched through the repo's established start-local.ps1 pattern.
 - backend/app/core/config.py main_doubao_model returns DOUBAO_MODEL first, then falls back to deprecated DOUBAO_ENDPOINT_ID.
 - backend/app/services/ai_service.py passes settings.main_doubao_model as the Ark chat completion model for both text and image/multimodal calls.
-- Effective variable for the supplied endpoint/model id: DOUBAO_MODEL=ep-20260428104424-hsw26.
+- Effective variable for the supplied endpoint/model id: DOUBAO_MODEL=[REDACTED].
 
 Actions Performed
-- Backed up backend/.env to backend/.env.backup.ai-retest-20260522_231950 before changing it.
-- Temporarily set backend/.env ARK_API_KEY=[REDACTED] and DOUBAO_MODEL=ep-20260428104424-hsw26.
+- Backed up backend/.env to backend/.env.backup.ai-retest-[REDACTED] before changing it.
+- Temporarily set backend/.env ARK_API_KEY=[REDACTED] and DOUBAO_MODEL=[REDACTED].
 - Attempted full backend restart with repo WSL/Windows hybrid script:
   powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File <scripts/start-local.ps1> -SkipFrontend -SkipSeed
 - The PowerShell interop call failed before the script ran with:
@@ -30,7 +30,7 @@ Actions Performed
   Result: curl (7) Failed to connect to localhost port 8000.
 - Checked whether a Linux fallback backend could be launched in this namespace. Python 3.12.3 is present, but required backend packages are not installed: fastapi, uvicorn, sqlalchemy, asyncpg, pydantic_settings, volcenginesdkarkruntime.
 - The available backend/venv is a Windows virtualenv under backend/venv/Scripts and cannot be used without Windows interop.
-- Restored backend/.env from backend/.env.backup.ai-retest-20260522_231950 because the supplied cloud config was not objectively validated.
+- Restored backend/.env from backend/.env.backup.ai-retest-[REDACTED] because the supplied cloud config was not objectively validated.
 
 E2E Results
 - Health endpoint: not completed. Blocked by sandbox isolation from localhost:8000 and failed Windows interop.
@@ -56,4 +56,4 @@ Recommended Next Run
 
 Final State
 - backend/.env restored from the backup because the supplied config could not be validated in this sandbox.
-- The backup file remains at backend/.env.backup.ai-retest-20260522_231950.
+- The local backup filename is redacted from this tracked report.

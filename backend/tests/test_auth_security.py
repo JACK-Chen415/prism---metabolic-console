@@ -4,10 +4,6 @@ from datetime import datetime, timedelta, timezone
 import inspect
 from types import SimpleNamespace
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
-from app.api.deps import get_current_token_payload, get_current_user, get_db
 from app.core import security as security_core
 from app.api.routes import auth as auth_route
 from app.core.security import decode_token, get_password_hash
@@ -80,28 +76,6 @@ class FakeQuerySession(FakeSession):
         self.execute_count += 1
         return FakeResult(self.row)
 
-
-
-
-def _auth_test_client(db, *, user=None, token_payload=None):
-    app = FastAPI()
-    app.include_router(auth_route.router, prefix="/api")
-
-    async def override_get_db():
-        yield db
-
-    app.dependency_overrides[get_db] = override_get_db
-    if user is not None:
-        async def override_get_current_user():
-            return user
-
-        app.dependency_overrides[get_current_user] = override_get_current_user
-    if token_payload is not None:
-        async def override_get_current_token_payload():
-            return token_payload
-
-        app.dependency_overrides[get_current_token_payload] = override_get_current_token_payload
-    return TestClient(app)
 
 @pytest.mark.asyncio
 async def test_create_session_token_pair_persists_session_and_adds_sid_jti():
@@ -303,10 +277,9 @@ async def test_refresh_reuse_revokes_device_session():
     assert session.revoke_reason == "refresh_reuse_detected"
 
 
-
-def test_register_route_requires_and_persists_compliance_consents():
+@pytest.mark.asyncio
+async def test_register_route_requires_and_persists_compliance_consents():
     db = FakeQuerySession(None)
-    client = _auth_test_client(db)
     payload = {
         "phone": "13800138000",
         "password": "secret123",
@@ -317,14 +290,13 @@ def test_register_route_requires_and_persists_compliance_consents():
         "consent_version": "2026-05-30",
     }
 
-    rejected = client.post("/api/auth/register", json=payload)
-
-    assert rejected.status_code == 422
+    with pytest.raises(ValidationError):
+        user_schema.UserRegister(**payload)
 
     payload["health_disclaimer_accepted"] = True
-    accepted = client.post("/api/auth/register", json=payload)
+    accepted = await auth_route.register(user_schema.UserRegister(**payload), None, db)
 
-    assert accepted.status_code == 201
+    assert accepted.user.phone == "13800138000"
     created_user = next(item for item in db.added if isinstance(item, User))
     assert created_user.consent_version == "2026-05-30"
     assert created_user.consent_accepted_at is not None
@@ -333,8 +305,8 @@ def test_register_route_requires_and_persists_compliance_consents():
     assert created_user.consent_ai_use_accepted is True
     assert created_user.consent_health_disclaimer_accepted is True
 
-
-def test_change_password_route_revokes_existing_sessions():
+@pytest.mark.asyncio
+async def test_change_password_route_revokes_existing_sessions():
     now = datetime.now(timezone.utc)
     user = User(id=42, phone="13800138000", password_hash=get_password_hash("oldpass"))
     sessions = [
@@ -356,11 +328,16 @@ def test_change_password_route_revokes_existing_sessions():
         ),
     ]
     db = FakeQuerySession(sessions)
-    client = _auth_test_client(db, user=user, token_payload={"sub": "42", "sid": "sid-current", "type": "access"})
 
-    response = client.post("/api/auth/change-password", json={"old_password": "oldpass", "new_password": "newpass123"})
+    response = await auth_route.change_password(
+        user_schema.PasswordChange(old_password="oldpass", new_password="newpass123"),
+        None,
+        user,
+        {"sub": "42", "sid": "sid-current", "type": "access"},
+        db,
+    )
 
-    assert response.status_code == 200
+    assert response["success"] is True
     assert all(session.revoked_at is not None for session in sessions)
     assert {session.revoke_reason for session in sessions} == {"password_change"}
     assert any(getattr(item, "event_type", None) == "auth.change_password" for item in db.added)

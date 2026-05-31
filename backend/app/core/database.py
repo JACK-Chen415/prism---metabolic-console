@@ -40,7 +40,7 @@ class Base(DeclarativeBase):
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
     数据库会话依赖注入
-    
+
     Yields:
         AsyncSession: 异步数据库会话
     """

@@ -24,12 +24,12 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时
     await init_db()
-    
+
     # 确保上传目录存在
     os.makedirs(settings.upload_dir, exist_ok=True)
-    
+
     yield
-    
+
     # 关闭时
     await close_db()
 

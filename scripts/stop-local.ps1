@@ -41,7 +41,20 @@ function Resolve-PostgresBin {
     throw "PostgreSQL command-line tools were not found. Set POSTGRES_BIN if you need to stop the script-managed local database."
 }
 
-function Stop-ProcessFromPidFile([string]$PidFile, [string]$Label) {
+function Test-ProcessCommandToken([int]$ProcessId, [string]$ExpectedCommandToken) {
+    if (-not $ExpectedCommandToken) {
+        return $true
+    }
+
+    try {
+        $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        return ($processInfo.CommandLine -like "*$ExpectedCommandToken*")
+    } catch {
+        return $false
+    }
+}
+
+function Stop-ProcessFromPidFile([string]$PidFile, [string]$Label, [string]$ExpectedCommandToken) {
     if (-not (Test-Path $PidFile)) {
         return
     }
@@ -54,6 +67,10 @@ function Stop-ProcessFromPidFile([string]$PidFile, [string]$Label) {
 
     try {
         $proc = Get-Process -Id ([int]$rawPid) -ErrorAction Stop
+        if (-not (Test-ProcessCommandToken -ProcessId $proc.Id -ExpectedCommandToken $ExpectedCommandToken)) {
+            Write-Step "Refusing to stop $Label process ($($proc.Id)): pid file does not match this Prism runtime"
+            return
+        }
         Write-Step "Stopping $Label process ($($proc.Id))"
         Stop-Process -Id $proc.Id -Force
     } catch {
@@ -68,11 +85,13 @@ $backendDir = Join-Path $repoRoot "backend"
 $runtimeDir = Join-Path $backendDir ".runtime"
 $pidDir = Join-Path $runtimeDir "pids"
 $postgresDataDir = Join-Path $runtimeDir "postgres-data"
+$backendLogFile = Join-Path $runtimeDir "backend.dev.log"
+$frontendLogFile = Join-Path $runtimeDir "frontend.dev.log"
 $backendPidFile = Join-Path $pidDir "backend.pid"
 $frontendPidFile = Join-Path $pidDir "frontend.pid"
 
-Stop-ProcessFromPidFile -PidFile $backendPidFile -Label "backend"
-Stop-ProcessFromPidFile -PidFile $frontendPidFile -Label "frontend"
+Stop-ProcessFromPidFile -PidFile $backendPidFile -Label "backend" -ExpectedCommandToken $backendLogFile
+Stop-ProcessFromPidFile -PidFile $frontendPidFile -Label "frontend" -ExpectedCommandToken $frontendLogFile
 
 if (Test-Path (Join-Path $postgresDataDir "PG_VERSION")) {
     $postgresBin = Resolve-PostgresBin

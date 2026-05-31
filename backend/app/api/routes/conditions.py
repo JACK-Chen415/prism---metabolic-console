@@ -87,7 +87,7 @@ async def create_condition(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="该健康状况已存在"
         )
-    
+
     condition = HealthCondition(
         user_id=current_user.id,
         **data.model_dump()
@@ -95,7 +95,7 @@ async def create_condition(
     db.add(condition)
     await db.flush()
     await db.refresh(condition)
-    
+
     return ConditionResponse.model_validate(condition)
 
 
@@ -147,13 +147,13 @@ async def get_condition(condition_id: int, current_user: CurrentUser, db: DbSess
         )
     )
     condition = result.scalar_one_or_none()
-    
+
     if not condition:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="记录不存在"
         )
-    
+
     return ConditionResponse.model_validate(condition)
 
 
@@ -172,20 +172,20 @@ async def update_condition(
         )
     )
     condition = result.scalar_one_or_none()
-    
+
     if not condition:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="记录不存在"
         )
-    
+
     update_data = data.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(condition, field, value)
-    
+
     await db.flush()
     await db.refresh(condition)
-    
+
     return ConditionResponse.model_validate(condition)
 
 
@@ -199,14 +199,14 @@ async def delete_condition(condition_id: int, current_user: CurrentUser, db: DbS
         )
     )
     condition = result.scalar_one_or_none()
-    
+
     if not condition:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="记录不存在"
         )
-    
+
     await db.delete(condition)
     await db.flush()
-    
+
     return {"success": True, "message": "删除成功"}

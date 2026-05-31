@@ -25,7 +25,7 @@ class UserRegister(BaseModel):
     ai_use_accepted: bool = Field(False, description="已阅读并同意 AI 使用说明")
     health_disclaimer_accepted: bool = Field(False, description="已阅读并同意健康免责声明")
     consent_version: str = Field(CONSENT_VERSION, min_length=1, max_length=40, description="协议版本")
-    
+
     @field_validator("phone")
     @classmethod
     def validate_phone(cls, v: str) -> str:

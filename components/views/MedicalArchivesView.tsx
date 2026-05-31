@@ -275,8 +275,8 @@ const MedicalArchivesView: React.FC<MedicalArchivesViewProps> = ({
               <div
                 key={item.id}
                 onClick={(e) => isEditing ? openEditModal(item, e) : setExpandedId(isExpanded ? null : item.id)}
-                className={`relative bg-[#162624]/90 backdrop-blur-md border rounded-2xl overflow-hidden transition-all duration-500 ease-out shadow-lg 
-                    ${isExpanded ? 'h-auto border-primary/30' : 'h-36 border-white/5'} 
+                className={`relative bg-[#162624]/90 backdrop-blur-md border rounded-2xl overflow-hidden transition-all duration-500 ease-out shadow-lg
+                    ${isExpanded ? 'h-auto border-primary/30' : 'h-36 border-white/5'}
                     ${isEditing ? 'cursor-pointer hover:border-primary/50' : ''}`}
               >
                 {/* Silk Texture Overlay */}

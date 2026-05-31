@@ -388,7 +388,7 @@ async def create_session(
     db.add(session)
     await db.flush()
     await db.refresh(session)
-    
+
     return ChatSessionResponse(
         id=session.id,
         title=session.title,
@@ -408,10 +408,10 @@ async def list_sessions(
     """获取对话会话列表"""
     # 计算偏移量
     offset = (page - 1) * size
-    
+
     # 构建查询：联合查询会话和消息计数
     from sqlalchemy import func
-    
+
     # 基础查询
     query = (
         select(
@@ -423,15 +423,15 @@ async def list_sessions(
         .group_by(ChatSession.id)
         .order_by(ChatSession.updated_at.desc())
     )
-    
+
     # 获取总数
     count_query = select(func.count(ChatSession.id)).where(ChatSession.user_id == current_user.id)
     total = (await db.execute(count_query)).scalar_one()
-    
+
     # 应用分页
     result = await db.execute(query.offset(offset).limit(size))
     rows = result.all()
-    
+
     responses = []
     for session, message_count in rows:
         responses.append(ChatSessionResponse(
@@ -441,7 +441,7 @@ async def list_sessions(
             updated_at=session.updated_at,
             message_count=message_count
         ))
-    
+
     return PaginatedResponse(
         items=responses,
         total=total,
@@ -461,13 +461,13 @@ async def get_session(session_id: int, current_user: CurrentUser, db: DbSession)
         )
     )
     session = result.scalar_one_or_none()
-    
+
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="会话不存在"
         )
-    
+
     # 获取消息
     msg_result = await db.execute(
         select(ChatMessage)
@@ -475,7 +475,7 @@ async def get_session(session_id: int, current_user: CurrentUser, db: DbSession)
         .order_by(ChatMessage.created_at)
     )
     messages = msg_result.scalars().all()
-    
+
     return ChatSessionDetailResponse(
         id=session.id,
         title=session.title,
@@ -514,7 +514,7 @@ async def send_message(
     )
     session = result.scalar_one_or_none()
     timings["session_lookup_ms"] = _elapsed_ms(stage_start)
-    
+
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -524,7 +524,7 @@ async def send_message(
     ui_preferences = _ui_preferences_payload(data)
     user_attachments = dict(data.attachments or {})
     user_attachments["ui_preferences"] = ui_preferences
-    
+
     # 保存用户消息
     stage_start = time.perf_counter()
     user_message = ChatMessage(
@@ -536,22 +536,22 @@ async def send_message(
     db.add(user_message)
     await db.flush()
     timings["user_message_flush_ms"] = _elapsed_ms(stage_start)
-    
+
     # 获取历史消息
     stage_start = time.perf_counter()
     history = await _load_recent_history(db, session_id)
     timings["history_query_ms"] = _elapsed_ms(stage_start)
     timings["history_message_count"] = len(history)
-    
+
     # 构建消息列表
     messages, history_chars = _history_to_prompt_messages(history)
     timings["history_chars"] = history_chars
-    
+
     # 获取用户健康状况
     stage_start = time.perf_counter()
     conditions = await get_user_conditions(current_user.id, db)
     timings["conditions_query_ms"] = _elapsed_ms(stage_start)
-    
+
     stage_start = time.perf_counter()
     summary = await knowledge_service.summarize_query_for_user(
         db,
@@ -654,7 +654,7 @@ async def send_message(
     assistant_message.attachments = _merge_chat_attachments(assistant_message.attachments, timings)
     await db.flush()
     _log_chat_timing(request_id, timings)
-    
+
     return ChatMessageResponse.model_validate(assistant_message)
 
 
@@ -912,16 +912,16 @@ async def delete_session(session_id: int, current_user: CurrentUser, db: DbSessi
         )
     )
     session = result.scalar_one_or_none()
-    
+
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="会话不存在"
         )
-    
+
     await db.delete(session)
     await db.flush()
-    
+
     return {"success": True, "message": "删除成功"}
 
 
@@ -994,7 +994,7 @@ async def recognize_food(
 ):
     """
     识别食物图片
-    
+
     上传食物图片，AI 识别并返回营养成分分析
     """
     from app.core.config import settings
@@ -1017,7 +1017,7 @@ async def recognize_food(
 
     # 获取用户健康状况
     conditions = await get_user_conditions(current_user.id, db)
-    
+
     # 调用 AI 识别
     foods, ai_response = await doubao_service.recognize_food(
         image_base64=base64.b64encode(sanitized.content).decode("utf-8"),
@@ -1026,7 +1026,7 @@ async def recognize_food(
         image_type="jpeg" if sanitized.format == "JPEG" else "png",
         user_prompt=data.prompt,
     )
-    
+
     matched_disease_codes: list[str] = []
     matched_food_codes: list[str] = []
     strictest_level = None
@@ -1112,7 +1112,7 @@ async def recognize_food_upload(
             status_code=status_code,
             detail=str(exc),
         ) from exc
-    
+
     recognition_session = None
     if session_id is not None:
         recognition_session = await _load_owned_chat_session(
@@ -1124,10 +1124,10 @@ async def recognize_food_upload(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
 
     image_base64 = base64.b64encode(image.content).decode("utf-8")
-    
+
     # 获取用户健康状况
     conditions = await get_user_conditions(current_user.id, db)
-    
+
     # 调用 AI 识别
     foods, ai_response = await doubao_service.recognize_food(
         image_base64=image_base64,
@@ -1136,7 +1136,7 @@ async def recognize_food_upload(
         image_type="jpeg" if image.format == "JPEG" else "png",
         user_prompt=prompt,
     )
-    
+
     matched_disease_codes: list[str] = []
     matched_food_codes: list[str] = []
     strictest_level = None

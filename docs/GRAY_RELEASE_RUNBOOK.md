@@ -25,6 +25,8 @@ PRISM_SMOKE_PASSWORD=<temporary-test-password> \
 backend/.venv/bin/python backend/scripts/ai_release_smoke.py
 ```
 
+The smoke script registers or reuses a test account and writes chat/image smoke records to the target database unless `--skip-chat` is used. Use a dedicated non-production cohort or a clearly labeled disposable gray-release test account, and include cleanup/account-deletion policy in the release checklist.
+
 Optional image recognition smoke requires an operator-owned non-sensitive image path:
 
 ```bash

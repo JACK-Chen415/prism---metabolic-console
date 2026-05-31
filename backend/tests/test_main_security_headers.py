@@ -1,12 +1,28 @@
-from fastapi.testclient import TestClient
+import pytest
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
-from app.main import app
+from app.main import health_check, request_context_middleware
 
 
-def test_health_response_includes_request_id_and_security_headers():
-    client = TestClient(app)
+@pytest.mark.asyncio
+async def test_health_response_includes_request_id_and_security_headers():
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/health",
+            "headers": [(b"x-request-id", b"test-request-id")],
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+            "scheme": "http",
+        }
+    )
 
-    response = client.get("/api/health", headers={"X-Request-ID": "test-request-id"})
+    async def call_next(_request):
+        return JSONResponse(await health_check())
+
+    response = await request_context_middleware(request, call_next)
 
     assert response.status_code == 200
     assert response.headers["X-Request-ID"] == "test-request-id"

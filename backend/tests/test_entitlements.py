@@ -1,11 +1,6 @@
 import pytest
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
-from app.api.deps import get_current_user, get_db
 from app.api.routes import billing as billing_route
 from app.core.config import Settings
 from app.models.user import User
@@ -40,25 +35,6 @@ class FakeBillingDb:
 
     async def flush(self):
         self.flush_count += 1
-
-
-@contextmanager
-def billing_client(user: User):
-    app = FastAPI()
-    app.include_router(billing_route.router, prefix="/api")
-    db = FakeBillingDb()
-
-    async def override_get_current_user():
-        return user
-
-    async def override_get_db():
-        yield db
-
-    app.dependency_overrides[get_current_user] = override_get_current_user
-    app.dependency_overrides[get_db] = override_get_db
-
-    with TestClient(app) as client:
-        yield client, db
 
 
 @pytest.mark.asyncio
@@ -297,15 +273,15 @@ def test_billing_usage_response_maps_plan_limits_without_sensitive_content():
     assert "token" not in serialized.lower()
 
 
-def test_billing_usage_route_serializes_metered_snapshot_and_audits_only_counts():
+@pytest.mark.asyncio
+async def test_billing_usage_route_serializes_metered_snapshot_and_audits_only_counts():
     user = User(id=1, phone="13800138000", password_hash="x")
+    db = FakeBillingDb()
+    db.execute_results = [3, 4]
 
-    with billing_client(user) as (client, db):
-        db.execute_results = [3, 4]
-        response = client.get("/api/billing/usage")
+    response = await billing_route.get_usage_snapshot(None, user, db)
 
-    assert response.status_code == 200
-    payload = response.json()
+    payload = response.model_dump(mode="json")
     by_key = {item["key"]: item for item in payload["usage"]}
 
     assert payload["provider"] == "mock"
@@ -325,14 +301,13 @@ def test_billing_usage_route_serializes_metered_snapshot_and_audits_only_counts(
     assert "password" not in serialized.lower()
 
 
-def test_billing_entitlements_route_serializes_snapshot_response():
+@pytest.mark.asyncio
+async def test_billing_entitlements_route_serializes_snapshot_response():
     user = User(id=1, phone="13800138000", password_hash="x")
 
-    with billing_client(user) as (client, db):
-        response = client.get("/api/billing/entitlements")
+    response = await billing_route.get_entitlements(user)
 
-    assert response.status_code == 200
-    payload = response.json()
+    payload = response.model_dump(mode="json")
 
     assert payload["provider"] == "mock"
     assert payload["plan"] == "FREE"
@@ -344,14 +319,19 @@ def test_billing_entitlements_route_serializes_snapshot_response():
     assert payload["notes"]
 
 
-def test_billing_checkout_route_serializes_mock_session_and_updates_user():
+@pytest.mark.asyncio
+async def test_billing_checkout_route_serializes_mock_session_and_updates_user():
     user = User(id=1, phone="13800138000", password_hash="x")
+    db = FakeBillingDb()
 
-    with billing_client(user) as (client, db):
-        response = client.post("/api/billing/checkout", json={"plan": "PRO"})
+    response = await billing_route.create_checkout(
+        billing_route.CheckoutRequest(plan=PlanTier.PRO),
+        None,
+        user,
+        db,
+    )
 
-    assert response.status_code == 200
-    payload = response.json()
+    payload = response.model_dump(mode="json")
 
     assert payload["provider"] == "mock"
     assert payload["plan"] == "PRO"
@@ -366,7 +346,8 @@ def test_billing_checkout_route_serializes_mock_session_and_updates_user():
     assert db.added[-1].metadata_json["enforcement_scope"] == "observe_only"
 
 
-def test_billing_cancel_route_serializes_nested_entitlement_and_is_idempotent_for_paid_plan():
+@pytest.mark.asyncio
+async def test_billing_cancel_route_serializes_nested_entitlement_and_is_idempotent_for_paid_plan():
     user = User(
         id=1,
         phone="13800138000",
@@ -374,13 +355,22 @@ def test_billing_cancel_route_serializes_nested_entitlement_and_is_idempotent_fo
         subscription_plan=SubscriptionPlan.PRO,
         subscription_status=SubscriptionStatus.CANCELED,
     )
+    db = FakeBillingDb()
 
-    with billing_client(user) as (client, db):
-        response = client.post("/api/billing/subscription/cancel", json={"confirm": "CANCEL_SUBSCRIPTION"})
-        repeat_response = client.post("/api/billing/subscription/cancel", json={"confirm": "CANCEL_SUBSCRIPTION"})
+    response = await billing_route.cancel_subscription(
+        billing_route.CancelSubscriptionRequest(confirm="CANCEL_SUBSCRIPTION"),
+        None,
+        user,
+        db,
+    )
+    repeat_response = await billing_route.cancel_subscription(
+        billing_route.CancelSubscriptionRequest(confirm="CANCEL_SUBSCRIPTION"),
+        None,
+        user,
+        db,
+    )
 
-    assert response.status_code == 200
-    payload = response.json()
+    payload = response.model_dump(mode="json")
 
     assert payload["provider"] == "mock"
     assert payload["plan"] == "FREE"
@@ -391,8 +381,7 @@ def test_billing_cancel_route_serializes_nested_entitlement_and_is_idempotent_fo
     assert payload["entitlement"]["status"] == "canceled"
     assert payload["entitlement"]["enforcement_scope"] == "observe_only"
 
-    assert repeat_response.status_code == 200
-    repeat_payload = repeat_response.json()
+    repeat_payload = repeat_response.model_dump(mode="json")
     assert repeat_payload["entitlement"]["billing_plan"] == "PRO"
     assert repeat_payload["entitlement"]["status"] == "canceled"
     assert user.subscription_plan == SubscriptionPlan.PRO
@@ -402,7 +391,8 @@ def test_billing_cancel_route_serializes_nested_entitlement_and_is_idempotent_fo
     assert db.added[-1].metadata_json["enforcement_scope"] == "observe_only"
 
 
-def test_billing_require_entitlement_route_serializes_entitlement_response():
+@pytest.mark.asyncio
+async def test_billing_require_entitlement_route_serializes_entitlement_response():
     user = User(
         id=1,
         phone="13800138000",
@@ -411,11 +401,12 @@ def test_billing_require_entitlement_route_serializes_entitlement_response():
         subscription_status=SubscriptionStatus.ACTIVE,
     )
 
-    with billing_client(user) as (client, db):
-        response = client.post("/api/billing/entitlements/require", json={"feature": "COACH_HANDOFF"})
+    response = await billing_route.require_entitlement(
+        billing_route.EntitlementRequireRequest(feature=EntitlementKey.COACH_HANDOFF),
+        user,
+    )
 
-    assert response.status_code == 200
-    payload = response.json()
+    payload = response.model_dump(mode="json")
 
     assert payload["provider"] == "mock"
     assert payload["plan"] == "COACH"

@@ -127,13 +127,7 @@ npm run build
 backend/.venv/bin/python -m pytest -q backend/tests
 ```
 
-Latest local validation result:
-
-- Frontend contract/runtime smoke tests: passed (`36` tests) after the backend `action_items` readiness update.
-- Frontend typecheck: passed after the backend `action_items` readiness update.
-- Frontend production build: passed after the backend `action_items` readiness update.
-- Backend tests: `200 passed, 3 warnings` after AI cloud-error sanitization and security-audit metadata redaction; AI service专项: `18 passed, 1 warning`; auth/data-rights专项: `14 passed, 3 warnings`; config/OTP readiness专项: `20 passed, 1 warning`.
-- Alembic heads: single head `20260530_0011`.
+Validation evidence should be recorded with the commit SHA and date of each gray-release candidate. Do not treat older pass counts as current evidence; rerun the commands above after each review/fix batch.
 
 ## Remaining High-Value Gaps
 

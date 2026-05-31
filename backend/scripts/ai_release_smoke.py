@@ -173,7 +173,9 @@ class SmokeRunner:
             config = checks.get("config") if isinstance(checks, dict) else None
             database = checks.get("database") if isinstance(checks, dict) else None
             ready_status = payload.get("status") if isinstance(payload, dict) else None
-            ok = response.is_success and (ready_status == "ready" or not self.fail_on_degraded_ready)
+            ok = response.is_success and ready_status == "ready"
+            if not self.fail_on_degraded_ready:
+                ok = response.status_code in {200, 503} and ready_status in {"ready", "degraded"}
             self._record_response(
                 name=name,
                 response=response,
@@ -316,14 +318,15 @@ class SmokeRunner:
                 )
             payload = response.json() if response.content else {}
             foods = payload.get("foods") if isinstance(payload, dict) else []
+            food_count = len(foods) if isinstance(foods, list) else 0
             self._record_response(
                 name=name,
                 response=response,
                 start=start,
-                ok=response.is_success and "success" in payload,
+                ok=response.is_success and payload.get("success") is True and food_count > 0,
                 metadata={
                     "message_id": payload.get("message_id") if isinstance(payload, dict) else None,
-                    "food_count": len(foods) if isinstance(foods, list) else 0,
+                    "food_count": food_count,
                     "image_size_bytes": image_path.stat().st_size,
                     "content_type": content_type,
                 },

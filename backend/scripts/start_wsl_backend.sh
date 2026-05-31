@@ -11,6 +11,7 @@ PG_LOG="$RUNTIME_DIR/postgres-wsl.log"
 BACKEND_LOG="$RUNTIME_DIR/backend.wsl.log"
 PORT="${PORT:-8000}"
 BACKEND_PIDFILE="$RUNTIME_DIR/pids/backend.wsl.pid"
+LOCAL_DATABASE_URL="postgresql+asyncpg://prism:prism123@127.0.0.1:5433/prism_metabolic"
 
 mkdir -p "$RUNTIME_DIR/debs" "$PG_PREFIX" "$RUNTIME_DIR/pids"
 
@@ -28,6 +29,24 @@ port_listener_pids() {
 
 process_args() {
   ps -p "$1" -o args= 2>/dev/null || true
+}
+
+process_cwd() {
+  readlink -f "/proc/$1/cwd" 2>/dev/null || true
+}
+
+is_repo_process() {
+  local pid="$1"
+  local cwd
+
+  cwd="$(process_cwd "$pid")"
+  case "$cwd" in
+    "$BACKEND_DIR"|"$BACKEND_DIR"/*)
+      return 0
+      ;;
+  esac
+
+  return 1
 }
 
 is_backend_listener() {
@@ -84,7 +103,11 @@ cleanup_pidfile_process() {
 
   pid="$(awk 'NR == 1 {print $1}' "$BACKEND_PIDFILE" 2>/dev/null || true)"
   if [ -n "$pid" ] && [ "$pid" -eq "$pid" ] 2>/dev/null; then
-    terminate_pid "$pid" "pidfile backend" || true
+    if is_repo_process "$pid"; then
+      terminate_pid "$pid" "pidfile backend" || true
+    else
+      echo "Refusing to stop pidfile process outside this backend directory (pid $pid)." >&2
+    fi
   fi
 
   rm -f "$BACKEND_PIDFILE"
@@ -118,11 +141,11 @@ prepare_backend_port() {
     fi
 
     for pid in $pids; do
-      if is_backend_listener "$pid"; then
+      if is_backend_listener "$pid" && is_repo_process "$pid"; then
         terminate_pid "$pid" "uvicorn backend listener on port $PORT" || true
       else
         args="$(process_args "$pid")"
-        echo "Refusing to stop non-backend listener on port $PORT (pid $pid): ${args:-unknown command}" >&2
+        echo "Refusing to stop non-owned listener on port $PORT (pid $pid): ${args:-unknown command}" >&2
       fi
     done
   fi
@@ -177,6 +200,7 @@ fi
 (
   cd "$BACKEND_DIR"
   . .venv/bin/activate
+  export DATABASE_URL="$LOCAL_DATABASE_URL"
   python -m pip install -r requirements.txt
   python -m alembic upgrade head
   python -m app.seed.knowledge_seed --dataset core_v1

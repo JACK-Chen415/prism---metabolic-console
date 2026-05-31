@@ -82,9 +82,13 @@
    - **Key**: `VITE_API_URL`
    - **Value**: `https://prism-backend-xxxx.onrender.com/api`（替换为你的 Render 后端地址）
    - **Environment**: 勾选 Production, Preview, Development
-4. 点击 **Save**
-5. 回到 **Deployments** → 点击最新部署旁的 **"..."** → **"Redeploy"**
-6. 等待重新部署完成
+4. 再添加生产环境变量：
+   - **Key**: `VITE_APP_ENV`
+   - **Value**: `production`
+   - **Environment**: 至少勾选 Production
+5. 点击 **Save**
+6. 回到 **Deployments** → 点击最新部署旁的 **"..."** → **"Redeploy"**
+7. 等待重新部署完成
 
 ---
 

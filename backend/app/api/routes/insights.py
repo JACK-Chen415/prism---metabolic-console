@@ -176,4 +176,3 @@ async def list_insight_feedback(message_id: int, current_user: CurrentUser, db: 
         .order_by(AIFeedback.created_at.desc(), AIFeedback.id.desc())
     )
     return [_feedback_response(item) for item in result.scalars().all()]
-

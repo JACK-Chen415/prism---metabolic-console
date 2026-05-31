@@ -1,7 +1,7 @@
 # Prism Metabolic Console 现状报告与商业化成长路线
 
 生成日期：2026-05-30
-项目路径：`/home/win/Project/prism---metabolic-console`
+项目路径：`[REDACTED_LOCAL_WORKSPACE]`
 报告范围：项目文档、前端源码、后端源码、数据库模型、AI/知识库/Intake/Insights 服务、测试与部署文件、当前竞品公开功能参考、商业化路线规划。
 审阅方式：主线程本地扫描 + 4 个子 agent 并行只读审阅；未回退或清理仓库中既有改动。
 

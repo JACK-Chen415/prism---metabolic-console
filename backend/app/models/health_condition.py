@@ -35,38 +35,38 @@ class TrendType(str, enum.Enum):
 
 class HealthCondition(Base):
     """健康状况表"""
-    
+
     __tablename__ = "health_conditions"
-    
+
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    
+
     # 所属用户
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         index=True,
         nullable=False
     )
-    
+
     # 病症识别码（如 gout, hypertension, peanut）
     condition_code: Mapped[str] = mapped_column(String(50), index=True, nullable=False)
-    
+
     # 病症信息
     title: Mapped[str] = mapped_column(String(100), nullable=False)
     icon: Mapped[str] = mapped_column(String(50), default="medical_services")
-    
+
     # 类型与状态
     condition_type: Mapped[ConditionType] = mapped_column(SQLEnum(ConditionType), nullable=False)
     status: Mapped[ConditionStatus] = mapped_column(SQLEnum(ConditionStatus), default=ConditionStatus.MONITORING)
     trend: Mapped[TrendType] = mapped_column(SQLEnum(TrendType), default=TrendType.STABLE)
-    
+
     # 数值（如血压、尿酸值等）
     value: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     unit: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
-    
+
     # AI 生成的描述
     dictum: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 箴言
     attribution: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 归因分析
-    
+
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -77,7 +77,7 @@ class HealthCondition(Base):
         server_default=func.now(),
         onupdate=func.now()
     )
-    
+
     # 关系
     user: Mapped["User"] = relationship("User", back_populates="conditions")
 

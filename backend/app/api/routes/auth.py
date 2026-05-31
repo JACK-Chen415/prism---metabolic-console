@@ -76,7 +76,7 @@ def _send_code_response_payload(result) -> dict:
 async def register(data: UserRegister, request: Request, db: DbSession):
     """
     用户注册
-    
+
     - **phone**: 11位手机号
     - **password**: 密码（6-50位）
     - **nickname**: 可选昵称
@@ -96,7 +96,7 @@ async def register(data: UserRegister, request: Request, db: DbSession):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="该手机号已注册"
         )
-    
+
     # 创建用户
     consent_accepted_at = datetime.now(timezone.utc)
     user = User(
@@ -113,7 +113,7 @@ async def register(data: UserRegister, request: Request, db: DbSession):
     db.add(user)
     await db.flush()
     await db.refresh(user)
-    
+
     access_token, refresh_token, device_session = await create_session_token_pair(
         db,
         user=user,
@@ -134,7 +134,7 @@ async def register(data: UserRegister, request: Request, db: DbSession):
             "consent_accepted_at": consent_accepted_at.isoformat(),
         },
     )
-    
+
     return LoginResponse(
         user=UserResponse.model_validate(user),
         tokens=TokenResponse(
@@ -149,14 +149,14 @@ async def register(data: UserRegister, request: Request, db: DbSession):
 async def login(data: UserLogin, request: Request, db: DbSession):
     """
     用户登录
-    
+
     - **phone**: 手机号
     - **password**: 密码
     """
     # 查询用户
     result = await db.execute(select(User).where(User.phone == data.phone))
     user = result.scalar_one_or_none()
-    
+
     if not user or not verify_password(data.password, user.password_hash):
         await audit_security_event(
             db,
@@ -171,17 +171,17 @@ async def login(data: UserLogin, request: Request, db: DbSession):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="手机号或密码错误"
         )
-    
+
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="账户已被禁用"
         )
-    
+
     # 更新最后登录时间
     user.last_login_at = datetime.now(timezone.utc)
     await db.flush()
-    
+
     access_token, refresh_token, device_session = await create_session_token_pair(
         db,
         user=user,
@@ -197,7 +197,7 @@ async def login(data: UserLogin, request: Request, db: DbSession):
         session_id=device_session.session_id,
         route_name="/api/auth/login",
     )
-    
+
     return LoginResponse(
         user=UserResponse.model_validate(user),
         tokens=TokenResponse(
@@ -366,11 +366,11 @@ async def reset_password(data: ResetPasswordRequest, request: Request, db: DbSes
 async def refresh_token(data: RefreshTokenRequest, request: Request, db: DbSession):
     """
     刷新 Access Token
-    
+
     使用 Refresh Token 获取新的 Access Token
     """
     payload = decode_token(data.refresh_token)
-    
+
     if payload is None or payload.get("type") != "refresh":
         await audit_security_event(
             db,
@@ -383,7 +383,7 @@ async def refresh_token(data: RefreshTokenRequest, request: Request, db: DbSessi
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="无效或过期的Refresh Token"
         )
-    
+
     user_id = payload.get("sub")
     if user_id is None:
         await audit_security_event(
@@ -398,7 +398,7 @@ async def refresh_token(data: RefreshTokenRequest, request: Request, db: DbSessi
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="无效或过期的Refresh Token"
         )
-    
+
     try:
         parsed_user_id = int(user_id)
     except (TypeError, ValueError):
@@ -418,7 +418,7 @@ async def refresh_token(data: RefreshTokenRequest, request: Request, db: DbSessi
     # 验证用户是否存在且有效
     result = await db.execute(select(User).where(User.id == parsed_user_id))
     user = result.scalar_one_or_none()
-    
+
     if not user or not user.is_active:
         await audit_security_event(
             db,
@@ -433,7 +433,7 @@ async def refresh_token(data: RefreshTokenRequest, request: Request, db: DbSessi
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户不存在或已被禁用"
         )
-    
+
     try:
         access_token, new_refresh_token, device_session = await rotate_refresh_session(
             db,
@@ -465,7 +465,7 @@ async def refresh_token(data: RefreshTokenRequest, request: Request, db: DbSessi
         session_id=device_session.session_id,
         route_name="/api/auth/refresh",
     )
-    
+
     return TokenResponse(
         access_token=access_token,
         refresh_token=new_refresh_token,
@@ -602,13 +602,13 @@ async def update_profile(
 ):
     """更新用户资料"""
     update_data = data.model_dump(exclude_unset=True)
-    
+
     for field, value in update_data.items():
         setattr(current_user, field, value)
-    
+
     await db.flush()
     await db.refresh(current_user)
-    
+
     return UserResponse.model_validate(current_user)
 
 
@@ -635,7 +635,7 @@ async def change_password(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="原密码错误"
         )
-    
+
     current_user.password_hash = get_password_hash(data.new_password)
     revoked_count = await revoke_all_device_sessions(
         db,
@@ -653,7 +653,7 @@ async def change_password(
         route_name="/api/auth/change-password",
         metadata={"revoked_sessions": revoked_count},
     )
-    
+
     return {"success": True, "message": "密码修改成功，请重新登录所有设备"}
 
 
@@ -661,12 +661,12 @@ async def change_password(
 async def get_daily_targets(current_user: CurrentUser, db: DbSession):
     """
     获取每日摄入目标
-    
+
     基于用户身体参数动态计算
     """
     from sqlalchemy import select
     from app.models.health_condition import HealthCondition
-    
+
     # 查询用户健康状况
     result = await db.execute(
         select(HealthCondition).where(

@@ -41,25 +41,25 @@ class SubscriptionStatus(str, enum.Enum):
 
 class User(Base):
     """用户表"""
-    
+
     __tablename__ = "users"
-    
+
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    
+
     # 认证信息
     phone: Mapped[str] = mapped_column(String(20), unique=True, index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
-    
+
     # 基本信息
     nickname: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     avatar_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
-    
+
     # 身体参数
     gender: Mapped[Optional[Gender]] = mapped_column(SQLEnum(Gender), nullable=True)
     age: Mapped[Optional[int]] = mapped_column(nullable=True)
     height: Mapped[Optional[float]] = mapped_column(nullable=True)  # cm
     weight: Mapped[Optional[float]] = mapped_column(nullable=True)  # kg
-    
+
     # 账户状态
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -103,7 +103,7 @@ class User(Base):
         DateTime(timezone=True),
         nullable=True,
     )
-    
+
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -118,7 +118,7 @@ class User(Base):
         DateTime(timezone=True),
         nullable=True
     )
-    
+
     # 关系
     meals: Mapped[list["Meal"]] = relationship(
         "Meal",

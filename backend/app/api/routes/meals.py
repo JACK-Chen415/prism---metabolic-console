@@ -83,7 +83,7 @@ async def create_meal(
     existing = result.scalar_one_or_none()
     if existing:
         return MealResponse.model_validate(existing)
-    
+
     meal = Meal(
         user_id=current_user.id,
         sync_status=SyncStatus.SYNCED,
@@ -92,7 +92,7 @@ async def create_meal(
     db.add(meal)
     await db.flush()
     await db.refresh(meal)
-    
+
     return MealResponse.model_validate(meal)
 
 
@@ -108,11 +108,11 @@ async def list_meals(
 ):
     """
     获取饮食记录列表
-    
+
     支持按日期范围筛选，分页返回
     """
     query = select(Meal).where(Meal.user_id == current_user.id)
-    
+
     # 日期筛选
     if record_date:
         query = query.where(Meal.record_date == record_date)
@@ -122,19 +122,19 @@ async def list_meals(
         query = query.where(Meal.record_date >= start_date)
     elif end_date:
         query = query.where(Meal.record_date <= end_date)
-    
+
     # 统计总数
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
-    
+
     # 分页
     query = query.order_by(Meal.record_date.desc(), Meal.created_at.desc())
     query = query.offset((page - 1) * page_size).limit(page_size)
-    
+
     result = await db.execute(query)
     meals = result.scalars().all()
-    
+
     return PaginatedResponse(
         items=[MealResponse.model_validate(m) for m in meals],
         total=total,
@@ -180,7 +180,7 @@ async def get_daily_summary(
         )
     )
     row = result.one()
-    
+
     return DailyIntakeSummary(
         date=target_date,
         total_calories=row.calories or 0,
@@ -209,14 +209,14 @@ async def update_meal(
 ):
     """更新饮食记录"""
     meal = await _get_meal_or_404(meal_id, current_user, db)
-    
+
     update_data = data.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(meal, field, value)
-    
+
     await db.flush()
     await db.refresh(meal)
-    
+
     return MealResponse.model_validate(meal)
 
 
@@ -224,10 +224,10 @@ async def update_meal(
 async def delete_meal(meal_id: int, current_user: CurrentUser, db: DbSession):
     """删除饮食记录"""
     meal = await _get_meal_or_404(meal_id, current_user, db)
-    
+
     await db.delete(meal)
     await db.flush()
-    
+
     return {"success": True, "message": "删除成功"}
 
 
@@ -239,13 +239,13 @@ async def sync_meals(
 ):
     """
     离线数据同步
-    
+
     客户端上传离线期间产生的记录，服务端返回需要同步到客户端的记录
     """
     synced_count = 0
     conflicts = []
     deleted_client_ids: list[str] = []
-    
+
     for meal_data in data.meals:
         # 检查是否已存在
         result = await db.execute(
@@ -255,7 +255,7 @@ async def sync_meals(
             )
         )
         existing = result.scalar_one_or_none()
-        
+
         if existing:
             # 冲突处理：以服务器数据为准，记录冲突
             conflicts.append(meal_data.client_id)
@@ -301,18 +301,18 @@ async def sync_meals(
                 await db.delete(target)
             deleted_client_ids.append(operation.client_id)
             synced_count += 1
-    
+
     await db.flush()
-    
+
     # 获取服务端更新的记录（用于客户端同步）
     server_query = select(Meal).where(Meal.user_id == current_user.id)
     if data.last_sync_at:
         server_query = server_query.where(Meal.updated_at > data.last_sync_at)
     server_query = server_query.order_by(Meal.updated_at.desc()).limit(100)
-    
+
     result = await db.execute(server_query)
     server_meals = result.scalars().all()
-    
+
     return MealSyncResponse(
         synced_count=synced_count,
         conflicts=conflicts,

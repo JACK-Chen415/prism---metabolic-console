@@ -8,7 +8,7 @@
     {
       "request_id": "348828ae7599",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 600,
@@ -27,7 +27,7 @@
     {
       "request_id": "e388d5acc3e8",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 600,
@@ -46,7 +46,7 @@
     {
       "request_id": "4b574f1d5f81",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 600,
@@ -65,7 +65,7 @@
     {
       "request_id": "78ab486c7351",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -84,7 +84,7 @@
     {
       "request_id": "4c9ea4bf099e",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -103,7 +103,7 @@
     {
       "request_id": "f1af695c976c",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -122,7 +122,7 @@
     {
       "request_id": "841270650505",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 1000,
@@ -141,7 +141,7 @@
     {
       "request_id": "736022ff18b9",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 1000,
@@ -160,7 +160,7 @@
     {
       "request_id": "9099b2069389",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 1000,
@@ -179,7 +179,7 @@
     {
       "request_id": "59fd9f29598e",
       "scenario": "short_compact",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -198,7 +198,7 @@
     {
       "request_id": "6ad82e86db70",
       "scenario": "short_compact",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -217,7 +217,7 @@
     {
       "request_id": "410da04ef7a2",
       "scenario": "short_compact",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -236,7 +236,7 @@
     {
       "request_id": "37d164c6f155",
       "scenario": "compressed_guardrail",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -255,7 +255,7 @@
     {
       "request_id": "4a6bcf7e5f44",
       "scenario": "compressed_guardrail",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -274,7 +274,7 @@
     {
       "request_id": "7ac5e724e54d",
       "scenario": "compressed_guardrail",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -293,7 +293,7 @@
     {
       "request_id": "bb45613640d6",
       "scenario": "long_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -312,7 +312,7 @@
     {
       "request_id": "649daddf92ba",
       "scenario": "long_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -331,7 +331,7 @@
     {
       "request_id": "f88568e07299",
       "scenario": "long_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -350,7 +350,7 @@
     {
       "request_id": "e02c894a290a",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -369,7 +369,7 @@
     {
       "request_id": "806296fe7253",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -388,7 +388,7 @@
     {
       "request_id": "6b081c81113b",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -407,7 +407,7 @@
     {
       "request_id": "0f37bccce35d",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -426,7 +426,7 @@
     {
       "request_id": "f93096ccc49b",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -445,7 +445,7 @@
     {
       "request_id": "0be4a6cf9925",
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "region": "cn-beijing",
       "max_tokens": 800,
@@ -465,7 +465,7 @@
   "summary": [
     {
       "scenario": "compressed_guardrail",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "max_tokens": 800,
       "temperature": 0.5,
       "prompt_chars": 240,
@@ -481,7 +481,7 @@
     },
     {
       "scenario": "long_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "max_tokens": 800,
       "temperature": 0.5,
       "prompt_chars": 5511,
@@ -497,7 +497,7 @@
     },
     {
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "max_tokens": 600,
       "temperature": 0.5,
       "prompt_chars": 4756,
@@ -513,7 +513,7 @@
     },
     {
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "max_tokens": 800,
       "temperature": 0.2,
       "prompt_chars": 4756,
@@ -529,7 +529,7 @@
     },
     {
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "max_tokens": 800,
       "temperature": 0.5,
       "prompt_chars": 4756,
@@ -545,7 +545,7 @@
     },
     {
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "max_tokens": 800,
       "temperature": 0.7,
       "prompt_chars": 4756,
@@ -561,7 +561,7 @@
     },
     {
       "scenario": "medium_current",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "max_tokens": 1000,
       "temperature": 0.5,
       "prompt_chars": 4756,
@@ -577,7 +577,7 @@
     },
     {
       "scenario": "short_compact",
-      "model": "ep-20260428104424-hsw26",
+      "model": "[REDACTED_MODEL_ID]",
       "max_tokens": 800,
       "temperature": 0.5,
       "prompt_chars": 110,
