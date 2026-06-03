@@ -20,7 +20,6 @@ interface LoginResponse {
     };
     tokens: {
         access_token: string;
-        refresh_token: string;
     };
 }
 
@@ -94,10 +93,7 @@ const LoginView: React.FC<LoginViewProps> = ({ onViewChange, onSkipLogin, onLogi
             setIsLoading(true);
             try {
                 const response = await AuthAPI.loginWithCode(phone, code) as LoginResponse;
-                TokenManager.setTokens(
-                    response.tokens.access_token,
-                    response.tokens.refresh_token
-                );
+                TokenManager.setTokens(response.tokens.access_token);
                 if (onLoginSuccess) {
                     onLoginSuccess(response.user);
                 } else {
@@ -124,10 +120,7 @@ const LoginView: React.FC<LoginViewProps> = ({ onViewChange, onSkipLogin, onLogi
             const response = await AuthAPI.login(phone, password) as LoginResponse;
 
             // 保存 Token
-            TokenManager.setTokens(
-                response.tokens.access_token,
-                response.tokens.refresh_token
-            );
+            TokenManager.setTokens(response.tokens.access_token);
 
             // 通知父组件登录成功（handleAuthSuccess 内部会跳转到首页）
             if (onLoginSuccess) {

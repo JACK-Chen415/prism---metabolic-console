@@ -7,6 +7,7 @@ hard production assumption.
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Protocol
 from uuid import uuid4
@@ -37,7 +38,6 @@ PLAN_FEATURES: dict[PlanTier, set[EntitlementKey]] = {
         EntitlementKey.DAILY_LOGGING,
         EntitlementKey.AI_CHAT,
         EntitlementKey.PHOTO_RECOGNITION,
-        EntitlementKey.REPORT_EXPORT,
         EntitlementKey.HEALTH_METRICS,
     },
     PlanTier.PRO: {
@@ -83,8 +83,8 @@ PLAN_LIMITS: dict[PlanTier, dict[str, int | str | bool | None]] = {
 
 PLAN_UPGRADE_REASONS: dict[PlanTier, list[str]] = {
     PlanTier.FREE: [
-        "适合验证核心记录、AI 问答和基础报告。",
-        "灰度阶段默认不强制拦截，但真实商业化前会按限制执行。",
+        "适合验证核心记录、AI 问答和健康指标。",
+        "报告导出属于付费权益，FREE 计划不包含导出能力。",
     ],
     PlanTier.PRO: [
         "面向高频记录用户，保留更长报告历史和更高识别额度。",
@@ -128,6 +128,9 @@ class CheckoutSession(BaseModel):
     checkout_url: str
     status: str = "mock_created"
     message: str
+    local_order_id: str | None = None
+    provider_order_id: str | None = None
+    expires_at: datetime | None = None
 
 
 class BillingLifecycleResult(BaseModel):
@@ -201,9 +204,9 @@ class EntitlementService:
             upgrade_reasons=PLAN_UPGRADE_REASONS.get(plan, []),
             notes=[
                 (
-                    "当前为 mock 权益模型，权益缺失会被拦截。"
+                    "当前为 mock 权益模型，权益缺失会被硬拦截。"
                     if self.enforce_limits
-                    else "当前为 mock 权益模型，默认不阻断内测功能。"
+                    else "当前为 mock 权益模型，功能权益缺失会被硬拦截，用量限制仍处于观测模式。"
                 ),
                 "用量限额先返回状态与计数；调用端接入硬拦截前不得宣称真实扣费或医疗服务。",
                 "接入真实支付前不得写死支付密钥或真实 provider secret。",
@@ -212,7 +215,7 @@ class EntitlementService:
 
     async def ensure(self, user: User, feature: EntitlementKey) -> EntitlementSnapshot:
         snapshot = await self.snapshot_for_user(user)
-        if self.enforce_limits and not snapshot.features.get(feature, False):
+        if not snapshot.features.get(feature, False):
             raise PermissionError(f"当前订阅不包含 {feature.value} 权益")
         return snapshot
 
@@ -232,7 +235,7 @@ def _enforcement_scope(enforce_limits: bool) -> str:
 
 def build_plan_catalog() -> list[PlanCatalogItem]:
     titles = {
-        PlanTier.FREE: ("FREE", "基础记录、AI 问答和报告预览"),
+        PlanTier.FREE: ("FREE", "基础记录、AI 问答和健康指标"),
         PlanTier.PRO: ("PRO", "小规模灰度主套餐，适合高频记录"),
         PlanTier.COACH: ("COACH", "预留真人教练协作与高触达服务"),
     }

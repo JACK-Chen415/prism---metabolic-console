@@ -68,48 +68,85 @@ def test_settings_normalizes_and_validates_otp_provider():
         Settings(_env_file=None, otp_provider="sms")
 
 
-def test_readiness_snapshot_reports_ok_for_real_production_config_without_secrets():
-    settings = Settings(**_production_settings_kwargs())
+def test_production_rejects_soft_entitlement_limits():
+    with pytest.raises(ValueError, match="ENTITLEMENT_ENFORCE_LIMITS"):
+        Settings(**_production_settings_kwargs(entitlement_enforce_limits=False))
+
+
+def test_production_rejects_mock_billing_until_real_provider_is_implemented():
+    with pytest.raises(ValueError, match="mock billing"):
+        Settings(**_production_settings_kwargs(entitlement_enforce_limits=True))
+
+
+def test_production_real_billing_provider_starts_but_readiness_blocks_until_adapter_is_real():
+    settings = Settings(
+        **_production_settings_kwargs(
+            billing_provider="wechat_pay",
+            entitlement_enforce_limits=True,
+        )
+    )
+
+    snapshot = settings.readiness_snapshot()
+
+    assert snapshot["status"] == "blocked"
+    assert snapshot["billing"]["provider"] == "wechat_pay"
+    assert snapshot["billing"]["configured"] is False
+    assert snapshot["billing"]["webhook_configured"] is False
+    assert snapshot["billing"]["adapter_implementation_status"] == "blocked_placeholder_not_implemented"
+    assert snapshot["billing"]["price_mapping_status"] == "configured"
+    assert "billing_adapter_not_implemented" in snapshot["blocking"]
+    assert "wechat_pay_credentials_missing" in snapshot["blocking"]
+    serialized = str(snapshot)
+    assert "prod-secret-key" not in serialized
+
+
+def test_alipay_readiness_is_sanitized_and_blocked_without_credentials():
+    settings = Settings(_env_file=None, billing_provider="alipay")
+
+    billing = settings.readiness_snapshot()["billing"]
+
+    assert billing["provider"] == "alipay"
+    assert billing["ready"] is False
+    assert billing["configured"] is False
+    assert billing["webhook_configured"] is False
+    assert "ALIPAY_PRIVATE_KEY" in billing["configuration_gaps"]
+    assert "billing_adapter_not_implemented" in billing["blocking"]
+    assert "private-key-value" not in str(billing)
+
+
+def test_readiness_snapshot_blocks_production_mock_billing_and_soft_limits_if_validation_is_bypassed():
+    settings = Settings(
+        _env_file=None,
+        app_env="development",
+        billing_provider="mock",
+        entitlement_enforce_limits=False,
+    )
+    settings.app_env = "production"
+
+    snapshot = settings.readiness_snapshot()
+
+    assert snapshot["status"] == "blocked"
+    assert "mock_billing_provider" in snapshot["blocking"]
+    assert "entitlement_limits_soft_only" in snapshot["blocking"]
+    assert "mock_billing_provider" not in snapshot["warnings"]
+    assert "entitlement_limits_soft_only" not in snapshot["warnings"]
+
+
+def test_readiness_snapshot_exposes_admin_bootstrap_allowlist_count_without_hashes():
+    settings = Settings(_env_file=None, app_env="staging", admin_phone_hashes=["hash-one", "hash-two"])
 
     snapshot = settings.readiness_snapshot()
     serialized = str(snapshot)
 
     assert snapshot["status"] == "ok"
-    assert snapshot["is_production"] is True
-    assert snapshot["warnings"] == ["otp_provider_audit_only", "mock_billing_provider", "entitlement_limits_soft_only"]
-    assert snapshot["blocking"] == []
-    assert snapshot["ai_key_configured"] is True
-    assert snapshot["ai_model_configured"] is True
-    assert snapshot["otp_provider"] == "audit_only"
-    assert snapshot["jwt_algorithm"] == "HS256"
-    assert snapshot["jwt_access_token_expire_minutes"] == 30
-    assert snapshot["jwt_refresh_token_expire_days"] == 7
-    assert snapshot["billing_provider"] == "mock"
-    assert snapshot["entitlement_enforce_limits"] is False
-    assert "mock_billing_provider" in snapshot["warnings"]
-    assert "entitlement_limits_soft_only" in snapshot["warnings"]
-    assert "ark_prod_configured_value" not in serialized
-    assert "ep-prod-multimodal" not in serialized
-    assert "prod-secret-key-at-least-32-characters-long" not in serialized
-    assert "test-admin-phone-hash" not in serialized
-
-
-def test_readiness_snapshot_warns_when_production_admin_bootstrap_allowlist_is_missing():
-    settings = Settings(**_production_settings_kwargs(admin_phone_hashes=[]))
-
-    snapshot = settings.readiness_snapshot()
-    serialized = str(snapshot)
-
-    assert snapshot["status"] == "ok"
-    assert snapshot["is_production"] is True
-    assert "admin_bootstrap_allowlist_missing" in snapshot["warnings"]
-    assert snapshot["blocking"] == []
-    assert snapshot["admin_bootstrap_allowlist_count"] == 0
-    assert "admin_bootstrap_allowlist_missing" in serialized
+    assert snapshot["is_production"] is False
+    assert snapshot["admin_bootstrap_allowlist_count"] == 2
+    assert "hash-one" not in serialized
+    assert "hash-two" not in serialized
 
 
 def test_readiness_snapshot_exposes_entitlement_enforcement_without_soft_limit_warning():
-    settings = Settings(**_production_settings_kwargs(entitlement_enforce_limits=True))
+    settings = Settings(_env_file=None, app_env="staging", entitlement_enforce_limits=True)
 
     snapshot = settings.readiness_snapshot()
 
@@ -244,15 +281,14 @@ def test_production_rejects_upload_limits_above_reviewed_cap():
         Settings(**_production_settings_kwargs(max_upload_image_pixels=20_000_001))
 
 
-def test_production_readiness_snapshot_exposes_only_allowlist_count():
-    settings = Settings(**_production_settings_kwargs(admin_phone_hashes=["hash-one", "hash-two"]))
+def test_nonproduction_readiness_snapshot_exposes_only_allowlist_count():
+    settings = Settings(_env_file=None, app_env="staging", admin_phone_hashes=["hash-one", "hash-two"])
 
     snapshot = settings.readiness_snapshot()
     serialized = str(snapshot)
 
     assert snapshot["status"] == "ok"
     assert snapshot["admin_bootstrap_allowlist_count"] == 2
-    assert "admin_bootstrap_allowlist_missing" not in snapshot["warnings"]
     assert "hash-one" not in serialized
     assert "hash-two" not in serialized
 

@@ -16,7 +16,6 @@ interface RegisterResponse {
     };
     tokens: {
         access_token: string;
-        refresh_token: string;
     };
 }
 
@@ -73,10 +72,7 @@ const RegisterView: React.FC<RegisterViewProps> = ({ onViewChange, onRegisterSuc
             const response = await AuthAPI.register(phone, password, CONSENT_PAYLOAD) as RegisterResponse;
 
             // 保存 Token
-            TokenManager.setTokens(
-                response.tokens.access_token,
-                response.tokens.refresh_token
-            );
+            TokenManager.setTokens(response.tokens.access_token);
 
             // 通知父组件注册成功（handleAuthSuccess 内部会跳转到首页）
             if (onRegisterSuccess) {

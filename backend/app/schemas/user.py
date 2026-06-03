@@ -152,7 +152,7 @@ class CalorieRange(BaseModel):
 class TokenResponse(BaseModel):
     """Token响应"""
     access_token: str
-    refresh_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
     expires_in: int = Field(description="Access Token 过期时间(秒)")
 

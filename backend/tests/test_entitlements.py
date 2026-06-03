@@ -16,6 +16,9 @@ class FakeScalarResult:
     def scalar_one(self):
         return self.value
 
+    def scalar_one_or_none(self):
+        return self.value
+
 
 class FakeBillingDb:
     def __init__(self):
@@ -51,7 +54,7 @@ async def test_default_entitlement_snapshot_keeps_internal_beta_features_availab
     assert snapshot.enforce_limits is False
     assert snapshot.enforcement_scope == 'observe_only'
     assert snapshot.features[EntitlementKey.DAILY_LOGGING] is True
-    assert snapshot.features[EntitlementKey.REPORT_EXPORT] is True
+    assert snapshot.features[EntitlementKey.REPORT_EXPORT] is False
     assert snapshot.features[EntitlementKey.COACH_HANDOFF] is False
     assert snapshot.limits["ai_chat_daily"] == 10
     assert snapshot.upgrade_reasons
@@ -94,10 +97,17 @@ async def test_inactive_subscription_falls_back_to_free_entitlements():
     assert snapshot.billing_plan == PlanTier.PRO
     assert snapshot.status == SubscriptionStatus.CANCELED
     assert snapshot.features[EntitlementKey.COACH_HANDOFF] is False
+    assert snapshot.features[EntitlementKey.REPORT_EXPORT] is False
 
 
 @pytest.mark.asyncio
-async def test_entitlement_service_can_run_feature_gate_when_limits_are_enforced():
+async def test_entitlement_service_hard_blocks_missing_features_even_when_limits_are_observed():
+    observed_service = EntitlementService(provider=MockBillingProvider())
+    observed_user = User(id=1, phone="13800138000", password_hash="x")
+
+    with pytest.raises(PermissionError, match="REPORT_EXPORT"):
+        await observed_service.ensure(observed_user, EntitlementKey.REPORT_EXPORT)
+
     service = EntitlementService(provider=MockBillingProvider(), enforce_limits=True)
     user = User(id=1, phone="13800138000", password_hash="x")
 
@@ -140,21 +150,25 @@ def test_plan_catalog_exposes_mock_prices_limits_and_recommended_plan():
     assert by_plan[PlanTier.FREE].monthly_price_cents == 0
     assert by_plan[PlanTier.PRO].recommended is True
     assert by_plan[PlanTier.PRO].limits["photo_recognition_monthly"] > by_plan[PlanTier.FREE].limits["photo_recognition_monthly"]
+    assert by_plan[PlanTier.FREE].features[EntitlementKey.REPORT_EXPORT] is False
     assert by_plan[PlanTier.COACH].features[EntitlementKey.COACH_HANDOFF] is True
     assert by_plan[PlanTier.COACH].limits["coach_review"] is True
 
 
-def test_billing_provider_registry_exposes_mock_and_planned_provider_without_secrets():
+def test_billing_provider_registry_exposes_mock_wechat_and_alipay_without_secrets():
     providers = {item.provider: item for item in billing_provider_registry.list_providers()}
 
     assert providers["mock"].status == BillingProviderStatus.MOCK
     assert providers["mock"].supports_checkout is True
     assert providers["mock"].supports_cancel is True
     assert providers["mock"].requires_secret is False
-    assert providers["external_gateway"].status == BillingProviderStatus.PLANNED
-    assert providers["external_gateway"].requires_secret is True
-    assert "api_key" not in providers["external_gateway"].description.lower()
-    assert "token" not in providers["external_gateway"].description.lower()
+    assert providers["wechat_pay"].status == BillingProviderStatus.PLANNED
+    assert providers["wechat_pay"].requires_secret is True
+    assert providers["alipay"].status == BillingProviderStatus.PLANNED
+    assert providers["alipay"].requires_secret is True
+    serialized = str([providers["wechat_pay"].description, providers["alipay"].description]).lower()
+    assert "api_key" not in serialized
+    assert "token" not in serialized
 
 
 @pytest.mark.asyncio
@@ -167,14 +181,16 @@ async def test_billing_provider_endpoint_returns_safe_configured_status_surface(
 
     assert by_provider["mock"]["is_configured"] is True
     assert by_provider["mock"]["supports_checkout"] is True
-    assert by_provider["external_gateway"]["status"] == "planned"
+    assert by_provider["wechat_pay"]["status"] == "planned"
+    assert by_provider["wechat_pay"]["readiness"]["ready"] is False
+    assert by_provider["alipay"]["readiness"]["ready"] is False
     serialized = str(payload).lower()
     assert "api_key" not in serialized
     assert "token" not in serialized
 
 
-def test_settings_reject_unknown_billing_provider_before_real_payment_is_implemented():
-    with pytest.raises(ValueError, match="BILLING_PROVIDER=mock"):
+def test_settings_reject_unknown_billing_provider():
+    with pytest.raises(ValueError, match="BILLING_PROVIDER"):
         Settings(billing_provider="external_gateway")
 
 
@@ -315,6 +331,7 @@ async def test_billing_entitlements_route_serializes_snapshot_response():
     assert payload["billing_plan"] == "FREE"
     assert payload["status"] == "inactive"
     assert payload["features"]["DAILY_LOGGING"] is True
+    assert payload["features"]["REPORT_EXPORT"] is False
     assert payload["features"]["COACH_HANDOFF"] is False
     assert payload["notes"]
 
@@ -335,15 +352,48 @@ async def test_billing_checkout_route_serializes_mock_session_and_updates_user()
 
     assert payload["provider"] == "mock"
     assert payload["plan"] == "PRO"
-    assert payload["checkout_id"].startswith("mock_")
+    assert payload["checkout_id"].startswith("pmc")
+    assert payload["local_order_id"].startswith("pmc")
+    assert payload["provider_order_id"].startswith("pmc")
     assert "example.invalid" in payload["checkout_url"]
     assert payload["status"] == "mock_created"
     assert "No real payment" in payload["message"]
     assert user.subscription_plan == SubscriptionPlan.PRO
     assert user.subscription_status == SubscriptionStatus.ACTIVE
     assert user.subscription_updated_at is not None
-    assert db.flush_count >= 2
-    assert db.added[-1].metadata_json["enforcement_scope"] == "observe_only"
+    assert db.flush_count >= 4
+    assert db.added[-1].event_type == "billing.checkout"
+    assert db.added[-1].metadata_json["mock_compat_activation"] is True
+
+
+@pytest.mark.asyncio
+async def test_billing_checkout_route_rejects_mock_provider_in_production_without_writing_subscription(monkeypatch):
+    user = User(
+        id=1,
+        phone="13800138000",
+        password_hash="x",
+        subscription_plan=SubscriptionPlan.FREE,
+        subscription_status=SubscriptionStatus.INACTIVE,
+    )
+    db = FakeBillingDb()
+    blocked_settings = Settings(_env_file=None, billing_provider="mock", entitlement_enforce_limits=True)
+    blocked_settings.app_env = "production"
+    monkeypatch.setattr(billing_route, "settings", blocked_settings)
+
+    with pytest.raises(billing_route.HTTPException) as exc_info:
+        await billing_route.create_checkout(
+            billing_route.CheckoutRequest(plan=PlanTier.PRO),
+            None,
+            user,
+            db,
+        )
+
+    assert exc_info.value.status_code == 503
+    assert "mock billing" in exc_info.value.detail
+    assert user.subscription_plan == SubscriptionPlan.FREE
+    assert user.subscription_status == SubscriptionStatus.INACTIVE
+    assert db.flush_count == 0
+    assert db.added == []
 
 
 @pytest.mark.asyncio
@@ -356,6 +406,7 @@ async def test_billing_cancel_route_serializes_nested_entitlement_and_is_idempot
         subscription_status=SubscriptionStatus.CANCELED,
     )
     db = FakeBillingDb()
+    db.execute_results = [None, None]
 
     response = await billing_route.cancel_subscription(
         billing_route.CancelSubscriptionRequest(confirm="CANCEL_SUBSCRIPTION"),
@@ -388,7 +439,38 @@ async def test_billing_cancel_route_serializes_nested_entitlement_and_is_idempot
     assert user.subscription_status == SubscriptionStatus.CANCELED
     assert user.subscription_updated_at is not None
     assert db.flush_count >= 4
-    assert db.added[-1].metadata_json["enforcement_scope"] == "observe_only"
+    assert db.added[-1].event_type == "billing.subscription.cancel"
+    assert db.added[-1].metadata_json["provider"] == "mock"
+
+
+@pytest.mark.asyncio
+async def test_billing_cancel_route_rejects_mock_provider_in_production_without_writing_subscription(monkeypatch):
+    user = User(
+        id=1,
+        phone="13800138000",
+        password_hash="x",
+        subscription_plan=SubscriptionPlan.PRO,
+        subscription_status=SubscriptionStatus.ACTIVE,
+    )
+    db = FakeBillingDb()
+    blocked_settings = Settings(_env_file=None, billing_provider="mock", entitlement_enforce_limits=True)
+    blocked_settings.app_env = "production"
+    monkeypatch.setattr(billing_route, "settings", blocked_settings)
+
+    with pytest.raises(billing_route.HTTPException) as exc_info:
+        await billing_route.cancel_subscription(
+            billing_route.CancelSubscriptionRequest(confirm="CANCEL_SUBSCRIPTION"),
+            None,
+            user,
+            db,
+        )
+
+    assert exc_info.value.status_code == 503
+    assert "mock billing" in exc_info.value.detail
+    assert user.subscription_plan == SubscriptionPlan.PRO
+    assert user.subscription_status == SubscriptionStatus.ACTIVE
+    assert db.flush_count == 0
+    assert db.added == []
 
 
 @pytest.mark.asyncio

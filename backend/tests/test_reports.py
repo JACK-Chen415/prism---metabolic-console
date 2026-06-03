@@ -13,6 +13,22 @@ from app.api.routes.reports import (
     _weekly_period,
 )
 from app.models.meal import FoodCategory, Meal, MealType
+from app.models.user import SubscriptionPlan, SubscriptionStatus, User
+
+
+class _EmptyScalars:
+    def all(self):
+        return []
+
+
+class _EmptyResult:
+    def scalars(self):
+        return _EmptyScalars()
+
+
+class _EmptyReportDb:
+    async def execute(self, _statement):
+        return _EmptyResult()
 
 
 def _meal(day: date, *, sodium: float = 0, purine: float = 0, fiber: float = 0) -> Meal:
@@ -94,3 +110,49 @@ async def test_make_report_converts_entitlement_denial_to_403(monkeypatch):
 
     assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
     assert "REPORT_EXPORT" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_free_user_report_export_is_blocked_by_server_entitlement_gate():
+    user = User(
+        id=1,
+        phone="13800138000",
+        password_hash="x",
+        subscription_plan=SubscriptionPlan.FREE,
+        subscription_status=SubscriptionStatus.INACTIVE,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await reports_route._make_report(
+            _EmptyReportDb(),
+            user,
+            report_type="weekly",
+            start_date=date(2026, 5, 24),
+            end_date=date(2026, 5, 30),
+        )
+
+    assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
+    assert "REPORT_EXPORT" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("plan", [SubscriptionPlan.PRO, SubscriptionPlan.COACH])
+async def test_paid_user_report_export_continues_when_report_export_entitlement_exists(plan):
+    user = User(
+        id=1,
+        phone="13800138000",
+        password_hash="x",
+        subscription_plan=plan,
+        subscription_status=SubscriptionStatus.ACTIVE,
+    )
+
+    report = await reports_route._make_report(
+        _EmptyReportDb(),
+        user,
+        report_type="weekly",
+        start_date=date(2026, 5, 24),
+        end_date=date(2026, 5, 30),
+    )
+
+    assert report.report_type == "weekly"
+    assert report.summary.meal_count == 0

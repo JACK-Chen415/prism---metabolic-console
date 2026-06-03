@@ -156,8 +156,9 @@ async def ready_check(response: Response):
     """Readiness endpoint for deployment and CI smoke checks.
 
     Returns HTTP 503 when database or blocking config checks fail so deploy
-    infrastructure does not treat degraded instances as healthy. Warnings such
-    as mock billing remain visible in the body but do not fail readiness.
+    infrastructure does not treat degraded instances as healthy. Production
+    mock billing and soft entitlement enforcement are treated as blocking
+    configuration states.
     """
     try:
         async with engine.begin() as conn:

@@ -1,5 +1,16 @@
 """Database models."""
 
+from app.models.billing import (
+    BillingEventProcessingStatus,
+    BillingOrder,
+    BillingOrderStatus,
+    BillingProviderEvent,
+    BillingProviderName,
+    BillingRefund,
+    BillingRefundStatus,
+    BillingSubscription,
+    BillingSubscriptionStatus,
+)
 from app.models.chat import ChatMessage, ChatSession, MessageRole
 from app.models.feedback import AIFeedback, AIFeedbackStatus, AIFeedbackType
 from app.models.health_condition import (
@@ -38,6 +49,15 @@ __all__ = [
     "AIFeedback",
     "AIFeedbackStatus",
     "AIFeedbackType",
+    "BillingEventProcessingStatus",
+    "BillingOrder",
+    "BillingOrderStatus",
+    "BillingProviderEvent",
+    "BillingProviderName",
+    "BillingRefund",
+    "BillingRefundStatus",
+    "BillingSubscription",
+    "BillingSubscriptionStatus",
     "ChatMessage",
     "ChatSession",
     "ConditionScopeField",

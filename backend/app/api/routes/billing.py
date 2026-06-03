@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import func, select
@@ -15,10 +16,21 @@ from app.models.chat import ChatMessage, ChatSession, MessageRole
 from app.models.meal import Meal, MealSource
 from app.models.user import SubscriptionPlan, SubscriptionStatus, User
 from app.services.billing_providers import (
+    BillingProviderError,
     BillingProviderKind,
+    BillingProviderNotReadyError,
     BillingProviderStatus,
+    BillingWebhookVerificationError,
     billing_provider_registry,
+    get_billing_adapter,
     normalize_billing_provider,
+)
+from app.services.billing_service import (
+    cancel_user_subscription,
+    create_checkout_order,
+    process_webhook,
+    reconcile_order,
+    refund_order,
 )
 from app.services.entitlements import CheckoutSession, EntitlementKey, EntitlementSnapshot, PlanCatalogItem, PlanTier, entitlement_service
 
@@ -38,6 +50,11 @@ class CancelSubscriptionRequest(BaseModel):
     confirm: str
 
 
+class RefundRequest(BaseModel):
+    amount_minor: int | None = None
+    reason: str | None = None
+
+
 class CheckoutResponse(BaseModel):
     provider: str
     plan: PlanTier
@@ -45,6 +62,9 @@ class CheckoutResponse(BaseModel):
     checkout_url: str
     status: str
     message: str
+    local_order_id: str | None = None
+    provider_order_id: str | None = None
+    expires_at: datetime | None = None
 
 
 class EntitlementResponse(BaseModel):
@@ -72,6 +92,7 @@ class BillingProviderResponse(BaseModel):
     supports_refund: bool
     requires_secret: bool
     is_configured: bool
+    readiness: dict[str, Any]
 
 
 class SubscriptionLifecycleResponse(BaseModel):
@@ -80,6 +101,29 @@ class SubscriptionLifecycleResponse(BaseModel):
     status: SubscriptionStatus
     message: str
     entitlement: EntitlementResponse
+
+
+class BillingWebhookResponse(BaseModel):
+    provider: str
+    event_id: str
+    status: str
+    transition_applied: bool
+    message: str
+
+
+class BillingRefundResponse(BaseModel):
+    provider: str
+    out_refund_no: str
+    status: str
+    message: str
+
+
+class BillingReconcileResponse(BaseModel):
+    provider: str
+    order_id: int
+    status: str
+    transition_applied: bool
+    message: str
 
 
 class UsageQuotaItem(BaseModel):
@@ -248,6 +292,26 @@ def _apply_mock_subscription_cancel(user: User) -> None:
     user.subscription_updated_at = datetime.now(timezone.utc)
 
 
+def _reject_mock_billing_in_production() -> None:
+    if settings.is_production and normalize_billing_provider(settings.billing_provider) == "mock":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="生产环境已禁用 mock billing；当前构建未接入真实支付 provider，不能修改订阅状态",
+        )
+
+
+def _raise_billing_http_error(exc: Exception) -> None:
+    if isinstance(exc, BillingProviderNotReadyError):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    if isinstance(exc, BillingWebhookVerificationError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if isinstance(exc, BillingProviderError):
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    if isinstance(exc, ValueError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    raise exc
+
+
 @router.get("/plans", response_model=list[PlanCatalogItem])
 async def get_plan_catalog(current_user: CurrentUser):
     return await entitlement_service.plan_catalog()
@@ -256,8 +320,10 @@ async def get_plan_catalog(current_user: CurrentUser):
 @router.get("/providers", response_model=list[BillingProviderResponse])
 async def list_billing_providers(current_user: CurrentUser):
     configured_provider = normalize_billing_provider(settings.billing_provider)
-    return [
-        BillingProviderResponse(
+    responses: list[BillingProviderResponse] = []
+    for item in billing_provider_registry.list_providers():
+        readiness = get_billing_adapter(item.provider, config=settings).readiness()
+        responses.append(BillingProviderResponse(
             provider=item.provider,
             display_name=item.display_name,
             kind=item.kind,
@@ -269,9 +335,21 @@ async def list_billing_providers(current_user: CurrentUser):
             supports_refund=item.supports_refund,
             requires_secret=item.requires_secret,
             is_configured=item.provider == configured_provider,
-        )
-        for item in billing_provider_registry.list_providers()
-    ]
+            readiness={
+                "provider": readiness.provider,
+                "mode": readiness.mode,
+                "configured": readiness.configured,
+                "webhook_configured": readiness.webhook_configured,
+                "adapter_implementation_status": readiness.adapter_implementation_status,
+                "price_mapping_status": readiness.price_mapping_status,
+                "ready": readiness.ready,
+                "warnings": readiness.warnings,
+                "blocking": readiness.blocking,
+                "configuration_gaps": readiness.configuration_gaps,
+                "webhook_gaps": readiness.webhook_gaps,
+            },
+        ))
+    return responses
 
 
 @router.get("/entitlements", response_model=EntitlementResponse)
@@ -344,27 +422,17 @@ async def create_checkout(
     current_user: CurrentUser,
     db: DbSession,
 ):
-    session = await entitlement_service.create_checkout_session(current_user, data.plan)
-    if session.provider == "mock":
-        _apply_mock_checkout_subscription(current_user, data.plan)
-        await db.flush()
-    snapshot = await entitlement_service.snapshot_for_user(current_user)
-    await audit_security_event(
-        db,
-        event_type="billing.checkout",
-        event_status="success",
-        user_id=current_user.id,
-        request=request,
-        route_name="/api/billing/checkout",
-        metadata={
-            "provider": session.provider,
-            "plan": session.plan.value,
-            "checkout_id": session.checkout_id,
-            "status": session.status,
-            "billing_plan": snapshot.billing_plan.value,
-            "enforcement_scope": snapshot.enforcement_scope,
-        },
-    )
+    try:
+        session = await create_checkout_order(
+            db,
+            user=current_user,
+            plan=data.plan,
+            request=request,
+            config=settings,
+            activate_mock_compat=True,
+        )
+    except Exception as exc:
+        _raise_billing_http_error(exc)
     return _checkout_response(session)
 
 
@@ -380,32 +448,18 @@ async def cancel_subscription(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="需要确认 CANCEL_SUBSCRIPTION",
         )
-
-    previous_plan = getattr(current_user.subscription_plan, "value", current_user.subscription_plan)
-    previous_status = getattr(current_user.subscription_status, "value", current_user.subscription_status)
-    result = await entitlement_service.cancel_subscription(current_user)
-    if result.provider == "mock":
-        _apply_mock_subscription_cancel(current_user)
-        await db.flush()
+    try:
+        result = await cancel_user_subscription(
+            db,
+            user=current_user,
+            request=request,
+            reason="user_cancel",
+            config=settings,
+        )
+    except Exception as exc:
+        _raise_billing_http_error(exc)
 
     snapshot = await entitlement_service.snapshot_for_user(current_user)
-    await audit_security_event(
-        db,
-        event_type="billing.subscription.cancel",
-        event_status="success",
-        user_id=current_user.id,
-        request=request,
-        route_name="/api/billing/subscription/cancel",
-        metadata={
-            "provider": result.provider,
-            "previous_plan": previous_plan,
-            "previous_status": previous_status,
-            "billing_plan": snapshot.billing_plan.value,
-            "effective_plan": snapshot.plan.value,
-            "status": snapshot.status.value,
-            "enforcement_scope": snapshot.enforcement_scope,
-        },
-    )
 
     return SubscriptionLifecycleResponse(
         provider=result.provider,
@@ -414,6 +468,66 @@ async def cancel_subscription(
         message=result.message,
         entitlement=_entitlement_response(snapshot),
     )
+
+
+@router.post("/webhooks/{provider}", response_model=BillingWebhookResponse)
+async def billing_webhook(provider: str, request: Request, db: DbSession):
+    raw_body = await request.body()
+    try:
+        result = await process_webhook(
+            db,
+            provider=provider,
+            raw_body=raw_body,
+            headers=dict(request.headers),
+            request=request,
+            config=settings,
+        )
+    except Exception as exc:
+        _raise_billing_http_error(exc)
+    return BillingWebhookResponse(**result.__dict__)
+
+
+@router.post("/orders/{order_id}/refunds", response_model=BillingRefundResponse)
+async def refund_billing_order(
+    order_id: int,
+    data: RefundRequest,
+    request: Request,
+    current_user: CurrentUser,
+    db: DbSession,
+):
+    try:
+        result = await refund_order(
+            db,
+            user=current_user,
+            order_id=order_id,
+            amount_minor=data.amount_minor,
+            reason=data.reason,
+            request=request,
+            config=settings,
+        )
+    except Exception as exc:
+        _raise_billing_http_error(exc)
+    return BillingRefundResponse(**result.__dict__)
+
+
+@router.post("/orders/{order_id}/reconcile", response_model=BillingReconcileResponse)
+async def reconcile_billing_order(
+    order_id: int,
+    request: Request,
+    current_user: CurrentUser,
+    db: DbSession,
+):
+    try:
+        result = await reconcile_order(
+            db,
+            user=current_user,
+            order_id=order_id,
+            request=request,
+            config=settings,
+        )
+    except Exception as exc:
+        _raise_billing_http_error(exc)
+    return BillingReconcileResponse(**result.__dict__)
 
 
 @router.post("/entitlements/require")

@@ -4,7 +4,7 @@
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from sqlalchemy import select
 
 from app.api.deps import CurrentTokenPayload, CurrentUser, DbSession
@@ -45,6 +45,118 @@ from app.models.security import DeviceSession
 
 router = APIRouter(prefix="/auth", tags=["认证"])
 
+REFRESH_TOKEN_COOKIE_NAME = "prism_refresh_token"
+REFRESH_TOKEN_COOKIE_PATH = "/api/auth"
+AUTH_MUTATION_CLIENT_HEADER = "x-prism-client"
+AUTH_MUTATION_CLIENT_VALUE = "web"
+AUTH_MUTATION_X_REQUESTED_WITH_HEADER = "x-requested-with"
+AUTH_MUTATION_X_REQUESTED_WITH_VALUE = "xmlhttprequest"
+
+
+def _refresh_cookie_max_age_seconds() -> int:
+    return settings.jwt_refresh_token_expire_days * 24 * 60 * 60
+
+
+def _refresh_cookie_samesite() -> str:
+    return "none" if settings.is_production else "lax"
+
+
+def _set_refresh_token_cookie(response: Response, refresh_token: str) -> None:
+    response.set_cookie(
+        key=REFRESH_TOKEN_COOKIE_NAME,
+        value=refresh_token,
+        max_age=_refresh_cookie_max_age_seconds(),
+        path=REFRESH_TOKEN_COOKIE_PATH,
+        secure=settings.is_production,
+        httponly=True,
+        samesite=_refresh_cookie_samesite(),
+    )
+
+
+def _delete_refresh_token_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=REFRESH_TOKEN_COOKIE_NAME,
+        path=REFRESH_TOKEN_COOKIE_PATH,
+        secure=settings.is_production,
+        httponly=True,
+        samesite=_refresh_cookie_samesite(),
+    )
+
+
+def _delete_refresh_cookie_headers() -> dict[str, str]:
+    response = Response()
+    _delete_refresh_token_cookie(response)
+    set_cookie = response.headers.get("set-cookie")
+    return {"Set-Cookie": set_cookie} if set_cookie else {}
+
+
+def _access_token_response(access_token: str) -> TokenResponse:
+    return TokenResponse(
+        access_token=access_token,
+        expires_in=settings.jwt_access_token_expire_minutes * 60,
+    )
+
+
+def _refresh_auth_exception(detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers=_delete_refresh_cookie_headers(),
+    )
+
+
+def _has_auth_mutation_client_header(request: Request) -> bool:
+    prism_client = (request.headers.get(AUTH_MUTATION_CLIENT_HEADER) or "").strip().lower()
+    requested_with = (request.headers.get(AUTH_MUTATION_X_REQUESTED_WITH_HEADER) or "").strip().lower()
+    return (
+        prism_client == AUTH_MUTATION_CLIENT_VALUE
+        or requested_with == AUTH_MUTATION_X_REQUESTED_WITH_VALUE
+    )
+
+
+async def _reject_auth_mutation_without_client_header(
+    *,
+    request: Request,
+    db: DbSession,
+    event_type: str,
+    route_name: str,
+) -> None:
+    if _has_auth_mutation_client_header(request):
+        return
+
+    await audit_security_event(
+        db,
+        event_type=event_type,
+        event_status="missing_client_header",
+        request=request,
+        route_name=route_name,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="缺少有效客户端请求头",
+    )
+
+
+def _decode_logout_payload(request: Request) -> dict | None:
+    candidates: list[str] = []
+    authorization = (request.headers.get("authorization") or "").strip()
+    if authorization.lower().startswith("bearer "):
+        candidates.append(authorization.split(None, 1)[1].strip())
+    cookie_token = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME)
+    if cookie_token:
+        candidates.append(cookie_token)
+
+    for token in candidates:
+        payload = decode_token(token)
+        if (
+            payload
+            and payload.get("type") in {"access", "refresh"}
+            and payload.get("sub") is not None
+            and payload.get("sid")
+        ):
+            return payload
+    return None
+
 
 def _device_session_response(row: DeviceSession, *, current_session_id: str | None) -> DeviceSessionResponse:
     return DeviceSessionResponse(
@@ -72,8 +184,13 @@ def _send_code_response_payload(result) -> dict:
     return payload
 
 
-@router.post("/register", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
-async def register(data: UserRegister, request: Request, db: DbSession):
+@router.post(
+    "/register",
+    response_model=LoginResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_201_CREATED,
+)
+async def register(data: UserRegister, request: Request, response: Response, db: DbSession):
     """
     用户注册
 
@@ -134,19 +251,16 @@ async def register(data: UserRegister, request: Request, db: DbSession):
             "consent_accepted_at": consent_accepted_at.isoformat(),
         },
     )
+    _set_refresh_token_cookie(response, refresh_token)
 
     return LoginResponse(
         user=UserResponse.model_validate(user),
-        tokens=TokenResponse(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            expires_in=settings.jwt_access_token_expire_minutes * 60
-        )
+        tokens=_access_token_response(access_token),
     )
 
 
-@router.post("/login", response_model=LoginResponse)
-async def login(data: UserLogin, request: Request, db: DbSession):
+@router.post("/login", response_model=LoginResponse, response_model_exclude_none=True)
+async def login(data: UserLogin, request: Request, response: Response, db: DbSession):
     """
     用户登录
 
@@ -197,14 +311,11 @@ async def login(data: UserLogin, request: Request, db: DbSession):
         session_id=device_session.session_id,
         route_name="/api/auth/login",
     )
+    _set_refresh_token_cookie(response, refresh_token)
 
     return LoginResponse(
         user=UserResponse.model_validate(user),
-        tokens=TokenResponse(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            expires_in=settings.jwt_access_token_expire_minutes * 60
-        )
+        tokens=_access_token_response(access_token),
     )
 
 
@@ -255,8 +366,8 @@ async def send_code(data: SendCodeRequest, request: Request, db: DbSession):
     return _send_code_response_payload(result)
 
 
-@router.post("/login-code", response_model=LoginResponse)
-async def login_with_code(data: CodeLoginRequest, request: Request, db: DbSession):
+@router.post("/login-code", response_model=LoginResponse, response_model_exclude_none=True)
+async def login_with_code(data: CodeLoginRequest, request: Request, response: Response, db: DbSession):
     """验证码登录"""
     if not verification_service.verify(data.phone, "login", data.code):
         locked = verification_service.is_locked(data.phone, "login")
@@ -305,14 +416,11 @@ async def login_with_code(data: CodeLoginRequest, request: Request, db: DbSessio
         session_id=device_session.session_id,
         route_name="/api/auth/login-code",
     )
+    _set_refresh_token_cookie(response, refresh_token)
 
     return LoginResponse(
         user=UserResponse.model_validate(user),
-        tokens=TokenResponse(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            expires_in=settings.jwt_access_token_expire_minutes * 60
-        )
+        tokens=_access_token_response(access_token),
     )
 
 
@@ -362,14 +470,40 @@ async def reset_password(data: ResetPasswordRequest, request: Request, db: DbSes
     return {"success": True, "message": "密码重置成功，请重新登录所有设备"}
 
 
-@router.post("/refresh", response_model=TokenResponse)
-async def refresh_token(data: RefreshTokenRequest, request: Request, db: DbSession):
+@router.post("/refresh", response_model=TokenResponse, response_model_exclude_none=True)
+async def refresh_token(
+    request: Request,
+    response: Response,
+    db: DbSession,
+    data: RefreshTokenRequest | None = None,
+):
     """
     刷新 Access Token
 
     使用 Refresh Token 获取新的 Access Token
     """
-    payload = decode_token(data.refresh_token)
+    await _reject_auth_mutation_without_client_header(
+        request=request,
+        db=db,
+        event_type="auth.refresh",
+        route_name="/api/auth/refresh",
+    )
+
+    refresh_token_value = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME)
+    if not refresh_token_value and data is not None:
+        refresh_token_value = data.refresh_token
+
+    if not refresh_token_value:
+        await audit_security_event(
+            db,
+            event_type="auth.refresh",
+            event_status="missing_token",
+            request=request,
+            route_name="/api/auth/refresh",
+        )
+        raise _refresh_auth_exception("缺少Refresh Token")
+
+    payload = decode_token(refresh_token_value)
 
     if payload is None or payload.get("type") != "refresh":
         await audit_security_event(
@@ -379,10 +513,7 @@ async def refresh_token(data: RefreshTokenRequest, request: Request, db: DbSessi
             request=request,
             route_name="/api/auth/refresh",
         )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效或过期的Refresh Token"
-        )
+        raise _refresh_auth_exception("无效或过期的Refresh Token")
 
     user_id = payload.get("sub")
     if user_id is None:
@@ -394,10 +525,7 @@ async def refresh_token(data: RefreshTokenRequest, request: Request, db: DbSessi
             session_id=payload.get("sid"),
             route_name="/api/auth/refresh",
         )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效或过期的Refresh Token"
-        )
+        raise _refresh_auth_exception("无效或过期的Refresh Token")
 
     try:
         parsed_user_id = int(user_id)
@@ -410,10 +538,7 @@ async def refresh_token(data: RefreshTokenRequest, request: Request, db: DbSessi
             session_id=payload.get("sid"),
             route_name="/api/auth/refresh",
         )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效或过期的Refresh Token"
-        )
+        raise _refresh_auth_exception("无效或过期的Refresh Token")
 
     # 验证用户是否存在且有效
     result = await db.execute(select(User).where(User.id == parsed_user_id))
@@ -429,10 +554,7 @@ async def refresh_token(data: RefreshTokenRequest, request: Request, db: DbSessi
             session_id=payload.get("sid"),
             route_name="/api/auth/refresh",
         )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户不存在或已被禁用"
-        )
+        raise _refresh_auth_exception("用户不存在或已被禁用")
 
     try:
         access_token, new_refresh_token, device_session = await rotate_refresh_session(
@@ -451,10 +573,7 @@ async def refresh_token(data: RefreshTokenRequest, request: Request, db: DbSessi
             session_id=payload.get("sid"),
             route_name="/api/auth/refresh",
         )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
-        ) from exc
+        raise _refresh_auth_exception(str(exc)) from exc
 
     await audit_security_event(
         db,
@@ -465,26 +584,63 @@ async def refresh_token(data: RefreshTokenRequest, request: Request, db: DbSessi
         session_id=device_session.session_id,
         route_name="/api/auth/refresh",
     )
+    _set_refresh_token_cookie(response, new_refresh_token)
 
     return TokenResponse(
         access_token=access_token,
-        refresh_token=new_refresh_token,
-        expires_in=settings.jwt_access_token_expire_minutes * 60
+        expires_in=settings.jwt_access_token_expire_minutes * 60,
     )
 
 
 @router.post("/logout")
 async def logout(
     request: Request,
-    current_user: CurrentUser,
-    token_payload: CurrentTokenPayload,
+    response: Response,
     db: DbSession,
 ):
     """退出登录并撤销当前设备会话。"""
-    session_id = token_payload.get("sid")
+    await _reject_auth_mutation_without_client_header(
+        request=request,
+        db=db,
+        event_type="auth.logout",
+        route_name="/api/auth/logout",
+    )
+
+    payload = _decode_logout_payload(request)
+    if not payload:
+        await audit_security_event(
+            db,
+            event_type="auth.logout",
+            event_status="missing_or_invalid_token",
+            request=request,
+            route_name="/api/auth/logout",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效或过期的Token",
+            headers=_delete_refresh_cookie_headers(),
+        )
+
+    try:
+        user_id = int(payload["sub"])
+    except (TypeError, ValueError) as exc:
+        await audit_security_event(
+            db,
+            event_type="auth.logout",
+            event_status="invalid_subject",
+            request=request,
+            session_id=payload.get("sid"),
+            route_name="/api/auth/logout",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效或过期的Token",
+            headers=_delete_refresh_cookie_headers(),
+        ) from exc
+    session_id = payload.get("sid")
     revoked = await revoke_device_session(
         db,
-        user_id=current_user.id,
+        user_id=user_id,
         session_id=session_id,
         reason="user_logout",
     )
@@ -492,11 +648,12 @@ async def logout(
         db,
         event_type="auth.logout",
         event_status="success" if revoked else "legacy_token",
-        user_id=current_user.id,
+        user_id=user_id,
         request=request,
         session_id=session_id,
         route_name="/api/auth/logout",
     )
+    _delete_refresh_token_cookie(response)
     return {"success": True, "message": "已退出登录"}
 
 

@@ -183,7 +183,11 @@ function Wait-Tcp([string]$HostName, [int]$Port, [int]$TimeoutSeconds = 30) {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $backendDir = Join-Path $repoRoot "backend"
-$backendPython = Join-Path $backendDir "venv\Scripts\python.exe"
+$preferredBackendVenv = Join-Path $backendDir ".venv"
+$legacyBackendVenv = Join-Path $backendDir "venv"
+$backendVenv = if (Test-Path (Join-Path $preferredBackendVenv "Scripts\python.exe")) { $preferredBackendVenv } else { $legacyBackendVenv }
+$backendPython = Join-Path $backendVenv "Scripts\python.exe"
+$backendSitePackages = Join-Path $backendVenv "Lib\site-packages"
 $runtimeDir = Join-Path $backendDir ".runtime"
 $pidDir = Join-Path $runtimeDir "pids"
 $postgresDataDir = Join-Path $runtimeDir "postgres-data"
@@ -195,6 +199,9 @@ $frontendPidFile = Join-Path $pidDir "frontend.pid"
 
 if (-not (Test-Path $backendPython)) {
     throw "Backend virtualenv python was not found at '$backendPython'."
+}
+if (-not (Test-Path $backendSitePackages)) {
+    throw "Backend virtualenv site-packages was not found at '$backendSitePackages'."
 }
 
 $npmCmd = Resolve-NpmCmd
@@ -252,7 +259,9 @@ Write-Step "Running Alembic migrations"
 Push-Location $backendDir
 try {
     $env:DATABASE_URL = $databaseUrl
-    & $backendPython -m alembic upgrade head
+    $env:PYTHONPATH = $backendSitePackages
+    $alembicCommand = "import sys; sys.path.insert(0, r'$backendSitePackages'); from alembic.config import main; main(['upgrade', 'head'])"
+    & $backendPython -c $alembicCommand
     if ($LASTEXITCODE -ne 0) {
         throw "Alembic migration failed with exit code $LASTEXITCODE. Verify DATABASE_URL and PostgreSQL connectivity."
     }
@@ -276,6 +285,7 @@ if (-not $SkipBackend) {
     Write-Step "Starting backend on http://localhost:$BackendPort"
     $backendCommand = @"
 `$env:DATABASE_URL = '$databaseUrl'
+`$env:PYTHONPATH = '$backendSitePackages'
 Set-Location '$backendDir'
 & '$backendPython' -m uvicorn app.main:app --host 0.0.0.0 --port $BackendPort *>> '$backendLogFile'
 "@

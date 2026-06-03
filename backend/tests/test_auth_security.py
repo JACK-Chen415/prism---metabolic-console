@@ -3,6 +3,7 @@ from pydantic import ValidationError
 from datetime import datetime, timedelta, timezone
 import inspect
 from types import SimpleNamespace
+from fastapi import HTTPException, Response
 
 from app.core import security as security_core
 from app.api.routes import auth as auth_route
@@ -77,10 +78,22 @@ class FakeQuerySession(FakeSession):
         return FakeResult(self.row)
 
 
+class FakeSequenceSession(FakeSession):
+    def __init__(self, rows):
+        super().__init__()
+        self.rows = list(rows)
+        self.execute_count = 0
+
+    async def execute(self, statement):
+        self.execute_count += 1
+        row_index = min(self.execute_count - 1, len(self.rows) - 1)
+        return FakeResult(self.rows[row_index])
+
+
 @pytest.mark.asyncio
 async def test_create_session_token_pair_persists_session_and_adds_sid_jti():
     db = FakeSession()
-    user = User(id=42, phone="13800138000", password_hash="hash")
+    user = User(id=42, phone="13800138000", password_hash="hash", is_active=True)
 
     access_token, refresh_token, device_session = await create_session_token_pair(
         db,
@@ -294,9 +307,16 @@ async def test_register_route_requires_and_persists_compliance_consents():
         user_schema.UserRegister(**payload)
 
     payload["health_disclaimer_accepted"] = True
-    accepted = await auth_route.register(user_schema.UserRegister(**payload), None, db)
+    response = Response()
+    accepted = await auth_route.register(user_schema.UserRegister(**payload), None, response, db)
 
     assert accepted.user.phone == "13800138000"
+    assert accepted.tokens.access_token
+    assert accepted.tokens.refresh_token is None
+    set_cookie = response.headers["set-cookie"]
+    assert auth_route.REFRESH_TOKEN_COOKIE_NAME in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=lax" in set_cookie
     created_user = next(item for item in db.added if isinstance(item, User))
     assert created_user.consent_version == "2026-05-30"
     assert created_user.consent_accepted_at is not None
@@ -304,6 +324,161 @@ async def test_register_route_requires_and_persists_compliance_consents():
     assert created_user.consent_privacy_accepted is True
     assert created_user.consent_ai_use_accepted is True
     assert created_user.consent_health_disclaimer_accepted is True
+
+
+def test_refresh_cookie_helpers_use_http_only_secure_production_cookie(monkeypatch):
+    monkeypatch.setattr(
+        auth_route,
+        "settings",
+        SimpleNamespace(jwt_refresh_token_expire_days=7, is_production=True),
+    )
+    response = Response()
+
+    auth_route._set_refresh_token_cookie(response, "refresh-token")
+    set_cookie = response.headers["set-cookie"]
+
+    assert "prism_refresh_token=refresh-token" in set_cookie
+    assert "Max-Age=604800" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "Secure" in set_cookie
+    assert "SameSite=none" in set_cookie
+
+
+@pytest.mark.asyncio
+async def test_refresh_route_missing_cookie_or_body_clears_refresh_cookie():
+    db = FakeSession()
+    request = SimpleNamespace(headers={"x-prism-client": "web"}, cookies={}, client=None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await auth_route.refresh_token(request, Response(), db, None)
+
+    assert exc_info.value.status_code == 401
+    assert "缺少Refresh Token" in exc_info.value.detail
+    assert "prism_refresh_token=" in exc_info.value.headers["Set-Cookie"]
+    assert "Max-Age=0" in exc_info.value.headers["Set-Cookie"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("headers", [{}, {"x-prism-client": "mobile"}])
+async def test_refresh_route_rejects_missing_or_bad_client_header_without_rotating(headers):
+    now = datetime.now(timezone.utc)
+    session_id = "sid-refresh"
+    refresh_token, refresh_jti = security_core.create_refresh_token(42, session_id=session_id)
+    session = DeviceSession(
+        user_id=42,
+        session_id=session_id,
+        refresh_jti_hash=security_core.hash_sensitive_value(refresh_jti) or "",
+        expires_at=now + timedelta(days=7),
+        created_at=now,
+        last_seen_at=now,
+    )
+    original_jti_hash = session.refresh_jti_hash
+    db = FakeSequenceSession([User(id=42, phone="13800138000", password_hash="hash"), session])
+    request = SimpleNamespace(
+        headers=headers,
+        cookies={auth_route.REFRESH_TOKEN_COOKIE_NAME: refresh_token},
+        client=None,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await auth_route.refresh_token(request, Response(), db, None)
+
+    assert exc_info.value.status_code == 403
+    assert session.refresh_jti_hash == original_jti_hash
+    assert session.revoked_at is None
+    assert db.execute_count == 0
+
+
+@pytest.mark.asyncio
+async def test_refresh_route_with_client_header_rotates_and_sets_new_cookie():
+    now = datetime.now(timezone.utc)
+    session_id = "sid-refresh"
+    user = User(id=42, phone="13800138000", password_hash="hash", is_active=True)
+    refresh_token, refresh_jti = security_core.create_refresh_token(user.id, session_id=session_id)
+    session = DeviceSession(
+        user_id=user.id,
+        session_id=session_id,
+        refresh_jti_hash=security_core.hash_sensitive_value(refresh_jti) or "",
+        expires_at=now + timedelta(days=7),
+        created_at=now,
+        last_seen_at=now,
+    )
+    original_jti_hash = session.refresh_jti_hash
+    db = FakeSequenceSession([user, session])
+    request = SimpleNamespace(
+        headers={"x-prism-client": "web"},
+        cookies={auth_route.REFRESH_TOKEN_COOKIE_NAME: refresh_token},
+        client=None,
+    )
+    response = Response()
+
+    token_response = await auth_route.refresh_token(request, response, db, None)
+
+    assert token_response.access_token
+    assert session.refresh_jti_hash != original_jti_hash
+    assert session.revoked_at is None
+    assert db.execute_count == 2
+    assert auth_route.REFRESH_TOKEN_COOKIE_NAME in response.headers["set-cookie"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("headers", [{}, {"x-prism-client": "mobile"}])
+async def test_logout_route_rejects_missing_or_bad_client_header_without_revoking(headers):
+    now = datetime.now(timezone.utc)
+    session_id = "sid-logout"
+    access_token = security_core.create_access_token(42, session_id=session_id)
+    session = DeviceSession(
+        user_id=42,
+        session_id=session_id,
+        refresh_jti_hash="jti-hash",
+        expires_at=now + timedelta(days=7),
+        created_at=now,
+        last_seen_at=now,
+    )
+    db = FakeQuerySession(session)
+    request_headers = {"authorization": f"Bearer {access_token}", **headers}
+    request = SimpleNamespace(headers=request_headers, cookies={}, client=None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await auth_route.logout(request, Response(), db)
+
+    assert exc_info.value.status_code == 403
+    assert session.revoked_at is None
+    assert db.execute_count == 0
+
+
+@pytest.mark.asyncio
+async def test_logout_route_with_client_header_revokes_session_and_clears_cookie():
+    now = datetime.now(timezone.utc)
+    session_id = "sid-logout"
+    access_token = security_core.create_access_token(42, session_id=session_id)
+    session = DeviceSession(
+        user_id=42,
+        session_id=session_id,
+        refresh_jti_hash="jti-hash",
+        expires_at=now + timedelta(days=7),
+        created_at=now,
+        last_seen_at=now,
+    )
+    db = FakeQuerySession(session)
+    request = SimpleNamespace(
+        headers={
+            "authorization": f"Bearer {access_token}",
+            "x-requested-with": "XMLHttpRequest",
+        },
+        cookies={},
+        client=None,
+    )
+    response = Response()
+
+    payload = await auth_route.logout(request, response, db)
+
+    assert payload["success"] is True
+    assert session.revoked_at is not None
+    assert session.revoke_reason == "user_logout"
+    assert db.execute_count == 1
+    assert "prism_refresh_token=" in response.headers["set-cookie"]
+    assert "Max-Age=0" in response.headers["set-cookie"]
 
 @pytest.mark.asyncio
 async def test_change_password_route_revokes_existing_sessions():

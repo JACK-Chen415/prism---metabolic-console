@@ -3,7 +3,7 @@
  * 封装与后端 API 的通信
  */
 
-import { AUTH_STORAGE_KEYS } from '../constants/storage';
+import { AUTH_STORAGE_KEYS, LEGACY_AUTH_STORAGE_KEYS } from '../constants/storage';
 import { AdminActivationMetricsSummary, AdminAITelemetrySummary, AdminCommercializationSummary, AdminFeedbackItem, AdminKnowledgeBacklogSummary, AdminReleaseReadinessSummary, AdminUserItem, AIFeedbackItem, AIFeedbackType, BillingProviderItem, BillingUsageSnapshot, ChatStreamEvent, CheckoutSession, DataRightsRequestResponse, DeviceSessionItem, EntitlementSnapshot, FeedbackStatus, HealthMetric, HealthMetricCreateInput, HealthMetricProvider, HealthMetricType, InsightFeedbackPayload, IntakeCandidate, IntakeDraftSession, KnowledgeAuditItem, MetabolicReport, PlanCatalogItem, PlanTier, SecurityAuditItem, SubscriptionLifecycleResponse, SubscriptionStatus, UserDataExportBundle, UserRole } from '../types';
 
 const LOCAL_API_FALLBACK = 'http://127.0.0.1:8000/api';
@@ -53,6 +53,12 @@ export const resolveApiBaseUrl = (): string => {
 };
 
 const API_BASE_URL = resolveApiBaseUrl();
+let inMemoryAccessToken: string | null = null;
+
+const canUseLocalStorage = (): boolean => typeof localStorage !== 'undefined';
+const AUTH_MUTATION_CLIENT_HEADERS: HeadersInit = {
+    'X-Prism-Client': 'web',
+};
 
 export const REGISTRATION_CONSENT_VERSION = '2026-05-30';
 
@@ -66,25 +72,28 @@ export interface RegistrationConsentPayload {
 
 export const TokenManager = {
     getAccessToken: (): string | null => {
-        return localStorage.getItem(AUTH_STORAGE_KEYS.accessToken);
+        if (inMemoryAccessToken) return inMemoryAccessToken;
+        if (!canUseLocalStorage()) return null;
+        inMemoryAccessToken = localStorage.getItem(AUTH_STORAGE_KEYS.accessToken);
+        return inMemoryAccessToken;
     },
 
-    getRefreshToken: (): string | null => {
-        return localStorage.getItem(AUTH_STORAGE_KEYS.refreshToken);
-    },
-
-    setTokens: (accessToken: string, refreshToken: string): void => {
+    setTokens: (accessToken: string): void => {
+        inMemoryAccessToken = accessToken;
+        if (!canUseLocalStorage()) return;
         localStorage.setItem(AUTH_STORAGE_KEYS.accessToken, accessToken);
-        localStorage.setItem(AUTH_STORAGE_KEYS.refreshToken, refreshToken);
+        localStorage.removeItem(LEGACY_AUTH_STORAGE_KEYS.sessionToken);
     },
 
     clearTokens: (): void => {
+        inMemoryAccessToken = null;
+        if (!canUseLocalStorage()) return;
         localStorage.removeItem(AUTH_STORAGE_KEYS.accessToken);
-        localStorage.removeItem(AUTH_STORAGE_KEYS.refreshToken);
+        localStorage.removeItem(LEGACY_AUTH_STORAGE_KEYS.sessionToken);
     },
 
     isAuthenticated: (): boolean => {
-        return !!localStorage.getItem(AUTH_STORAGE_KEYS.accessToken);
+        return !!TokenManager.getAccessToken();
     }
 };
 
@@ -137,19 +146,16 @@ class ApiClient {
     }
 
     private async refreshAccessToken(): Promise<boolean> {
-        const refreshToken = TokenManager.getRefreshToken();
-        if (!refreshToken) return false;
-
         try {
             const response = await fetch(`${this.baseUrl}/auth/refresh`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ refresh_token: refreshToken })
+                headers: AUTH_MUTATION_CLIENT_HEADERS,
+                credentials: 'include'
             });
 
             if (response.ok) {
                 const data = await response.json();
-                TokenManager.setTokens(data.access_token, data.refresh_token);
+                TokenManager.setTokens(data.access_token);
                 return true;
             }
         } catch (error) {
@@ -170,6 +176,7 @@ class ApiClient {
 
         const response = await fetch(url, {
             ...options,
+            credentials: 'include',
             headers: { ...headers, ...options.headers }
         });
 
@@ -187,6 +194,7 @@ class ApiClient {
                 const newHeaders = await this.getHeaders(true);
                 const retryResponse = await fetch(url, {
                     ...options,
+                    credentials: 'include',
                     headers: { ...newHeaders, ...options.headers }
                 });
 
@@ -222,6 +230,7 @@ class ApiClient {
             return fetch(url, {
                 method: 'POST',
                 headers,
+                credentials: 'include',
                 body: JSON.stringify(data)
             });
         };
@@ -312,7 +321,7 @@ class ApiClient {
         const url = `${this.baseUrl}${endpoint}`;
         const fetchText = async () => {
             const headers = await this.getHeaders(requiresAuth);
-            return fetch(url, { method: 'GET', headers });
+            return fetch(url, { method: 'GET', headers, credentials: 'include' });
         };
 
         let response = await fetchText();
@@ -400,6 +409,7 @@ class ApiClient {
             return fetch(`${this.baseUrl}${endpoint}`, {
                 method: 'POST',
                 headers,
+                credentials: 'include',
                 body: buildFormData(),
                 signal: options.signal
             });
@@ -458,13 +468,17 @@ export const AuthAPI = {
 
     logout: async () => {
         const token = TokenManager.getAccessToken();
-        const headers: HeadersInit = { 'Content-Type': 'application/json' };
+        const headers: HeadersInit = {
+            'Content-Type': 'application/json',
+            ...AUTH_MUTATION_CLIENT_HEADERS,
+        };
         if (token) {
             headers.Authorization = `Bearer ${token}`;
         }
         const response = await fetch(`${API_BASE_URL}/auth/logout`, {
             method: 'POST',
             headers,
+            credentials: 'include',
             body: JSON.stringify({}),
         });
         if (!response.ok && response.status !== 401) {
