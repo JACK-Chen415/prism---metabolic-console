@@ -36,6 +36,7 @@ from app.services.target_service import calculate_daily_targets
 from app.services.auth_security import (
     audit_security_event,
     create_session_token_pair,
+    is_password_login_locked,
     revoke_all_device_sessions,
     revoke_device_session,
     rotate_refresh_session,
@@ -267,6 +268,21 @@ async def login(data: UserLogin, request: Request, response: Response, db: DbSes
     - **phone**: 手机号
     - **password**: 密码
     """
+    if await is_password_login_locked(db, actor=data.phone):
+        await audit_security_event(
+            db,
+            event_type="auth.password_login",
+            event_status="failure_locked",
+            request=request,
+            actor=data.phone,
+            route_name="/api/auth/login",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="登录失败次数过多，请稍后再试",
+            headers={"Retry-After": "900"},
+        )
+
     # 查询用户
     result = await db.execute(select(User).where(User.phone == data.phone))
     user = result.scalar_one_or_none()

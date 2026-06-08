@@ -7,7 +7,7 @@ import re
 from typing import Any, Optional
 
 from fastapi import Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -19,6 +19,11 @@ from app.core.security import (
 )
 from app.models.security import DeviceSession, SecurityAuditLog
 from app.models.user import User
+
+
+PASSWORD_LOGIN_FAILURE_LIMIT = 5
+PASSWORD_LOGIN_LOCKOUT_WINDOW_MINUTES = 15
+PASSWORD_LOGIN_FAILURE_STATUSES = {"failure", "failure_locked"}
 
 
 def _utcnow() -> datetime:
@@ -168,6 +173,37 @@ async def audit_security_event(
         )
     )
     await db.flush()
+
+
+async def is_password_login_locked(
+    db: AsyncSession,
+    *,
+    actor: str,
+    now: Optional[datetime] = None,
+    failure_limit: int = PASSWORD_LOGIN_FAILURE_LIMIT,
+    window_minutes: int = PASSWORD_LOGIN_LOCKOUT_WINDOW_MINUTES,
+) -> bool:
+    """Return whether a password-login actor is temporarily locked.
+
+    The lookup is driven by sanitized audit rows so the service does not need
+    to persist raw phone numbers or introduce a second abuse-tracking table for
+    the current gray-release scope.
+    """
+    actor_hash = hash_sensitive_value(actor)
+    if not actor_hash:
+        return False
+
+    cutoff = (now or _utcnow()) - timedelta(minutes=window_minutes)
+    result = await db.execute(
+        select(func.count(SecurityAuditLog.id)).where(
+            SecurityAuditLog.event_type == "auth.password_login",
+            SecurityAuditLog.event_status.in_(PASSWORD_LOGIN_FAILURE_STATUSES),
+            SecurityAuditLog.actor_hash == actor_hash,
+            SecurityAuditLog.created_at >= cutoff,
+        )
+    )
+    failure_count = int(result.scalar_one() or 0)
+    return failure_count >= failure_limit
 
 
 async def create_session_token_pair(

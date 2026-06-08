@@ -15,6 +15,11 @@ def normalize_food_text(value: Optional[str]) -> str:
 
 
 class FoodMatcherService:
+    async def list_enabled_foods(self, db: AsyncSession) -> list[FoodItem]:
+        return (
+            await db.execute(select(FoodItem).where(FoodItem.is_enabled.is_(True)))
+        ).scalars().all()
+
     async def find_by_name_or_code(
         self,
         db: AsyncSession,

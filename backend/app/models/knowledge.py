@@ -115,6 +115,7 @@ class FoodItem(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     food_code: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    barcode: Mapped[Optional[str]] = mapped_column(String(32), unique=True, index=True, nullable=True)
     name_zh: Mapped[str] = mapped_column(String(100), nullable=False)
     aliases_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     category: Mapped[str] = mapped_column(String(50), index=True, nullable=False)

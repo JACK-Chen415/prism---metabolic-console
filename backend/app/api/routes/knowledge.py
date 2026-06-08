@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession
 from app.models.health_condition import HealthCondition
+from app.core.config import settings
 from app.models.knowledge import (
     DEFAULT_NUTRITION_ESTIMATE_QUALITY,
     DEFAULT_NUTRITION_REVIEW_STATUS,
@@ -14,6 +15,8 @@ from app.models.knowledge import (
     DEFAULT_NUTRITION_SOURCE_DETAIL,
     Disease,
     FoodItem,
+    FallbackStatus,
+    KnowledgeOrigin,
     KnowledgeSource,
 )
 from app.schemas.knowledge import (
@@ -23,15 +26,31 @@ from app.schemas.knowledge import (
     FoodItemResponse,
     KnowledgeSummaryRequest,
     KnowledgeSummaryResponse,
+    PackagedFoodBarcodeLookupRequest,
+    PackagedFoodCandidateResponse,
+    PackagedFoodLabelNormalizeRequest,
+    PackagedFoodLookupResponse,
     RuleEvaluationResponse,
     RuleSourceResponse,
     SourceResponse,
 )
 from app.services.knowledge import KnowledgeService, write_knowledge_audit_log
 from app.services.knowledge.matcher import normalize_food_text
+from app.services.packaged_food import (
+    PACKAGED_FOOD_DISCLAIMER,
+    PackagedFoodCandidate,
+    PackagedFoodLookupService,
+    PackagedFoodProviderRegistry,
+    build_manual_label_candidate,
+    normalize_barcode,
+)
 
 router = APIRouter(prefix="/knowledge", tags=["知识库"])
 knowledge_service = KnowledgeService()
+packaged_food_service = PackagedFoodLookupService(
+    provider=PackagedFoodProviderRegistry(settings.packaged_food_provider).get_provider(),
+    knowledge_service=knowledge_service,
+)
 
 
 async def _get_user_conditions(user_id: int, db: DbSession) -> list[HealthCondition]:
@@ -45,6 +64,7 @@ async def _get_user_conditions(user_id: int, db: DbSession) -> list[HealthCondit
 def _food_to_response(food: FoodItem) -> FoodItemResponse:
     return FoodItemResponse(
         food_code=food.food_code,
+        barcode=food.barcode,
         name_zh=food.name_zh,
         aliases=food.aliases_json or [],
         category=food.category,
@@ -81,6 +101,85 @@ def _source_to_response(source: KnowledgeSource) -> SourceResponse:
         applicable_disease_codes=source.applicable_disease_codes_json or [],
         notes=source.notes,
     )
+
+
+def _unique_values(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        clean = str(value).strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            result.append(clean)
+    return result
+
+
+def _packaged_review_reasons(candidate: PackagedFoodCandidate, decision: EvaluateFoodResponse) -> list[str]:
+    reasons: list[str] = []
+    if candidate.provider_status.value in {"mock", "planned"}:
+        reasons.append("mock_or_planned_provider")
+    if candidate.confidence < 0.85:
+        reasons.append("provider_confidence_below_review_threshold")
+    if candidate.nutrition_review_status != "REVIEWED":
+        reasons.append("nutrition_label_needs_user_review")
+    if decision.hard_blocks:
+        reasons.append("hard_block_requires_review")
+    decision_level = decision.recommendation_level.value if decision.recommendation_level else None
+    if decision_level in {"AVOID", "LIMIT", "INSUFFICIENT"}:
+        reasons.append("local_rule_requires_review")
+    if candidate.risk_tags:
+        reasons.append("risk_tags_present")
+    return _unique_values(reasons)
+
+
+def _packaged_candidate_to_response(
+    candidate: PackagedFoodCandidate,
+    decision: EvaluateFoodResponse,
+) -> PackagedFoodCandidateResponse:
+    review_reasons = _packaged_review_reasons(candidate, decision)
+    return PackagedFoodCandidateResponse(
+        barcode_last4=candidate.barcode_last4,
+        food_name=candidate.food_name,
+        brand=candidate.brand,
+        category=candidate.category,
+        serving_size=candidate.serving_size,
+        serving_size_g=candidate.serving_size_g,
+        calories_per_100g=candidate.calories_per_100g,
+        protein_per_100g=candidate.protein_per_100g,
+        carbs_per_100g=candidate.carbs_per_100g,
+        fat_per_100g=candidate.fat_per_100g,
+        fiber_per_100g=candidate.fiber_per_100g,
+        sodium_per_100g=candidate.sodium_per_100g,
+        sugar_per_100g=candidate.sugar_per_100g,
+        purine_per_100g=candidate.purine_per_100g,
+        ingredients=list(candidate.ingredients),
+        allergen_tags=list(candidate.allergen_tags),
+        risk_tags=list(candidate.risk_tags),
+        nutrition_source_code=candidate.nutrition_source_code,
+        nutrition_source_detail=candidate.nutrition_source_detail,
+        nutrition_estimate_quality=candidate.nutrition_estimate_quality,
+        nutrition_review_status=candidate.nutrition_review_status,
+        provider=candidate.provider,
+        provider_status=candidate.provider_status.value,
+        confidence=candidate.confidence,
+        review_required=bool(review_reasons),
+        review_reasons=review_reasons,
+        notes=list(candidate.notes),
+        local_decision=decision,
+        disclaimer=PACKAGED_FOOD_DISCLAIMER,
+    )
+
+
+def _strictest_fallback_status(items: list[EvaluateFoodResponse]):
+    order = {
+        "NO_LOCAL_MATCH_ALLOW_CLOUD": 0,
+        "LOCAL_PARTIAL_ALLOW_CLOUD": 1,
+        "LOCAL_COMPLETE": 2,
+        "LOCAL_BLOCKED_NO_CLOUD": 3,
+    }
+    if not items:
+        return None
+    return max(items, key=lambda item: order.get(item.fallback_status.value, 0)).fallback_status
 
 
 @router.get("/diseases", response_model=list[DiseaseResponse])
@@ -284,6 +383,126 @@ async def evaluate_food_for_user(
         query_excerpt=payload.food_name or payload.food_code,
     )
     return EvaluateFoodResponse(**decision.model_dump())
+
+
+@router.post("/packaged-food/barcode", response_model=PackagedFoodLookupResponse)
+async def lookup_packaged_food_barcode(
+    payload: PackagedFoodBarcodeLookupRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+):
+    try:
+        normalized_barcode = normalize_barcode(payload.barcode)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    conditions = await _get_user_conditions(current_user.id, db)
+    results = await packaged_food_service.lookup_barcode(
+        db,
+        user=current_user,
+        conditions=conditions,
+        barcode=normalized_barcode,
+        explicit_condition_codes=payload.condition_codes,
+        manual_restrictions=payload.manual_restrictions,
+    )
+    responses = [
+        _packaged_candidate_to_response(candidate, EvaluateFoodResponse(**decision.model_dump()))
+        for candidate, decision in results
+    ]
+    fallback_status = _strictest_fallback_status([item.local_decision for item in responses])
+    await write_knowledge_audit_log(
+        db,
+        user_id=current_user.id,
+        route_name="/api/knowledge/packaged-food/barcode",
+        origin=responses[0].local_decision.origin if responses else KnowledgeOrigin.LOCAL_KNOWLEDGE,
+        fallback_status=fallback_status or FallbackStatus.NO_LOCAL_MATCH_ALLOW_CLOUD,
+        matched_disease_codes=_unique_values([
+            code
+            for item in responses
+            for code in item.local_decision.matched_disease_codes
+        ]),
+        matched_food_codes=_unique_values([
+            item.local_decision.food_code
+            for item in responses
+            if item.local_decision.food_code
+        ]),
+        unmapped_conditions=_unique_values([
+            code
+            for item in responses
+            for code in item.local_decision.unmapped_conditions
+        ]),
+        local_decision_level=responses[0].local_decision.recommendation_level if responses else None,
+        called_cloud=False,
+        cloud_blocked_reason="packaged_food_local_review_required" if any(item.review_required for item in responses) else None,
+        query_excerpt=f"barcode_last4:{normalized_barcode[-4:]}",
+    )
+    return PackagedFoodLookupResponse(
+        provider=packaged_food_service.provider.provider,
+        provider_status=packaged_food_service.provider.status.value,
+        barcode_last4=normalized_barcode[-4:],
+        matched=bool(responses),
+        candidates=responses,
+        disclaimer=PACKAGED_FOOD_DISCLAIMER,
+    )
+
+
+@router.post("/packaged-food/label", response_model=PackagedFoodCandidateResponse)
+async def normalize_packaged_food_label(
+    payload: PackagedFoodLabelNormalizeRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+):
+    try:
+        candidate = build_manual_label_candidate(
+            product_name=payload.product_name,
+            brand=payload.brand,
+            barcode=payload.barcode,
+            category=payload.category,
+            serving_size=payload.serving_size,
+            serving_size_g=payload.serving_size_g,
+            calories_per_100g=payload.calories_per_100g,
+            protein_per_100g=payload.protein_per_100g,
+            carbs_per_100g=payload.carbs_per_100g,
+            fat_per_100g=payload.fat_per_100g,
+            fiber_per_100g=payload.fiber_per_100g,
+            sodium_per_100g=payload.sodium_per_100g,
+            sugar_per_100g=payload.sugar_per_100g,
+            purine_per_100g=payload.purine_per_100g,
+            ingredients=payload.ingredients,
+            allergen_tags=payload.allergen_tags,
+            risk_tags=payload.risk_tags,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    conditions = await _get_user_conditions(current_user.id, db)
+    candidate, decision = await packaged_food_service.normalize_label(
+        db,
+        user=current_user,
+        conditions=conditions,
+        candidate=candidate,
+        explicit_condition_codes=payload.condition_codes,
+        manual_restrictions=payload.manual_restrictions,
+    )
+    response = _packaged_candidate_to_response(
+        candidate,
+        EvaluateFoodResponse(**decision.model_dump()),
+    )
+    await write_knowledge_audit_log(
+        db,
+        user_id=current_user.id,
+        route_name="/api/knowledge/packaged-food/label",
+        origin=response.local_decision.origin,
+        fallback_status=response.local_decision.fallback_status,
+        matched_disease_codes=response.local_decision.matched_disease_codes,
+        matched_food_codes=[response.local_decision.food_code] if response.local_decision.food_code else [],
+        unmapped_conditions=response.local_decision.unmapped_conditions,
+        local_decision_level=response.local_decision.recommendation_level,
+        called_cloud=False,
+        cloud_blocked_reason="packaged_food_local_review_required" if response.review_required else None,
+        query_excerpt=f"manual_label:{response.food_name}",
+    )
+    return response
 
 
 @router.post("/summarize", response_model=KnowledgeSummaryResponse)

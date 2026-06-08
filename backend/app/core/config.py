@@ -39,6 +39,8 @@ DEV_OTP_PROVIDERS = {"dev", "development", "console"}
 ALLOWED_BILLING_PROVIDERS = {"mock", "wechat_pay", "alipay"}
 REAL_BILLING_PROVIDERS = {"wechat_pay", "alipay"}
 IMPLEMENTED_BILLING_ADAPTERS = {"mock"}
+ALLOWED_PACKAGED_FOOD_PROVIDERS = {"mock", "dev", "disabled"}
+DEV_PACKAGED_FOOD_PROVIDERS = {"dev"}
 
 
 class Settings(BaseSettings):
@@ -119,6 +121,10 @@ class Settings(BaseSettings):
     # Gray-release entitlement enforcement is off by default so operators can
     # observe pressure before turning on hard gating at the call sites.
     entitlement_enforce_limits: bool = False
+
+    # Packaged food lookup provider
+    # mock/dev are for internal contract testing only and must be surfaced as such in UI/readiness.
+    packaged_food_provider: str = "mock"
 
     # 文件存储配置
     upload_dir: str = "./uploads"
@@ -310,6 +316,19 @@ class Settings(BaseSettings):
         billing_readiness = self.billing_readiness_snapshot()
         warnings.extend(billing_readiness["warnings"])
         blocking.extend(billing_readiness["blocking"])
+
+        packaged_food_provider = self.packaged_food_provider.strip().lower().replace("-", "_")
+        if packaged_food_provider not in ALLOWED_PACKAGED_FOOD_PROVIDERS:
+            target = blocking if self.is_production else warnings
+            target.append("packaged_food_provider_unsupported")
+        elif packaged_food_provider in DEV_PACKAGED_FOOD_PROVIDERS:
+            target = blocking if self.is_production else warnings
+            target.append("dev_packaged_food_provider")
+        elif packaged_food_provider == "mock":
+            warnings.append("mock_packaged_food_provider")
+        elif packaged_food_provider == "disabled":
+            warnings.append("packaged_food_provider_disabled")
+
         if not self.entitlement_enforce_limits:
             target = blocking if self.is_production else warnings
             target.append("entitlement_limits_soft_only")
@@ -326,6 +345,7 @@ class Settings(BaseSettings):
             "jwt_refresh_token_expire_days": self.jwt_refresh_token_expire_days,
             "billing_provider": self.billing_provider,
             "billing": billing_readiness,
+            "packaged_food_provider": self.packaged_food_provider,
             "entitlement_enforce_limits": self.entitlement_enforce_limits,
             "ai_key_configured": bool((self.ark_api_key or "").strip()) and not ai_key_placeholder,
             "ai_model_configured": bool((self.doubao_model or self.doubao_endpoint_id or "").strip()) and not ai_model_placeholder,
@@ -363,6 +383,11 @@ class Settings(BaseSettings):
         if billing_provider not in ALLOWED_BILLING_PROVIDERS:
             raise ValueError("BILLING_PROVIDER 只能为 mock、wechat_pay 或 alipay")
         self.billing_provider = billing_provider
+
+        packaged_food_provider = self.packaged_food_provider.strip().lower().replace("-", "_")
+        if packaged_food_provider not in ALLOWED_PACKAGED_FOOD_PROVIDERS:
+            raise ValueError("PACKAGED_FOOD_PROVIDER 只能为 mock、dev 或 disabled；真实条码 provider 接入前必须先完成签名/配额/审计")
+        self.packaged_food_provider = packaged_food_provider
         self.billing_currency = self.billing_currency.strip().upper()
         if len(self.billing_currency) != 3:
             raise ValueError("BILLING_CURRENCY 必须使用 3 位 ISO 4217 货币代码")
@@ -420,6 +445,8 @@ class Settings(BaseSettings):
                 raise ValueError("生产环境必须开启 ENTITLEMENT_ENFORCE_LIMITS，不能以软限制模式运行")
             if self.billing_provider == "mock":
                 raise ValueError("生产环境不能使用 mock billing provider；当前构建未接入真实支付 provider")
+            if self.packaged_food_provider in DEV_PACKAGED_FOOD_PROVIDERS:
+                raise ValueError("生产环境不能使用 dev packaged food provider")
 
         return self
 

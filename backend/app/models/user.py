@@ -125,6 +125,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan"
     )
+    favorite_meals: Mapped[list["FavoriteMeal"]] = relationship(
+        "FavoriteMeal",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
     conditions: Mapped[list["HealthCondition"]] = relationship(
         "HealthCondition",
         back_populates="user",
@@ -163,7 +168,7 @@ class User(Base):
 
 
 # 导入关联模型以避免循环导入问题
-from app.models.meal import Meal
+from app.models.meal import FavoriteMeal, Meal
 from app.models.health_condition import HealthCondition
 from app.models.message import AppMessage
 from app.models.security import DeviceSession, SecurityAuditLog

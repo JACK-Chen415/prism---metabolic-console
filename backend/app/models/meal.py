@@ -121,4 +121,50 @@ class Meal(Base):
     user: Mapped["User"] = relationship("User", back_populates="meals")
 
 
+class FavoriteMeal(Base):
+    """用户收藏餐食模板。"""
+
+    __tablename__ = "favorite_meals"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", "portion", "meal_type", name="uq_favorite_meals_user_meal"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    source_meal_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("meals.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    portion: Mapped[str] = mapped_column(String(50), nullable=False)
+    meal_type: Mapped[MealType] = mapped_column(SQLEnum(MealType), nullable=False)
+    category: Mapped[FoodCategory] = mapped_column(SQLEnum(FoodCategory), nullable=False)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    calories: Mapped[float] = mapped_column(Float, default=0)
+    sodium: Mapped[float] = mapped_column(Float, default=0)
+    purine: Mapped[float] = mapped_column(Float, default=0)
+    protein: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    carbs: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    fat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    fiber: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    usage_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    user: Mapped["User"] = relationship("User", back_populates="favorite_meals")
+    source_meal: Mapped[Optional["Meal"]] = relationship("Meal")
+
+
 from app.models.user import User

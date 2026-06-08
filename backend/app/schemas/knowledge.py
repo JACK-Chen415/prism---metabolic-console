@@ -27,6 +27,7 @@ class DiseaseResponse(BaseModel):
 
 class FoodItemResponse(BaseModel):
     food_code: str
+    barcode: Optional[str] = None
     name_zh: str
     aliases: list[str] = Field(default_factory=list)
     category: str
@@ -132,6 +133,75 @@ class KnowledgeSummaryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=1000)
     condition_codes: list[str] = Field(default_factory=list)
     manual_restrictions: list[str] = Field(default_factory=list)
+
+
+class PackagedFoodBarcodeLookupRequest(BaseModel):
+    barcode: str = Field(..., min_length=8, max_length=32)
+    condition_codes: list[str] = Field(default_factory=list)
+    manual_restrictions: list[str] = Field(default_factory=list)
+
+
+class PackagedFoodLabelNormalizeRequest(BaseModel):
+    product_name: str = Field(..., min_length=1, max_length=120)
+    brand: Optional[str] = Field(None, max_length=80)
+    barcode: Optional[str] = Field(None, max_length=32)
+    category: str = Field("SNACK", max_length=50)
+    serving_size: Optional[str] = Field(None, max_length=80)
+    serving_size_g: Optional[float] = Field(None, ge=0)
+    calories_per_100g: Optional[float] = Field(None, ge=0)
+    protein_per_100g: Optional[float] = Field(None, ge=0)
+    carbs_per_100g: Optional[float] = Field(None, ge=0)
+    fat_per_100g: Optional[float] = Field(None, ge=0)
+    fiber_per_100g: Optional[float] = Field(None, ge=0)
+    sodium_per_100g: Optional[float] = Field(None, ge=0)
+    sugar_per_100g: Optional[float] = Field(None, ge=0)
+    purine_per_100g: Optional[float] = Field(None, ge=0)
+    ingredients: list[str] = Field(default_factory=list, max_length=40)
+    allergen_tags: list[str] = Field(default_factory=list, max_length=20)
+    risk_tags: list[str] = Field(default_factory=list, max_length=30)
+    condition_codes: list[str] = Field(default_factory=list)
+    manual_restrictions: list[str] = Field(default_factory=list)
+
+
+class PackagedFoodCandidateResponse(BaseModel):
+    barcode_last4: Optional[str] = None
+    food_name: str
+    brand: Optional[str] = None
+    category: str
+    serving_size: Optional[str] = None
+    serving_size_g: Optional[float] = None
+    calories_per_100g: Optional[float] = None
+    protein_per_100g: Optional[float] = None
+    carbs_per_100g: Optional[float] = None
+    fat_per_100g: Optional[float] = None
+    fiber_per_100g: Optional[float] = None
+    sodium_per_100g: Optional[float] = None
+    sugar_per_100g: Optional[float] = None
+    purine_per_100g: Optional[float] = None
+    ingredients: list[str] = Field(default_factory=list)
+    allergen_tags: list[str] = Field(default_factory=list)
+    risk_tags: list[str] = Field(default_factory=list)
+    nutrition_source_code: str
+    nutrition_source_detail: str
+    nutrition_estimate_quality: str
+    nutrition_review_status: str
+    provider: str
+    provider_status: str
+    confidence: float
+    review_required: bool
+    review_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    local_decision: EvaluateFoodResponse
+    disclaimer: str
+
+
+class PackagedFoodLookupResponse(BaseModel):
+    provider: str
+    provider_status: str
+    barcode_last4: Optional[str] = None
+    matched: bool
+    candidates: list[PackagedFoodCandidateResponse] = Field(default_factory=list)
+    disclaimer: str
 
 
 class KnowledgeSummaryResponse(BaseModel):

@@ -58,6 +58,30 @@ class MealUpdate(BaseModel):
     recognition_meta_json: Optional[dict[str, Any]] = None
 
 
+class FavoriteMealResponse(BaseModel):
+    """收藏餐食模板响应"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    source_meal_id: Optional[int] = None
+    name: str
+    portion: str
+    meal_type: MealType
+    category: FoodCategory
+    note: Optional[str] = None
+    calories: float
+    sodium: float
+    purine: float
+    protein: Optional[float] = None
+    carbs: Optional[float] = None
+    fat: Optional[float] = None
+    fiber: Optional[float] = None
+    usage_count: int
+    last_used_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class MealSyncOperation(BaseModel):
     """离线编辑/删除操作。"""
     op_type: Literal["update", "delete"]

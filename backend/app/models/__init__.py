@@ -20,6 +20,7 @@ from app.models.health_condition import (
     TrendType,
 )
 from app.models.health_metric import HealthMetric, HealthMetricType
+from app.models.intake_telemetry import IntakeReviewTelemetrySnapshot
 from app.models.knowledge import (
     ConditionScopeField,
     Disease,
@@ -39,7 +40,7 @@ from app.models.knowledge import (
     SourceType,
     FallbackStatus,
 )
-from app.models.meal import FoodCategory, Meal, MealSource, MealType, SyncStatus
+from app.models.meal import FavoriteMeal, FoodCategory, Meal, MealSource, MealType, SyncStatus
 from app.models.message import AppMessage, MessageType
 from app.models.security import DeviceSession, SecurityAuditLog
 from app.models.user import Gender, SubscriptionPlan, SubscriptionStatus, User, UserRole
@@ -67,6 +68,7 @@ __all__ = [
     "DiseaseFoodRule",
     "DeviceSession",
     "FallbackStatus",
+    "FavoriteMeal",
     "FoodCategory",
     "FoodItem",
     "Gender",
@@ -74,6 +76,7 @@ __all__ = [
     "HealthConditionMapping",
     "HealthMetric",
     "HealthMetricType",
+    "IntakeReviewTelemetrySnapshot",
     "KnowledgeAuditLog",
     "KnowledgeOrigin",
     "KnowledgeSource",

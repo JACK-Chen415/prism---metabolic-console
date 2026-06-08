@@ -22,10 +22,12 @@ from app.core.security import hash_sensitive_value
 from app.models.chat import ChatMessage, ChatSession, MessageRole
 from app.models.feedback import AIFeedback, AIFeedbackStatus, AIFeedbackType
 from app.models.health_metric import HealthMetric
+from app.models.intake_telemetry import IntakeReviewTelemetrySnapshot
 from app.models.knowledge import FallbackStatus, FoodItem, KnowledgeAuditLog, KnowledgeOrigin
 from app.models.meal import Meal, MealSource, SyncStatus
 from app.models.security import SecurityAuditLog
 from app.models.user import SubscriptionPlan, SubscriptionStatus, User, UserRole
+from app.schemas.intake import REVIEW_TELEMETRY_SOURCE_KEYS, REVIEW_TELEMETRY_STATUS_KEYS
 from app.services.auth_security import audit_security_event
 from app.services.billing_providers import normalize_billing_provider
 from app.services.entitlements import PLAN_LIMITS, PlanTier
@@ -178,6 +180,19 @@ class AITelemetrySummary(BaseModel):
     recent_error_types: list[str]
 
 
+class IntakeReviewTelemetryAggregate(BaseModel):
+    snapshot_count: int = 0
+    user_count: int = 0
+    total_count: int = 0
+    pending_review_count: int = 0
+    in_review_count: int = 0
+    low_confidence_count: int = 0
+    high_risk_count: int = 0
+    hard_block_count: int = 0
+    source_counts: dict[str, int] = Field(default_factory=dict)
+    status_counts: dict[str, int] = Field(default_factory=dict)
+
+
 class ReadinessGateItem(BaseModel):
     key: str
     label: str
@@ -223,6 +238,7 @@ class ActivationMetricsSummary(BaseModel):
     meal_count: int
     photo_meal_count: int
     ai_quick_log_count: int
+    intake_review_telemetry: IntakeReviewTelemetryAggregate = Field(default_factory=IntakeReviewTelemetryAggregate)
     chat_users: int
     chat_session_count: int
     assistant_message_count: int
@@ -441,7 +457,10 @@ def _daily_rows(start_date: date, window_days: int) -> dict[date, ActivationDail
 
 
 def _is_auth_lockout(row: SecurityAuditLog) -> bool:
-    return str(row.event_type).startswith(("otp.", "auth.otp")) and row.event_status in {"limited", "failure_locked"}
+    event_type = str(row.event_type)
+    if event_type.startswith(("otp.", "auth.otp")) and row.event_status in {"limited", "failure_locked"}:
+        return True
+    return event_type == "auth.password_login" and row.event_status == "failure_locked"
 
 
 def _effective_usage_plan_for_user(user: User) -> PlanTier:
@@ -589,6 +608,60 @@ def _build_commercialization_summary(
     )
 
 
+def _safe_int_count(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _snapshot_time(row: IntakeReviewTelemetrySnapshot) -> datetime:
+    value = getattr(row, "generated_at", None) or getattr(row, "created_at", None)
+    if isinstance(value, datetime):
+        return value
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _build_intake_review_telemetry_aggregate(
+    rows: list[IntakeReviewTelemetrySnapshot],
+) -> IntakeReviewTelemetryAggregate:
+    latest_by_user: dict[int, IntakeReviewTelemetrySnapshot] = {}
+    for row in rows:
+        user_id = getattr(row, "user_id", None)
+        if user_id is None:
+            continue
+        current = latest_by_user.get(int(user_id))
+        if current is None or _snapshot_time(row) >= _snapshot_time(current):
+            latest_by_user[int(user_id)] = row
+
+    latest_rows = list(latest_by_user.values())
+    source_counts: Counter[str] = Counter()
+    status_counts: Counter[str] = Counter()
+
+    for row in latest_rows:
+        for key, value in (getattr(row, "source_counts_json", None) or {}).items():
+            normalized_key = str(key)
+            if normalized_key in REVIEW_TELEMETRY_SOURCE_KEYS:
+                source_counts[normalized_key] += _safe_int_count(value)
+        for key, value in (getattr(row, "status_counts_json", None) or {}).items():
+            normalized_key = str(key)
+            if normalized_key in REVIEW_TELEMETRY_STATUS_KEYS:
+                status_counts[normalized_key] += _safe_int_count(value)
+
+    return IntakeReviewTelemetryAggregate(
+        snapshot_count=len(rows),
+        user_count=len(latest_rows),
+        total_count=sum(_safe_int_count(getattr(row, "total_count", 0)) for row in latest_rows),
+        pending_review_count=sum(_safe_int_count(getattr(row, "pending_review_count", 0)) for row in latest_rows),
+        in_review_count=sum(_safe_int_count(getattr(row, "in_review_count", 0)) for row in latest_rows),
+        low_confidence_count=sum(_safe_int_count(getattr(row, "low_confidence_count", 0)) for row in latest_rows),
+        high_risk_count=sum(_safe_int_count(getattr(row, "high_risk_count", 0)) for row in latest_rows),
+        hard_block_count=sum(_safe_int_count(getattr(row, "hard_block_count", 0)) for row in latest_rows),
+        source_counts=_counter_dict(source_counts),
+        status_counts=_counter_dict(status_counts),
+    )
+
+
 def _build_activation_metrics_summary(
     *,
     users: list[User],
@@ -599,6 +672,7 @@ def _build_activation_metrics_summary(
     security_rows: list[SecurityAuditLog],
     health_metrics: list[HealthMetric],
     window_days: int,
+    intake_review_rows: Optional[list[IntakeReviewTelemetrySnapshot]] = None,
     generated_at: Optional[datetime] = None,
 ) -> ActivationMetricsSummary:
     safe_days = max(1, min(window_days, 90))
@@ -651,6 +725,7 @@ def _build_activation_metrics_summary(
     health_metric_user_ids = {metric.user_id for metric in health_metrics if _as_utc_date(metric.created_at) in window_dates}
     window_feedback = [row for row in feedback_rows if _as_utc_date(row.created_at) in window_dates]
     window_security = [row for row in security_rows if _as_utc_date(row.created_at) in window_dates]
+    intake_review_telemetry = _build_intake_review_telemetry_aggregate(intake_review_rows or [])
 
     open_feedback_count = sum(1 for row in feedback_rows if _enum_value(row.status) == AIFeedbackStatus.OPEN.value)
     unsafe_open_feedback_count = sum(
@@ -668,6 +743,8 @@ def _build_activation_metrics_summary(
         notes.append("存在未关闭的 unsafe 反馈，放量前需运营复核。")
     if any(_is_auth_lockout(row) for row in window_security):
         notes.append("窗口内出现 OTP 限流或锁定事件，应关注验证码成本与攻击面。")
+    if intake_review_telemetry.pending_review_count or intake_review_telemetry.in_review_count:
+        notes.append("存在本地候选复核待办；运营只接收聚合计数，原始候选内容仍留在用户设备。")
 
     return ActivationMetricsSummary(
         generated_at=generated,
@@ -696,6 +773,7 @@ def _build_activation_metrics_summary(
             if _as_utc_date(meal.created_at) in window_dates
             and _enum_value(getattr(meal, "source", "")) == MealSource.AI_QUICK_LOG.value
         ),
+        intake_review_telemetry=intake_review_telemetry,
         chat_users=len(chat_user_ids),
         chat_session_count=sum(1 for session in chat_sessions if _as_utc_date(session.created_at) in window_dates),
         assistant_message_count=sum(1 for message in assistant_messages if _as_utc_date(message.created_at) in window_dates),
@@ -805,10 +883,11 @@ def _build_release_readiness_summary(
     security_rows: list[SecurityAuditLog],
     knowledge_rows: list[KnowledgeAuditLog],
     feedback_rows: list[AIFeedback],
-    food_rows: Optional[list[FoodItem]] = None,
-    meal_rows: Optional[list[Meal]] = None,
     telemetry: AITelemetrySummary,
     limit: int,
+    food_rows: Optional[list[FoodItem]] = None,
+    meal_rows: Optional[list[Meal]] = None,
+    intake_review_telemetry: IntakeReviewTelemetryAggregate | None = None,
     config_snapshot: dict[str, object] | None = None,
 ) -> ReleaseReadinessSummary:
     unsafe_open_count = sum(
@@ -827,12 +906,7 @@ def _build_release_readiness_summary(
             AIFeedbackType.KNOWLEDGE_GAP.value,
         }
     )
-    auth_lockout_count = sum(
-        1
-        for row in security_rows
-        if str(row.event_type).startswith(("otp.", "auth.otp"))
-        and row.event_status in {"limited", "failure_locked"}
-    )
+    auth_lockout_count = sum(1 for row in security_rows if _is_auth_lockout(row))
     refresh_reuse_count = sum(
         1
         for row in security_rows
@@ -892,6 +966,10 @@ def _build_release_readiness_summary(
         if _enum_value(getattr(row, "sync_status", "")) == SyncStatus.CONFLICT.value
     )
     offline_sync_problem_count = offline_sync_failed_count + offline_sync_conflict_count
+    intake_review_telemetry = intake_review_telemetry or IntakeReviewTelemetryAggregate()
+    intake_review_backlog_count = (
+        intake_review_telemetry.pending_review_count + intake_review_telemetry.in_review_count
+    )
     config_blocking = config_snapshot.get("blocking") if config_snapshot else []
     config_warnings = config_snapshot.get("warnings") if config_snapshot else []
     config_blocking_count = len(config_blocking) if isinstance(config_blocking, list) else 0
@@ -1011,6 +1089,16 @@ def _build_release_readiness_summary(
             block_message="离线同步失败/冲突较多，应暂停放量并检查同步协议。",
         ),
         _gate_item(
+            key="intake_review_backlog",
+            label="候选复核待处理",
+            count=intake_review_backlog_count,
+            warn_threshold=0,
+            block_threshold=20,
+            ok_message="最近聚合快照未见待复核候选积压。",
+            warn_message="存在待复核候选，应确认低置信度和风险候选不会自动入库。",
+            block_message="待复核候选积压较多，应暂停放量并优化确认流程。",
+        ),
+        _gate_item(
             key="admin_denied",
             label="后台拒绝访问",
             count=admin_denied_count,
@@ -1054,6 +1142,15 @@ def _build_release_readiness_summary(
             "offline_sync_problem_count": offline_sync_problem_count,
             "offline_sync_failed_count": offline_sync_failed_count,
             "offline_sync_conflict_count": offline_sync_conflict_count,
+            "intake_review_snapshot_count": intake_review_telemetry.snapshot_count,
+            "intake_review_user_count": intake_review_telemetry.user_count,
+            "intake_review_total_count": intake_review_telemetry.total_count,
+            "intake_review_pending_count": intake_review_telemetry.pending_review_count,
+            "intake_review_in_review_count": intake_review_telemetry.in_review_count,
+            "intake_review_low_confidence_count": intake_review_telemetry.low_confidence_count,
+            "intake_review_high_risk_count": intake_review_telemetry.high_risk_count,
+            "intake_review_hard_block_count": intake_review_telemetry.hard_block_count,
+            "intake_review_backlog_count": intake_review_backlog_count,
             "config_blocking_count": config_blocking_count,
             "config_warning_count": config_warning_count,
             "sampled_ai_messages": telemetry.sampled_messages,
@@ -1068,6 +1165,7 @@ def _build_release_readiness_summary(
             "配置 readiness gate 来自 settings.readiness_snapshot() 的脱敏快照，不包含 API keys、model IDs、数据库凭据或其他 secrets。",
             "食物营养来源 gate 只统计来源/质量/审核状态计数，不返回食物备注、用户输入或健康敏感内容。",
             "离线同步 gate 只统计 FAILED/CONFLICT 状态数量，不返回餐名、备注、图片、营养值或客户端原始草稿。",
+            "候选复核 gate 只接收用户设备提交的聚合计数，不上传食物名、备注、健康文本、图片或候选草稿。",
             "red 表示不建议放量；yellow 表示可控内测但需运营复核；green 表示当前窗口未见阻断项。",
         ],
     )
@@ -1804,6 +1902,9 @@ async def get_activation_metrics(
     feedback_result = await db.execute(select(AIFeedback))
     security_result = await db.execute(select(SecurityAuditLog).where(SecurityAuditLog.created_at >= start_at))
     metrics_result = await db.execute(select(HealthMetric).where(HealthMetric.created_at >= start_at))
+    intake_review_result = await db.execute(
+        select(IntakeReviewTelemetrySnapshot).where(IntakeReviewTelemetrySnapshot.created_at >= start_at)
+    )
 
     summary = _build_activation_metrics_summary(
         users=list(users_result.scalars().all()),
@@ -1814,6 +1915,7 @@ async def get_activation_metrics(
         security_rows=list(security_result.scalars().all()),
         health_metrics=list(metrics_result.scalars().all()),
         window_days=window_days,
+        intake_review_rows=list(intake_review_result.scalars().all()),
     )
 
     await audit_security_event(
@@ -1830,6 +1932,8 @@ async def get_activation_metrics(
             "meal_users": summary.meal_users,
             "chat_users": summary.chat_users,
             "unsafe_open_feedback_count": summary.unsafe_open_feedback_count,
+            "intake_review_pending_count": summary.intake_review_telemetry.pending_review_count,
+            "intake_review_high_risk_count": summary.intake_review_telemetry.high_risk_count,
         },
     )
 
@@ -1996,12 +2100,18 @@ async def get_release_readiness(
         .order_by(Meal.updated_at.desc(), Meal.id.desc())
         .limit(limit)
     )
+    intake_review_result = await db.execute(
+        select(IntakeReviewTelemetrySnapshot)
+        .order_by(IntakeReviewTelemetrySnapshot.generated_at.desc(), IntakeReviewTelemetrySnapshot.id.desc())
+        .limit(limit)
+    )
 
     security_rows = list(security_result.scalars().all())
     knowledge_rows = list(knowledge_result.scalars().all())
     feedback_rows = list(feedback_result.scalars().all())
     food_rows = list(food_result.scalars().all())
     meal_rows = list(meal_sync_result.scalars().all())
+    intake_review_telemetry = _build_intake_review_telemetry_aggregate(list(intake_review_result.scalars().all()))
     telemetry = _build_ai_telemetry_summary(list(telemetry_result.scalars().all()), limit=limit)
     summary = _build_release_readiness_summary(
         security_rows=security_rows,
@@ -2009,6 +2119,7 @@ async def get_release_readiness(
         feedback_rows=feedback_rows,
         food_rows=food_rows,
         meal_rows=meal_rows,
+        intake_review_telemetry=intake_review_telemetry,
         telemetry=telemetry,
         limit=limit,
         config_snapshot=settings.readiness_snapshot(),
@@ -2030,6 +2141,8 @@ async def get_release_readiness(
             "food_nutrition_unreviewed_count": summary.signals.get("food_nutrition_unreviewed_count", 0),
             "food_nutrition_missing_provenance_count": summary.signals.get("food_nutrition_missing_provenance_count", 0),
             "offline_sync_problem_count": summary.signals.get("offline_sync_problem_count", 0),
+            "intake_review_backlog_count": summary.signals.get("intake_review_backlog_count", 0),
+            "intake_review_high_risk_count": summary.signals.get("intake_review_high_risk_count", 0),
         },
     )
 

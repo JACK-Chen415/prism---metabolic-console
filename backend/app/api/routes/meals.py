@@ -2,15 +2,15 @@
 饮食记录 API 路由
 """
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional, List
 
-from fastapi import APIRouter, HTTPException, status, Query
+from fastapi import APIRouter, HTTPException, Request, status, Query
 from sqlalchemy import select, and_, func
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import DbSession, CurrentUser
-from app.models.meal import Meal, SyncStatus
+from app.models.meal import FavoriteMeal, Meal, SyncStatus
 from app.schemas.meal import (
     MealCreate,
     MealUpdate,
@@ -18,9 +18,11 @@ from app.schemas.meal import (
     MealSyncOperation,
     MealSyncRequest,
     MealSyncResponse,
-    DailyIntakeSummary
+    DailyIntakeSummary,
+    FavoriteMealResponse
 )
 from app.schemas.common import PaginatedResponse
+from app.services.auth_security import audit_security_event
 
 router = APIRouter(prefix="/meals", tags=["饮食记录"])
 
@@ -64,6 +66,158 @@ async def _get_meal_by_client_id_or_server_id(
 def _apply_meal_update(meal: Meal, update_data: dict) -> None:
     for field, value in update_data.items():
         setattr(meal, field, value)
+
+
+async def _get_favorite_or_404(favorite_id: int, current_user: CurrentUser, db: DbSession) -> FavoriteMeal:
+    result = await db.execute(
+        select(FavoriteMeal).where(
+            FavoriteMeal.id == favorite_id,
+            FavoriteMeal.user_id == current_user.id,
+        )
+    )
+    favorite = result.scalar_one_or_none()
+    if not favorite:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="收藏餐不存在")
+    return favorite
+
+
+def _favorite_audit_metadata(favorite: FavoriteMeal, *, source_meal_id: Optional[int] = None) -> dict:
+    return {
+        "favorite_id": favorite.id,
+        "source_meal_id": source_meal_id if source_meal_id is not None else favorite.source_meal_id,
+        "meal_type": favorite.meal_type.value if hasattr(favorite.meal_type, "value") else str(favorite.meal_type),
+        "category": favorite.category.value if hasattr(favorite.category, "value") else str(favorite.category),
+        "usage_count": favorite.usage_count,
+    }
+
+
+@router.get("/favorites", response_model=List[FavoriteMealResponse])
+async def list_favorite_meals(
+    current_user: CurrentUser,
+    db: DbSession,
+    limit: int = Query(20, ge=1, le=100, description="返回收藏餐数量"),
+):
+    """列出用户收藏餐模板。"""
+    result = await db.execute(
+        select(FavoriteMeal)
+        .where(FavoriteMeal.user_id == current_user.id)
+        .order_by(FavoriteMeal.usage_count.desc(), FavoriteMeal.updated_at.desc())
+        .limit(limit)
+    )
+    return [FavoriteMealResponse.model_validate(item) for item in result.scalars().all()]
+
+
+@router.post("/{meal_id}/favorite", response_model=FavoriteMealResponse, status_code=status.HTTP_201_CREATED)
+async def favorite_meal(
+    meal_id: int,
+    request: Request,
+    current_user: CurrentUser,
+    db: DbSession,
+):
+    """从已有餐食记录创建或更新收藏餐模板。"""
+    meal = await _get_meal_or_404(meal_id, current_user, db)
+    result = await db.execute(
+        select(FavoriteMeal).where(
+            FavoriteMeal.user_id == current_user.id,
+            FavoriteMeal.name == meal.name,
+            FavoriteMeal.portion == meal.portion,
+            FavoriteMeal.meal_type == meal.meal_type,
+        )
+    )
+    favorite = result.scalar_one_or_none()
+    event_status = "updated"
+    if favorite is None:
+        favorite = FavoriteMeal(
+            user_id=current_user.id,
+            source_meal_id=meal.id,
+            name=meal.name,
+            portion=meal.portion,
+            meal_type=meal.meal_type,
+            category=meal.category,
+            note=meal.note,
+            calories=meal.calories,
+            sodium=meal.sodium,
+            purine=meal.purine,
+            protein=meal.protein,
+            carbs=meal.carbs,
+            fat=meal.fat,
+            fiber=meal.fiber,
+        )
+        db.add(favorite)
+        event_status = "created"
+    else:
+        favorite.source_meal_id = meal.id
+        favorite.category = meal.category
+        favorite.note = meal.note
+        favorite.calories = meal.calories
+        favorite.sodium = meal.sodium
+        favorite.purine = meal.purine
+        favorite.protein = meal.protein
+        favorite.carbs = meal.carbs
+        favorite.fat = meal.fat
+        favorite.fiber = meal.fiber
+
+    await db.flush()
+    await db.refresh(favorite)
+    await audit_security_event(
+        db,
+        event_type="meal.favorite.save",
+        event_status=event_status,
+        user_id=current_user.id,
+        request=request,
+        route_name="/api/meals/{meal_id}/favorite",
+        metadata=_favorite_audit_metadata(favorite, source_meal_id=meal.id),
+    )
+    return FavoriteMealResponse.model_validate(favorite)
+
+
+@router.post("/favorites/{favorite_id}/use", response_model=FavoriteMealResponse)
+async def use_favorite_meal(
+    favorite_id: int,
+    request: Request,
+    current_user: CurrentUser,
+    db: DbSession,
+):
+    """标记收藏餐被用于预填。不会创建饮食记录。"""
+    favorite = await _get_favorite_or_404(favorite_id, current_user, db)
+    favorite.usage_count += 1
+    favorite.last_used_at = datetime.now(timezone.utc)
+    await db.flush()
+    await db.refresh(favorite)
+    await audit_security_event(
+        db,
+        event_type="meal.favorite.use",
+        event_status="success",
+        user_id=current_user.id,
+        request=request,
+        route_name="/api/meals/favorites/{favorite_id}/use",
+        metadata=_favorite_audit_metadata(favorite),
+    )
+    return FavoriteMealResponse.model_validate(favorite)
+
+
+@router.delete("/favorites/{favorite_id}")
+async def delete_favorite_meal(
+    favorite_id: int,
+    request: Request,
+    current_user: CurrentUser,
+    db: DbSession,
+):
+    """删除用户自己的收藏餐模板。"""
+    favorite = await _get_favorite_or_404(favorite_id, current_user, db)
+    audit_metadata = _favorite_audit_metadata(favorite)
+    await db.delete(favorite)
+    await db.flush()
+    await audit_security_event(
+        db,
+        event_type="meal.favorite.delete",
+        event_status="success",
+        user_id=current_user.id,
+        request=request,
+        route_name="/api/meals/favorites/{favorite_id}",
+        metadata=audit_metadata,
+    )
+    return {"success": True, "message": "收藏餐已删除"}
 
 
 @router.post("", response_model=MealResponse, status_code=status.HTTP_201_CREATED)

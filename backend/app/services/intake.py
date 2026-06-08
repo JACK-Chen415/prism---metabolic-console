@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Optional
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import hash_sensitive_value
@@ -16,8 +17,13 @@ from app.models.meal import FoodCategory, Meal, MealType, SyncStatus
 from app.models.user import User
 from app.schemas.intake import (
     IntakeCandidate,
+    IntakeCandidateAlternative,
+    IntakeCandidateAlternativesResponse,
     IntakeConfirmFailure,
+    IntakeConfirmImpactMetric,
     IntakeConfirmItem,
+    IntakeConfirmPreviewRequest,
+    IntakeConfirmPreviewResponse,
     IntakeConfirmRequest,
     IntakeConfirmResponse,
     IntakeDraftSessionResponse,
@@ -32,6 +38,7 @@ from app.schemas.meal import MealResponse
 from app.services.knowledge import KnowledgeService, write_knowledge_audit_log
 from app.services.knowledge.contracts import LocalDecision, NormalizedConditions
 from app.services.knowledge.matcher import normalize_food_text
+from app.services.target_service import calculate_daily_targets
 
 
 CATEGORY_ALIAS_MAP = {
@@ -322,6 +329,15 @@ FALLBACK_PRIORITY = {
     FallbackStatus.LOCAL_PARTIAL_ALLOW_CLOUD: 1,
     FallbackStatus.LOCAL_COMPLETE: 2,
     FallbackStatus.LOCAL_BLOCKED_NO_CLOUD: 3,
+}
+
+LOW_CONFIDENCE_REVIEW_THRESHOLD = 0.55
+REVIEW_REASON_LABELS = {
+    "low_confidence": "低置信度",
+    "portion_uncertain": "份量不确定",
+    "ingredient_detail_missing": "食材细节缺失",
+    "prep_detail_missing": "调料或烹调方式缺失",
+    "manual_review_required": "需要人工复核",
 }
 
 PREP_HIGH_SODIUM_TERMS = (
@@ -713,6 +729,116 @@ class IntakeService:
             summary_warning=self._build_session_warning(candidates),
         )
 
+    async def preview_confirm_impact(
+        self,
+        db: AsyncSession,
+        *,
+        user: User,
+        conditions: list[HealthCondition],
+        data: IntakeConfirmPreviewRequest,
+    ) -> IntakeConfirmPreviewResponse:
+        record_date = data.record_date or date.today()
+        result = await db.execute(
+            select(
+                func.sum(Meal.calories).label("calories"),
+                func.sum(Meal.sodium).label("sodium"),
+                func.sum(Meal.purine).label("purine"),
+                func.count(Meal.id).label("count"),
+            ).where(
+                Meal.user_id == user.id,
+                Meal.record_date == record_date,
+            )
+        )
+        row = result.one()
+        targets = calculate_daily_targets(user, conditions)
+        pending = {
+            "calories": sum(float(item.calories or 0) for item in data.candidates),
+            "sodium": sum(float(item.sodium or 0) for item in data.candidates),
+            "purine": sum(float(item.purine or 0) for item in data.candidates),
+        }
+        current = {
+            "calories": float(row.calories or 0),
+            "sodium": float(row.sodium or 0),
+            "purine": float(row.purine or 0),
+        }
+
+        metrics = [
+            self._impact_metric(
+                key="calories",
+                label="热量",
+                unit="kcal",
+                current=current["calories"],
+                pending=pending["calories"],
+                target=float(targets.recommended_calorie_target or targets.calories or 0) or None,
+            ),
+            self._impact_metric(
+                key="sodium",
+                label="钠",
+                unit="mg",
+                current=current["sodium"],
+                pending=pending["sodium"],
+                target=float(targets.sodium or 0) or None,
+            ),
+            self._impact_metric(
+                key="purine",
+                label="嘌呤",
+                unit="mg",
+                current=current["purine"],
+                pending=pending["purine"],
+                target=float(targets.purine or 0) or None,
+            ),
+        ]
+        notes = [
+            "确认前预览只基于已保存记录和当前候选估算，不会创建饮食记录。",
+            "目标为健康管理参考，不作诊断、治疗或处方；记录不完整会影响判断。",
+        ]
+        if any(metric.status == "over_limit" for metric in metrics):
+            notes.append("部分指标预计超过建议上限，请优先核对份量、调料和烹调方式。")
+        elif any(metric.status == "near_limit" for metric in metrics):
+            notes.append("部分指标接近建议上限，后续记录建议选择更清淡或份量更明确的食物。")
+
+        return IntakeConfirmPreviewResponse(
+            record_date=record_date,
+            generated_at=datetime.now(timezone.utc),
+            meal_count=int(row.count or 0),
+            metrics=metrics,
+            notes=notes,
+            will_create_meal=False,
+        )
+
+    def _impact_metric(
+        self,
+        *,
+        key: str,
+        label: str,
+        unit: str,
+        current: float,
+        pending: float,
+        target: Optional[float],
+    ) -> IntakeConfirmImpactMetric:
+        projected = round(current + pending, 1)
+        target_value = float(target) if target and target > 0 else None
+        ratio = round(projected / target_value, 3) if target_value else None
+        if target_value is None:
+            status = "no_target"
+        elif projected > target_value:
+            status = "over_limit"
+        elif projected >= target_value * 0.85:
+            status = "near_limit"
+        else:
+            status = "ok"
+        return IntakeConfirmImpactMetric(
+            key=key,
+            label=label,
+            unit=unit,
+            current=round(current, 1),
+            pending=round(pending, 1),
+            projected=projected,
+            target=target_value,
+            ratio=ratio,
+            status=status,
+        )
+
     async def confirm(
         self,
         db: AsyncSession,
@@ -775,6 +901,108 @@ class IntakeService:
             warning_summary=self._unique(warnings_summary),
             failed_items=failures,
         )
+
+    async def suggest_candidate_alternatives(
+        self,
+        db: AsyncSession,
+        *,
+        user: User,
+        conditions: list[HealthCondition],
+        item: IntakeConfirmItem,
+        limit: int = 3,
+    ) -> IntakeCandidateAlternativesResponse:
+        normalized = await self.knowledge_service.normalize_conditions(db, conditions)
+        limit = max(1, min(int(limit or 3), 5))
+        current_food = await self.knowledge_service.matcher.find_by_name_or_code(
+            db,
+            food_name=item.food_name,
+            food_code=item.food_code,
+        )
+        current_codes = {value for value in [item.food_code, getattr(current_food, "food_code", None)] if value}
+        current_names = {
+            normalize_food_text(value)
+            for value in [item.food_name, getattr(current_food, "name_zh", None)]
+            if value
+        }
+
+        scored: list[tuple[tuple[float, float, float, float], IntakeCandidateAlternative]] = []
+        for food in await self.knowledge_service.matcher.list_enabled_foods(db):
+            food_code = getattr(food, "food_code", None)
+            food_name = getattr(food, "name_zh", None)
+            if not food_code or not food_name:
+                continue
+            if food_code in current_codes or normalize_food_text(food_name) in current_names:
+                continue
+
+            decision = await self.knowledge_service.evaluate_food(
+                db,
+                normalized=normalized,
+                food_code=food_code,
+                manual_restrictions=item.manual_restrictions,
+                user=user,
+            )
+            if decision.hard_blocks or decision.recommendation_level not in {
+                RecommendationLevel.RECOMMEND,
+                RecommendationLevel.MODERATE,
+                RecommendationLevel.CONDITIONAL,
+            }:
+                continue
+
+            try:
+                category = FoodCategory(getattr(food, "category", item.category.value))
+            except ValueError:
+                category = item.category
+
+            alternative = IntakeCandidateAlternative(
+                food_code=food_code,
+                food_name=food_name,
+                category=category,
+                recommendation_level=decision.recommendation_level,
+                reason=self._build_alternative_reason(decision),
+                calories_per_100g=getattr(food, "calories_per_100g", None),
+                sodium_per_100g=getattr(food, "sodium_per_100g", None),
+                purine_per_100g=getattr(food, "purine_per_100g", None),
+                allergen_tags=list(getattr(food, "allergen_tags_json", None) or []),
+                risk_tags=list(getattr(food, "risk_tags_json", None) or []),
+                citations=decision.citations,
+            )
+            scored.append((self._alternative_score(food, alternative, item.category), alternative))
+
+        scored.sort(key=lambda entry: entry[0])
+        alternatives = [alternative for _, alternative in scored[:limit]]
+        notes = [
+            "替代建议仅基于本地知识库和当前档案的保守复核，不作诊断、治疗或处方。",
+            "写入日志前仍需核对份量、配料、调料和烹调方式。",
+        ]
+        if not alternatives:
+            notes.append("暂未找到通过本地规则复核的同类替代项，可改选更清淡或成分更明确的食物并重新评估。")
+
+        return IntakeCandidateAlternativesResponse(
+            draft_id=item.draft_id,
+            generated_at=datetime.now(timezone.utc),
+            alternatives=alternatives,
+            notes=notes,
+        )
+
+    def _alternative_score(
+        self,
+        food,
+        alternative: IntakeCandidateAlternative,
+        requested_category: FoodCategory,
+    ) -> tuple[float, float, float, float]:
+        category_penalty = 0 if alternative.category == requested_category else 1
+        level_penalty = STRICTNESS_ORDER.get(alternative.recommendation_level, 9)
+        sodium = float(getattr(food, "sodium_per_100g", None) or 0)
+        purine = float(getattr(food, "purine_per_100g", None) or 0)
+        calories = float(getattr(food, "calories_per_100g", None) or 0)
+        nutrition_score = sodium / 1000.0 + purine / 500.0 + calories / 2000.0
+        return (category_penalty, level_penalty, nutrition_score, calories)
+
+    def _build_alternative_reason(self, decision: LocalDecision) -> str:
+        level = decision.recommendation_level.value if decision.recommendation_level else "INSUFFICIENT"
+        if decision.summary:
+            return f"本地规则评估为 {level}：{decision.summary}"
+        return f"本地规则评估为 {level}，作为候选替代仍需人工核对。"
 
     async def reevaluate_confirm_item(
         self,
@@ -851,7 +1079,7 @@ class IntakeService:
         if estimated_note_overrides:
             estimated_notes.extend(estimated_note_overrides)
 
-        return IntakeCandidate(
+        candidate = IntakeCandidate(
             draft_id=str(uuid.uuid4()),
             source=source,
             meal_type=meal_type,
@@ -886,6 +1114,7 @@ class IntakeService:
             conflict_note=decision.conflict_note,
             caution_note=decision.caution_note,
         )
+        return self._with_review_requirement(candidate)
 
     async def _candidate_from_photo_food(
         self,
@@ -929,7 +1158,7 @@ class IntakeService:
         if matched_food and matched_food.allergen_tags_json:
             allergen_tags = self._unique([*allergen_tags, *matched_food.allergen_tags_json])
 
-        return IntakeCandidate(
+        candidate = IntakeCandidate(
             draft_id=str(uuid.uuid4()),
             source=IntakeSource.PHOTO,
             meal_type=meal_type,
@@ -981,6 +1210,7 @@ class IntakeService:
             conflict_note=decision.conflict_note,
             caution_note=decision.caution_note,
         )
+        return self._with_review_requirement(candidate)
 
     async def _candidate_from_confirm_item(
         self,
@@ -1068,7 +1298,7 @@ class IntakeService:
             fallback_status = FallbackStatus.LOCAL_BLOCKED_NO_CLOUD
             origin = KnowledgeOrigin.LOCAL_RULE
 
-        return IntakeCandidate(
+        candidate = IntakeCandidate(
             draft_id=item.draft_id,
             source=item.source,
             meal_type=item.meal_type,
@@ -1104,7 +1334,11 @@ class IntakeService:
             fallback_status=fallback_status,
             conflict_note=decision.conflict_note,
             caution_note=decision.caution_note,
+            review_required=item.review_required,
+            review_reasons=item.review_reasons,
+            review_confirmed=item.review_confirmed,
         )
+        return self._with_review_requirement(candidate)
 
     async def _meal_from_confirm_item(
         self,
@@ -1123,6 +1357,9 @@ class IntakeService:
             normalized=normalized,
             item=item,
         )
+        if candidate.review_required and not item.review_confirmed:
+            reason_text = self._format_review_reasons(candidate.review_reasons)
+            raise ValueError(f"候选需要人工复核后才能写入：{reason_text}")
 
         meal = Meal(
             user_id=user.id,
@@ -1159,6 +1396,10 @@ class IntakeService:
                 "risk_tags": candidate.risk_tags,
                 "allergen_tags": candidate.allergen_tags,
                 "estimated_notes": candidate.estimated_notes,
+                "review_required": candidate.review_required,
+                "review_reasons": candidate.review_reasons,
+                "review_confirmed": candidate.review_confirmed,
+                "review_threshold": LOW_CONFIDENCE_REVIEW_THRESHOLD,
                 "sugar": candidate.sugar,
                 "raw_input_hash": hash_sensitive_value(raw_input_text),
                 "raw_summary_hash": hash_sensitive_value(raw_summary),
@@ -1738,9 +1979,71 @@ class IntakeService:
             return
         nutrition[field] = round(float(current) + delta, 1)
 
+
+    def _with_review_requirement(self, candidate: IntakeCandidate) -> IntakeCandidate:
+        reasons = self._review_reasons_for_values(
+            source=candidate.source,
+            confidence=candidate.confidence,
+            normalized_amount=candidate.normalized_amount,
+            ingredients=candidate.ingredients,
+            cooking_method=candidate.cooking_method,
+            seasonings=candidate.seasonings,
+        )
+        candidate.review_reasons = self._unique([*(candidate.review_reasons or []), *reasons])
+        candidate.review_required = bool(candidate.review_required or candidate.review_reasons)
+        if not candidate.review_required:
+            candidate.review_confirmed = False
+        return candidate
+
+    def _review_reasons_for_values(
+        self,
+        *,
+        source: IntakeSource,
+        confidence: Optional[float],
+        normalized_amount: Optional[float],
+        ingredients: list[str],
+        cooking_method: Optional[str],
+        seasonings: list[str],
+    ) -> list[str]:
+        reasons: list[str] = []
+        source_value = getattr(source, "value", source)
+        machine_source = source_value in {
+            IntakeSource.VOICE.value,
+            IntakeSource.PHOTO.value,
+            IntakeSource.AI_QUICK_LOG.value,
+        }
+        prep_review_source = source_value in {
+            IntakeSource.PHOTO.value,
+            IntakeSource.AI_QUICK_LOG.value,
+        }
+
+        if machine_source and float(confidence or 0) < LOW_CONFIDENCE_REVIEW_THRESHOLD:
+            reasons.append("low_confidence")
+
+        if prep_review_source and normalized_amount is None:
+            reasons.append("portion_uncertain")
+
+        if prep_review_source and not [item for item in (ingredients or []) if item.strip()]:
+            reasons.append("ingredient_detail_missing")
+
+        has_prep_detail = bool(cooking_method and cooking_method.strip()) or bool(
+            [item for item in (seasonings or []) if item.strip()]
+        )
+        if prep_review_source and not has_prep_detail:
+            reasons.append("prep_detail_missing")
+
+        return self._unique(reasons)
+
+    def _format_review_reasons(self, reasons: list[str]) -> str:
+        labels = [REVIEW_REASON_LABELS.get(reason, reason) for reason in reasons]
+        return "、".join(labels or [REVIEW_REASON_LABELS["manual_review_required"]])
+
     def _build_session_warning(self, candidates: list[IntakeCandidate]) -> Optional[str]:
         if not candidates:
             return "未解析出可确认的候选项，请手动补充后再记账。"
+
+        if any(candidate.review_required for candidate in candidates):
+            return "存在需要人工复核的候选项，请核对名称、份量、食材、调料和烹调方式后再确认。"
 
         if any(candidate.warnings for candidate in candidates):
             return "存在本地规则命中项，请在确认前检查 warning。"

@@ -18,6 +18,7 @@ from app.models.chat import ChatMessage, ChatSession
 from app.models.feedback import AIFeedback
 from app.models.health_condition import HealthCondition
 from app.models.health_metric import HealthMetric
+from app.models.intake_telemetry import IntakeReviewTelemetrySnapshot
 from app.models.knowledge import KnowledgeAuditLog
 from app.models.meal import Meal
 from app.models.message import AppMessage
@@ -34,6 +35,21 @@ router = APIRouter(prefix="/account", tags=["用户数据权利"])
 MEDICAL_DISCLAIMER = (
     "Prism 仅用于个人饮食记录、营养估算和代谢风险提示，不提供医疗诊断、治疗、处方或急救服务。"
 )
+
+EXPORT_SECTION_KEYS = [
+    "profile",
+    "account_state",
+    "device_sessions",
+    "daily_targets",
+    "meals",
+    "conditions",
+    "messages",
+    "insights",
+    "chat_sessions",
+    "ai_feedback",
+    "health_metrics",
+    "intake_review_telemetry",
+]
 
 
 class DataDeleteRequest(BaseModel):
@@ -59,6 +75,17 @@ def _json_dt(value):
 
 def _enum_value(value):
     return getattr(value, "value", value)
+
+
+def _build_export_manifest(*, request_id: str, export_version: str, generated_at: str) -> dict:
+    return {
+        "request_id": request_id,
+        "export_version": export_version,
+        "generated_at": generated_at,
+        "section_count": len(EXPORT_SECTION_KEYS),
+        "section_keys": list(EXPORT_SECTION_KEYS),
+        "medical_disclaimer": MEDICAL_DISCLAIMER,
+    }
 
 
 def _export_account_state(user) -> dict:
@@ -243,6 +270,31 @@ async def _export_health_metrics(db: DbSession, user_id: int) -> list[dict]:
     ]
 
 
+async def _export_intake_review_telemetry(db: DbSession, user_id: int) -> list[dict]:
+    result = await db.execute(
+        select(IntakeReviewTelemetrySnapshot)
+        .where(IntakeReviewTelemetrySnapshot.user_id == user_id)
+        .order_by(IntakeReviewTelemetrySnapshot.generated_at.desc(), IntakeReviewTelemetrySnapshot.id.desc())
+    )
+    return [
+        {
+            "id": item.id,
+            "total_count": item.total_count,
+            "pending_review_count": item.pending_review_count,
+            "in_review_count": item.in_review_count,
+            "low_confidence_count": item.low_confidence_count,
+            "high_risk_count": item.high_risk_count,
+            "hard_block_count": item.hard_block_count,
+            "source_counts": item.source_counts_json or {},
+            "status_counts": item.status_counts_json or {},
+            "generated_at": _json_dt(item.generated_at),
+            "created_at": _json_dt(item.created_at),
+            "privacy_note": "仅为本机候选复核队列聚合计数，不包含候选食物名、备注、健康文本、图片或草稿内容。",
+        }
+        for item in result.scalars().all()
+    ]
+
+
 async def _delete_user_generated_content(db: DbSession, user_id: int) -> dict[str, int]:
     chat_ids = (
         select(ChatSession.id)
@@ -254,6 +306,7 @@ async def _delete_user_generated_content(db: DbSession, user_id: int) -> dict[st
     for name, statement in [
         ("ai_feedback", delete(AIFeedback).where(AIFeedback.user_id == user_id)),
         ("health_metrics", delete(HealthMetric).where(HealthMetric.user_id == user_id)),
+        ("intake_review_telemetry", delete(IntakeReviewTelemetrySnapshot).where(IntakeReviewTelemetrySnapshot.user_id == user_id)),
         ("chat_messages", delete(ChatMessage).where(ChatMessage.session_id.in_(select(chat_ids.c.id)))),
         ("chat_sessions", delete(ChatSession).where(ChatSession.user_id == user_id)),
         ("meals", delete(Meal).where(Meal.user_id == user_id)),
@@ -290,31 +343,17 @@ async def export_account_data(
 
     export_version = f"{settings.app_name}/{settings.app_version}"
     generated_at = datetime.now(timezone.utc).isoformat()
+    export_manifest = _build_export_manifest(
+        request_id=request_id,
+        export_version=export_version,
+        generated_at=generated_at,
+    )
     export_bundle = {
         "export_version": export_version,
         "generated_at": generated_at,
         "medical_disclaimer": MEDICAL_DISCLAIMER,
         "request_id": request_id,
-        "export_manifest": {
-            "request_id": request_id,
-            "export_version": export_version,
-            "generated_at": generated_at,
-            "section_count": 11,
-            "section_keys": [
-                "profile",
-                "account_state",
-                "device_sessions",
-                "daily_targets",
-                "meals",
-                "conditions",
-                "messages",
-                "insights",
-                "chat_sessions",
-                "ai_feedback",
-                "health_metrics",
-            ],
-            "medical_disclaimer": MEDICAL_DISCLAIMER,
-        },
+        "export_manifest": export_manifest,
         "profile": {"data": UserResponse.model_validate(current_user).model_dump(mode="json")},
         "account_state": {"data": _export_account_state(current_user)},
         "device_sessions": {"data": await _export_device_sessions(db, current_user.id)},
@@ -326,6 +365,7 @@ async def export_account_data(
         "chat_sessions": {"data": await _export_chat_sessions(db, current_user.id)},
         "ai_feedback": {"data": await _export_ai_feedback(db, current_user.id)},
         "health_metrics": {"data": await _export_health_metrics(db, current_user.id)},
+        "intake_review_telemetry": {"data": await _export_intake_review_telemetry(db, current_user.id)},
     }
 
     await audit_security_event(
@@ -337,8 +377,8 @@ async def export_account_data(
         route_name="/api/account/export",
         metadata={
             "request_id": request_id,
-            "section_count": export_bundle["export_manifest"]["section_count"],
-            "sections": export_bundle["export_manifest"]["section_keys"],
+            "section_count": export_manifest["section_count"],
+            "sections": export_manifest["section_keys"],
         },
     )
     return export_bundle
