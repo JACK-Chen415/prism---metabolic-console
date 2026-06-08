@@ -6,7 +6,7 @@ import HomeView from './components/views/HomeView';
 import LogView from './components/views/LogView';
 import ChatView from './components/views/ChatView';
 import ProfileView from './components/views/ProfileView';
-import CameraView from './components/views/CameraView';
+import PackagedFoodScanView from './components/views/PackagedFoodScanView';
 import SettingsView from './components/views/SettingsView';
 import MessageView from './components/views/MessageView';
 import MedicalArchivesView from './components/views/MedicalArchivesView';
@@ -315,6 +315,7 @@ const App: React.FC = () => {
       {currentView === View.LOG && (
         <LogView
           userProfile={userProfile}
+          medicalConditions={medicalConditions}
           meals={meals}
           currentDate={currentMealDate}
           dailyTargets={dailyTargets}
@@ -333,6 +334,10 @@ const App: React.FC = () => {
           onPendingIntakeSessionChange={setPendingIntakeSession}
           currentUserId={currentUserId}
         />
+      )}
+
+      {currentView === View.PACKAGED_FOOD_SCAN && (
+        <PackagedFoodScanView onViewChange={handleNavChange} />
       )}
 
       {currentView === View.PROFILE && (
