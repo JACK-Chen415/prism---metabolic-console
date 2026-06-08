@@ -4,7 +4,7 @@
  */
 
 import { AUTH_STORAGE_KEYS, LEGACY_AUTH_STORAGE_KEYS } from '../constants/storage';
-import { AdminActivationMetricsSummary, AdminAITelemetrySummary, AdminCommercializationSummary, AdminFeedbackItem, AdminKnowledgeBacklogSummary, AdminReleaseReadinessSummary, AdminUserItem, AIFeedbackItem, AIFeedbackType, BillingProviderItem, BillingUsageSnapshot, ChatStreamEvent, CheckoutSession, DataRightsRequestResponse, DeviceSessionItem, EntitlementSnapshot, FeedbackStatus, HealthMetric, HealthMetricCreateInput, HealthMetricProvider, HealthMetricType, InsightFeedbackPayload, IntakeCandidate, IntakeDraftSession, KnowledgeAuditItem, MetabolicReport, PlanCatalogItem, PlanTier, SecurityAuditItem, SubscriptionLifecycleResponse, SubscriptionStatus, UserDataExportBundle, UserRole } from '../types';
+import { AdminActivationMetricsSummary, AdminAITelemetrySummary, AdminCommercializationSummary, AdminFeedbackItem, AdminKnowledgeBacklogSummary, AdminReleaseReadinessSummary, AdminUserItem, AIFeedbackItem, AIFeedbackType, BillingProviderItem, EvaluateFoodRequest, EvaluateFoodResponse, BillingUsageSnapshot, ChatStreamEvent, CheckoutSession, DataRightsRequestResponse, DeviceSessionItem, EntitlementSnapshot, FavoriteMeal, FeedbackStatus, HealthMetric, HealthMetricCreateInput, HealthMetricProvider, HealthMetricType, InsightFeedbackPayload, IntakeCandidate, IntakeCandidateAlternativesRequest, IntakeCandidateAlternativesResponse, IntakeCandidateFeedbackPayload, IntakeConfirmPreviewRequest, IntakeConfirmPreviewResponse, IntakeDraftSession, IntakeReviewTelemetryPayload, IntakeReviewTelemetryResponse, KnowledgeAuditItem, MetabolicReport, PackagedFoodCandidateResponse, PackagedFoodLabelNormalizeRequest, PackagedFoodLookupRequest, PackagedFoodLookupResponse, PlanCatalogItem, PlanTier, SecurityAuditItem, SubscriptionLifecycleResponse, SubscriptionStatus, UserDataExportBundle, UserRole } from '../types';
 
 const LOCAL_API_FALLBACK = 'http://127.0.0.1:8000/api';
 
@@ -677,7 +677,19 @@ export const MealsAPI = {
     deleteMeal: (id: number) => apiClient.delete(`/meals/${id}`),
 
     sync: (meals: unknown[], lastSyncAt?: string, operations: unknown[] = []) =>
-        apiClient.post('/meals/sync', { meals, operations, last_sync_at: lastSyncAt })
+        apiClient.post('/meals/sync', { meals, operations, last_sync_at: lastSyncAt }),
+
+    listFavorites: (limit = 20) =>
+        apiClient.get<FavoriteMeal[]>(`/meals/favorites?limit=${limit}`),
+
+    favoriteMeal: (mealId: string | number) =>
+        apiClient.post<FavoriteMeal>(`/meals/${mealId}/favorite`, {}),
+
+    useFavorite: (favoriteId: number) =>
+        apiClient.post<FavoriteMeal>(`/meals/favorites/${favoriteId}/use`, {}),
+
+    deleteFavorite: (favoriteId: number) =>
+        apiClient.delete(`/meals/favorites/${favoriteId}`),
 };
 
 export const ChatAPI = {
@@ -781,6 +793,17 @@ export const HealthMetricsAPI = {
     delete: (id: number) => apiClient.delete(`/health-metrics/${id}`),
 };
 
+export const KnowledgeAPI = {
+    evaluateFood: (payload: EvaluateFoodRequest) =>
+        apiClient.post<EvaluateFoodResponse>('/knowledge/evaluate-food', payload),
+
+    lookupPackagedFoodBarcode: (payload: PackagedFoodLookupRequest) =>
+        apiClient.post<PackagedFoodLookupResponse>('/knowledge/packaged-food/barcode', payload),
+
+    normalizePackagedFoodLabel: (payload: PackagedFoodLabelNormalizeRequest) =>
+        apiClient.post<PackagedFoodCandidateResponse>('/knowledge/packaged-food/label', payload),
+};
+
 export const IntakeAPI = {
     recognizeAndParsePhotoUpload: (
         file: File,
@@ -862,6 +885,18 @@ export const IntakeAPI = {
 
     reevaluateCandidate: (candidate: IntakeCandidate) =>
         apiClient.post<IntakeCandidate>('/intake/candidate/reevaluate', candidate),
+
+    suggestCandidateAlternatives: (payload: IntakeCandidateAlternativesRequest) =>
+        apiClient.post<IntakeCandidateAlternativesResponse>('/intake/candidate/alternatives', payload),
+
+    previewConfirmImpact: (payload: IntakeConfirmPreviewRequest) =>
+        apiClient.post<IntakeConfirmPreviewResponse>('/intake/confirm/preview', payload),
+
+    submitReviewTelemetry: (payload: IntakeReviewTelemetryPayload) =>
+        apiClient.post<IntakeReviewTelemetryResponse>('/intake/review-telemetry', payload),
+
+    submitCandidateFeedback: (payload: IntakeCandidateFeedbackPayload) =>
+        apiClient.post<AIFeedbackItem>('/intake/candidate-feedback', payload),
 };
 
 export const ConditionsAPI = {

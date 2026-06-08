@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { ComplianceDocumentKey, DeviceSessionItem, View, UserProfile } from '../../types';
-import { AccountAPI, AuthAPI, ReportsAPI, TokenManager } from '../../services/api';
+import { AccountAPI, AuthAPI, IntakeAPI, ReportsAPI, TokenManager } from '../../services/api';
 import { APP_BUILD, APP_DISPLAY_NAME, APP_VERSION } from '../../constants/app';
-import { CacheCleanupService, CachedMeal, OfflineMealsService, SyncMetaService, syncScheduler } from '../../services/offline';
+import { CacheCleanupService, CachedIntakeDraft, CachedMeal, IntakeDraftQueueService, OfflineMealsService, SyncMetaService, syncScheduler } from '../../services/offline';
 import { AssistantIntensity, ChatMode, getAssistantIntensity, getChatMode, setAssistantIntensity, setChatMode } from '../../services/sessionState';
 
 interface SettingsViewProps {
@@ -36,6 +36,14 @@ type CacheStats = {
     pendingCount: number;
     failedCount: number;
     conflictCount: number;
+    intakeDraftCount: number;
+    pendingReviewCount: number;
+    inReviewCount: number;
+    highRiskDraftCount: number;
+    lowConfidenceDraftCount: number;
+    hardBlockDraftCount: number;
+    intakeDraftSourceCounts: Record<string, number>;
+    intakeDraftStatusCounts: Record<string, number>;
     oldestDate: string | null;
     newestDate: string | null;
     estimatedSizeKB: number;
@@ -91,6 +99,20 @@ const sourceLabelMap: Record<string, string> = {
     ai_quick_log: 'AI',
 };
 
+const intakeReviewStatusLabelMap: Record<CachedIntakeDraft['status'], string> = {
+    PENDING_REVIEW: '待复核',
+    IN_REVIEW: '复核中',
+    CONFIRMED: '已确认',
+    DISCARDED: '已丢弃',
+};
+
+const intakeReviewStatusClassMap: Record<CachedIntakeDraft['status'], string> = {
+    PENDING_REVIEW: 'border-amber-300/25 bg-amber-500/10 text-amber-100',
+    IN_REVIEW: 'border-primary/20 bg-primary/10 text-primary',
+    CONFIRMED: 'border-emerald-400/15 bg-emerald-500/10 text-emerald-200',
+    DISCARDED: 'border-white/10 bg-white/5 text-slate-400',
+};
+
 const assistantModeLabelMap: Record<ChatMode, string> = {
     STRICT: '分析师模式',
     GENTLE: '教练模式',
@@ -112,8 +134,12 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
     const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'error' | null>(null);
     const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
     const [isSyncingOffline, setIsSyncingOffline] = useState(false);
+    const [isSubmittingReviewTelemetry, setIsSubmittingReviewTelemetry] = useState(false);
+    const [reviewTelemetryNotice, setReviewTelemetryNotice] = useState<string | null>(null);
     const [offlineQueueItems, setOfflineQueueItems] = useState<CachedMeal[]>([]);
+    const [intakeDraftQueueItems, setIntakeDraftQueueItems] = useState<CachedIntakeDraft[]>([]);
     const [queueActionClientId, setQueueActionClientId] = useState<string | null>(null);
+    const [intakeDraftActionClientId, setIntakeDraftActionClientId] = useState<string | null>(null);
     const [queueNotice, setQueueNotice] = useState<string | null>(null);
     const [deviceSessions, setDeviceSessions] = useState<DeviceSessionItem[]>([]);
     const [sessionActionId, setSessionActionId] = useState<string | null>(null);
@@ -124,6 +150,9 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
     const [dataRightsNotice, setDataRightsNotice] = useState<string | null>(null);
 
     const appVersionLabel = `v${APP_VERSION}${APP_BUILD !== 'local' ? ` (${APP_BUILD})` : ''}`;
+    const offlineRiskCount = cacheStats
+        ? cacheStats.pendingCount + cacheStats.failedCount + cacheStats.conflictCount + cacheStats.pendingReviewCount + cacheStats.inReviewCount
+        : 0;
 
     const loadCacheStats = async () => {
         if (!currentUserId) {
@@ -131,21 +160,24 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
             setSyncStatus(null);
             setLastSyncTime(null);
             setOfflineQueueItems([]);
+            setIntakeDraftQueueItems([]);
             setDeviceSessions([]);
             return;
         }
         try {
-            const [stats, status, lastSync, queueItems, sessions] = await Promise.all([
+            const [stats, status, lastSync, queueItems, intakeDraftItems, sessions] = await Promise.all([
                 CacheCleanupService.getStats(currentUserId),
                 SyncMetaService.getSyncStatus(currentUserId),
                 SyncMetaService.getLastSyncTime(currentUserId),
                 OfflineMealsService.getQueue(currentUserId),
+                IntakeDraftQueueService.getQueue(currentUserId),
                 AuthAPI.listSessions(),
             ]);
             setCacheStats(stats);
             setSyncStatus(status);
             setLastSyncTime(lastSync ? lastSync.toLocaleString('zh-CN', { hour12: false }) : null);
             setOfflineQueueItems(queueItems);
+            setIntakeDraftQueueItems(intakeDraftItems);
             setDeviceSessions(sessions);
         } catch (error) {
             console.error('读取缓存统计失败:', error);
@@ -153,6 +185,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
             setSyncStatus(null);
             setLastSyncTime(null);
             setOfflineQueueItems([]);
+            setIntakeDraftQueueItems([]);
             setDeviceSessions([]);
         }
     };
@@ -223,6 +256,31 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
         }
     };
 
+    const handleSubmitReviewTelemetry = async () => {
+        if (!currentUserId) return;
+        setIsSubmittingReviewTelemetry(true);
+        setReviewTelemetryNotice(null);
+        try {
+            const stats = await CacheCleanupService.getStats(currentUserId);
+            await IntakeAPI.submitReviewTelemetry({
+                total_count: stats.intakeDraftCount,
+                pending_review_count: stats.pendingReviewCount,
+                in_review_count: stats.inReviewCount,
+                low_confidence_count: stats.lowConfidenceDraftCount,
+                high_risk_count: stats.highRiskDraftCount,
+                hard_block_count: stats.hardBlockDraftCount,
+                source_counts: stats.intakeDraftSourceCounts,
+                status_counts: stats.intakeDraftStatusCounts,
+            });
+            setCacheStats(stats);
+            setReviewTelemetryNotice('复核指标已同步：仅上传聚合计数和来源/状态分布，不包含候选内容。');
+        } catch (error) {
+            setReviewTelemetryNotice(error instanceof Error ? error.message : '复核指标同步失败，请稍后再试。');
+        } finally {
+            setIsSubmittingReviewTelemetry(false);
+        }
+    };
+
     const handleRetryOfflineItem = async (item: CachedMeal) => {
         if (!currentUserId) return;
         setQueueActionClientId(item.clientId);
@@ -267,6 +325,30 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
         onViewChange(View.LOG);
     };
 
+    const handleOpenIntakeReviewDesk = () => {
+        setActiveModal(null);
+        setQueueNotice(null);
+        onViewChange(View.CHAT);
+    };
+
+    const handleDiscardIntakeDraftItem = async (draft: CachedIntakeDraft) => {
+        if (!currentUserId) return;
+        const confirmed = window.confirm('确认丢弃这条本地待复核候选？这不会创建或删除云端饮食记录。');
+        if (!confirmed) return;
+
+        setIntakeDraftActionClientId(draft.clientId);
+        setQueueNotice(null);
+        try {
+            await IntakeDraftQueueService.discard(currentUserId, draft.clientId);
+            await loadCacheStats();
+            setQueueNotice('本地待复核候选已丢弃，不会写入饮食日志。');
+        } catch (error) {
+            setQueueNotice(error instanceof Error ? error.message : '丢弃候选失败，请稍后再试。');
+        } finally {
+            setIntakeDraftActionClientId(null);
+        }
+    };
+
     const handleRevokeDeviceSession = async (session: DeviceSessionItem) => {
         if (!currentUserId || session.is_current) return;
         const confirmed = window.confirm(`确认撤销设备会话「${session.device_label || session.session_id}」？这台设备将需要重新登录。`);
@@ -304,6 +386,12 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
             TokenManager.clearTokens();
             onViewChange(View.LOGIN);
         }
+    };
+
+    const openLogoutConfirm = () => {
+        void loadCacheStats();
+        setQueueNotice(null);
+        setActiveModal('LOGOUT_CONFIRM');
     };
 
     const downloadJson = (fileName: string, data: unknown) => {
@@ -606,6 +694,14 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                                     <span>{(cacheStats?.conflictCount ?? 0) + (cacheStats?.failedCount ?? 0)}</span>
                                 </div>
                                 <div className="flex items-center justify-between p-2 rounded bg-white/5">
+                                    <span>待复核候选</span>
+                                    <span>{cacheStats?.pendingReviewCount ?? 0}</span>
+                                </div>
+                                <div className="flex items-center justify-between p-2 rounded bg-white/5">
+                                    <span>风险 / 低置信度候选</span>
+                                    <span>{(cacheStats?.highRiskDraftCount ?? 0) + (cacheStats?.lowConfidenceDraftCount ?? 0)}</span>
+                                </div>
+                                <div className="flex items-center justify-between p-2 rounded bg-white/5">
                                     <span>同步状态</span>
                                     <span>{syncStatus || 'idle'}</span>
                                 </div>
@@ -614,8 +710,16 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                                     <span className="max-w-[160px] truncate">{lastSyncTime || '暂无'}</span>
                                 </div>
                                 <p className="text-[11px] text-slate-500 leading-relaxed pt-1">
-                                    清理只会删除本账号已同步且超过 30 天的本地离线缓存，不会删除服务器饮食记录或 AI 对话。冲突项会保留在本地，需回到日志中重新编辑确认。
+                                    清理只会删除本账号已同步且超过 30 天的本地离线缓存，不会删除服务器饮食记录或 AI 对话。冲突项会保留在本地，需回到日志中重新编辑确认。待复核候选只保存在本机，低置信度或风险候选不自动写入日志，退出前请到候选复核台处理。
                                 </p>
+                                <p className="text-[11px] text-slate-500 leading-relaxed">
+                                    复核指标同步仅上传数量、来源和状态分布，不上传食物名、备注、健康文本、图片或候选草稿。
+                                </p>
+                                {reviewTelemetryNotice && (
+                                    <p className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[11px] leading-relaxed text-slate-200">
+                                        {reviewTelemetryNotice}
+                                    </p>
+                                )}
                             </div>
                             <button
                                 onClick={handleRetryOfflineSync}
@@ -641,6 +745,23 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                                 查看待处理队列
                             </button>
                             <button
+                                onClick={handleSubmitReviewTelemetry}
+                                disabled={isSubmittingReviewTelemetry || !currentUserId}
+                                className="w-full bg-emerald-500/10 text-emerald-200 py-3 rounded-xl font-bold mt-2 border border-emerald-300/20 hover:bg-emerald-500/20 transition-colors font-serif tracking-wide flex items-center justify-center gap-2 disabled:opacity-50 disabled:grayscale"
+                            >
+                                {isSubmittingReviewTelemetry ? (
+                                    <>
+                                        <span className="material-symbols-outlined animate-spin text-sm">rotate_right</span>
+                                        同步指标中...
+                                    </>
+                                ) : (
+                                    <>
+                                        <span className="material-symbols-outlined text-sm">monitoring</span>
+                                        同步复核指标
+                                    </>
+                                )}
+                            </button>
+                            <button
                                 onClick={handleDataClean}
                                 disabled={isCleaning || !currentUserId}
                                 className="w-full bg-red-500/10 text-red-400 py-3 rounded-xl font-bold mt-2 border border-red-500/20 hover:bg-red-500/20 transition-colors font-serif tracking-wide flex items-center justify-center gap-2 disabled:opacity-50 disabled:grayscale"
@@ -659,7 +780,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                 return (
                     <Modal
                         title="离线同步队列"
-                        onClose={() => !queueActionClientId && setActiveModal(null)}
+                        onClose={() => !queueActionClientId && !intakeDraftActionClientId && setActiveModal(null)}
                         maxWidthClass="max-w-md max-h-[86vh] overflow-y-auto"
                     >
                         <div className="space-y-4">
@@ -694,6 +815,92 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                                 </span>
                                 {isSyncingOffline ? '同步中...' : '重试全部待处理项'}
                             </button>
+
+                            <div className="rounded-2xl border border-amber-300/10 bg-amber-500/5 p-3.5 space-y-3">
+                                <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                        <p className="text-sm text-white font-serif font-bold tracking-wide">候选复核</p>
+                                        <p className="mt-1 text-[11px] text-slate-500 font-serif leading-relaxed">
+                                            只显示本地候选数量、来源和风险计数；食物名、备注和健康文本仍留在本机候选草稿内。
+                                        </p>
+                                    </div>
+                                    <span className="rounded-full border border-amber-300/20 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-100 font-serif font-bold tracking-wide">
+                                        {intakeDraftQueueItems.length}
+                                    </span>
+                                </div>
+
+                                {intakeDraftQueueItems.length === 0 ? (
+                                    <div className="rounded-xl border border-dashed border-white/10 py-5 text-center">
+                                        <p className="text-xs text-slate-500 font-serif font-bold tracking-wide">当前没有待复核候选</p>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2">
+                                        {intakeDraftQueueItems.map(draft => {
+                                            const isBusy = intakeDraftActionClientId === draft.clientId;
+                                            const sourceLabel = sourceLabelMap[draft.source || 'unknown'] || '未知';
+                                            const updatedAt = draft.updatedAt.toLocaleString('zh-CN', { hour12: false });
+                                            const riskCount = draft.highRiskCount + draft.hardBlockCount;
+                                            return (
+                                                <div key={draft.clientId} className="rounded-xl border border-white/10 bg-black/20 p-3 space-y-2">
+                                                    <div className="flex items-start justify-between gap-3">
+                                                        <div className="min-w-0">
+                                                            <div className="flex flex-wrap items-center gap-1.5">
+                                                                <span className={`rounded border px-1.5 py-0.5 text-[10px] font-serif font-bold tracking-wide ${intakeReviewStatusClassMap[draft.status]}`}>
+                                                                    {intakeReviewStatusLabelMap[draft.status]}
+                                                                </span>
+                                                                <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-slate-300 font-serif font-bold tracking-wide">
+                                                                    {sourceLabel}
+                                                                </span>
+                                                            </div>
+                                                            <p className="mt-2 text-[11px] text-slate-400 font-serif leading-relaxed">
+                                                                {draft.recordDate} · 更新 {updatedAt}
+                                                            </p>
+                                                        </div>
+                                                        <div className="shrink-0 text-right">
+                                                            <p className="text-sm text-white font-serif font-bold">{draft.candidateCount}</p>
+                                                            <p className="text-[10px] text-slate-500 font-serif">候选</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="grid grid-cols-3 gap-2 text-center">
+                                                        <div className="rounded-lg border border-white/5 bg-white/[0.03] px-2 py-1.5">
+                                                            <p className="text-[10px] text-slate-500 font-serif font-bold">低置信度</p>
+                                                            <p className="text-xs text-slate-200 font-serif font-bold">{draft.lowConfidenceCount}</p>
+                                                        </div>
+                                                        <div className="rounded-lg border border-white/5 bg-white/[0.03] px-2 py-1.5">
+                                                            <p className="text-[10px] text-slate-500 font-serif font-bold">风险候选</p>
+                                                            <p className="text-xs text-amber-100 font-serif font-bold">{riskCount}</p>
+                                                        </div>
+                                                        <div className="rounded-lg border border-white/5 bg-white/[0.03] px-2 py-1.5">
+                                                            <p className="text-[10px] text-slate-500 font-serif font-bold">AVOID</p>
+                                                            <p className="text-xs text-red-200 font-serif font-bold">{draft.hardBlockCount}</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        <button
+                                                            onClick={handleOpenIntakeReviewDesk}
+                                                            disabled={isBusy}
+                                                            className="h-9 rounded-lg border border-primary/20 bg-primary/10 text-[11px] text-primary font-serif font-bold tracking-wide hover:bg-primary/20 disabled:opacity-50 flex items-center justify-center gap-1"
+                                                        >
+                                                            <span className="material-symbols-outlined text-[15px]">fact_check</span>
+                                                            去复核台
+                                                        </button>
+                                                        <button
+                                                            onClick={() => void handleDiscardIntakeDraftItem(draft)}
+                                                            disabled={isBusy}
+                                                            className="h-9 rounded-lg border border-red-500/20 bg-red-500/10 text-[11px] text-red-200 font-serif font-bold tracking-wide hover:bg-red-500/20 disabled:opacity-50 flex items-center justify-center gap-1"
+                                                        >
+                                                            <span className={`material-symbols-outlined text-[15px] ${isBusy ? 'animate-spin' : ''}`}>
+                                                                {isBusy ? 'rotate_right' : 'delete'}
+                                                            </span>
+                                                            丢弃候选
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
 
                             <div className="space-y-3">
                                 {offlineQueueItems.length === 0 ? (
@@ -894,8 +1101,37 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                         <div className="text-center py-2">
                             <p className="text-slate-300 text-sm leading-relaxed mb-6 font-serif tracking-wide">
                                 确定要退出当前账号吗？<br />
-                                本地敏感缓存会被清理，未同步的数据可能会丢失。
+                                本地敏感缓存会被清理，后端会撤销当前设备会话。
                             </p>
+                            {offlineRiskCount > 0 && (
+                                <div className="mb-5 rounded-xl border border-amber-400/25 bg-amber-500/10 p-3 text-left">
+                                    <p className="text-xs text-amber-100 leading-relaxed font-serif tracking-wide">
+                                        当前还有 {offlineRiskCount} 条离线记录未完成同步：
+                                        待同步 {cacheStats?.pendingCount ?? 0} / 失败 {cacheStats?.failedCount ?? 0} / 冲突 {cacheStats?.conflictCount ?? 0} / 待复核候选 {cacheStats?.pendingReviewCount ?? 0}。
+                                        确认退出会清理本账号本地队列；候选复核台中的低置信度或风险候选不会自动写入日志，请先重试、复核或进入队列处理。
+                                    </p>
+                                    <div className="mt-3 grid grid-cols-2 gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setQueueNotice(null);
+                                                setActiveModal('OFFLINE_QUEUE');
+                                            }}
+                                            className="h-9 rounded-lg border border-white/10 bg-white/5 text-[11px] text-slate-100 font-serif font-bold tracking-wide hover:bg-white/10"
+                                        >
+                                            查看队列
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleRetryOfflineSync()}
+                                            disabled={isSyncingOffline}
+                                            className="h-9 rounded-lg border border-primary/20 bg-primary/10 text-[11px] text-primary font-serif font-bold tracking-wide hover:bg-primary/20 disabled:opacity-50"
+                                        >
+                                            {isSyncingOffline ? '同步中...' : '先重试同步'}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                             <div className="flex gap-3">
                                 <button
                                     onClick={() => setActiveModal(null)}
@@ -907,7 +1143,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                                     onClick={handleLogout}
                                     className="flex-1 py-3 rounded-xl bg-ochre/20 border border-ochre/30 text-ochre font-bold text-sm hover:bg-ochre/30 transition-colors font-serif tracking-wide"
                                 >
-                                    确认退出
+                                    {offlineRiskCount > 0 ? '仍要退出并清理本地队列' : '确认退出'}
                                 </button>
                             </div>
                         </div>
@@ -1037,7 +1273,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                         <ListItem
                             icon="cleaning_services"
                             label="本地离线缓存"
-                            value={cacheStats ? `${cacheStats.estimatedSizeKB} KB` : '无本地缓存'}
+                            value={cacheStats ? `${cacheStats.estimatedSizeKB} KB · 待复核 ${cacheStats.intakeDraftCount}` : '无本地缓存'}
                             onClick={() => {
                                 void loadCacheStats();
                                 setActiveModal('CLEAN_DATA');
@@ -1048,7 +1284,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                             label="离线同步队列"
                             value={
                                 cacheStats
-                                    ? `待同步 ${cacheStats.pendingCount} / 失败 ${cacheStats.failedCount} / 冲突 ${cacheStats.conflictCount}`
+                                    ? `待同步 ${cacheStats.pendingCount} / 失败 ${cacheStats.failedCount} / 冲突 ${cacheStats.conflictCount} / 待复核 ${cacheStats.pendingReviewCount}`
                                     : '无本地队列'
                             }
                             action={
@@ -1200,7 +1436,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
 
                 <div className="pt-4 pb-8">
                     <button
-                        onClick={() => setActiveModal('LOGOUT_CONFIRM')}
+                        onClick={openLogoutConfirm}
                         className="w-full py-3 rounded-xl border border-ochre/50 text-ochre/90 text-sm font-bold tracking-widest hover:bg-ochre/10 active:scale-[0.99] transition-all font-serif flex items-center justify-center gap-2"
                     >
                         <span className="material-symbols-outlined text-lg">logout</span>

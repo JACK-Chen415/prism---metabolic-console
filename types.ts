@@ -6,6 +6,7 @@ export enum View {
   HOME = 'HOME',
   LOG = 'LOG',
   CHAT = 'CHAT',
+  PACKAGED_FOOD_SCAN = 'PACKAGED_FOOD_SCAN',
   PROFILE = 'PROFILE',
   CAMERA = 'CAMERA',
   SETTINGS = 'SETTINGS',
@@ -59,6 +60,8 @@ export interface UserDataExportBundle {
   request_id?: string;
   export_manifest?: UserDataExportManifest;
   profile: DataExportSection;
+  account_state: DataExportSection;
+  device_sessions: DataExportSection;
   daily_targets: DataExportSection;
   meals: DataExportSection;
   conditions: DataExportSection;
@@ -187,6 +190,19 @@ export interface AdminActivationDailyMetric {
   health_metrics: number;
 }
 
+export interface AdminIntakeReviewTelemetryAggregate {
+  snapshot_count: number;
+  user_count: number;
+  total_count: number;
+  pending_review_count: number;
+  in_review_count: number;
+  low_confidence_count: number;
+  high_risk_count: number;
+  hard_block_count: number;
+  source_counts: Record<string, number>;
+  status_counts: Record<string, number>;
+}
+
 export interface AdminActivationMetricsSummary {
   generated_at: string;
   window_days: number;
@@ -199,6 +215,7 @@ export interface AdminActivationMetricsSummary {
   meal_count: number;
   photo_meal_count: number;
   ai_quick_log_count: number;
+  intake_review_telemetry: AdminIntakeReviewTelemetryAggregate;
   chat_users: number;
   chat_session_count: number;
   assistant_message_count: number;
@@ -611,6 +628,27 @@ export interface Meal {
   retryCount?: number;
 }
 
+export interface FavoriteMeal {
+  id: number;
+  source_meal_id?: number | null;
+  name: string;
+  portion: string;
+  meal_type: Meal['type'];
+  category: FoodCategory;
+  note?: string | null;
+  calories: number;
+  sodium: number;
+  purine: number;
+  protein?: number | null;
+  carbs?: number | null;
+  fat?: number | null;
+  fiber?: number | null;
+  usage_count: number;
+  last_used_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export type MealUpdateInput = Partial<Pick<
   Meal,
   'name' | 'portion' | 'calories' | 'sodium' | 'purine' | 'protein' | 'carbs' | 'fat' | 'fiber' | 'type' | 'category' | 'note'
@@ -647,6 +685,124 @@ export type KnowledgeFallbackStatus =
   | 'LOCAL_BLOCKED_NO_CLOUD'
   | 'NO_LOCAL_MATCH_ALLOW_CLOUD';
 
+export type PackagedFoodCategory =
+  | 'STAPLE'
+  | 'MEAT'
+  | 'VEG'
+  | 'DRINK'
+  | 'SNACK'
+  | 'SOY'
+  | 'DAIRY'
+  | 'SEAFOOD'
+  | 'CONDIMENT'
+  | 'BEVERAGE';
+
+export type PackagedFoodProviderStatus = 'available' | 'mock' | 'disabled' | 'planned';
+
+export type PackagedFoodRecommendationLevel =
+  | 'RECOMMEND'
+  | 'MODERATE'
+  | 'LIMIT'
+  | 'AVOID'
+  | 'CONDITIONAL'
+  | 'INSUFFICIENT';
+
+export interface PackagedFoodLocalDecision {
+  food_code?: string | null;
+  food_name: string;
+  recommendation_level?: PackagedFoodRecommendationLevel | null;
+  matched_disease_codes: string[];
+  hard_blocks: string[];
+  risk_tags: string[];
+  portion_guidance?: string | null;
+  frequency_guidance?: string | null;
+  summary: string;
+  origin: KnowledgeOrigin;
+  fallback_status: KnowledgeFallbackStatus;
+  conflict_note?: string | null;
+  caution_note?: string | null;
+  citations: KnowledgeCitation[];
+  unmapped_conditions: string[];
+}
+
+export interface EvaluateFoodRequest {
+  food_name?: string | null;
+  food_code?: string | null;
+  condition_codes?: string[];
+  manual_restrictions?: string[];
+}
+
+export interface EvaluateFoodResponse extends PackagedFoodLocalDecision {}
+
+export interface PackagedFoodCandidateResponse {
+  barcode_last4?: string | null;
+  food_name: string;
+  brand?: string | null;
+  category: PackagedFoodCategory;
+  serving_size?: string | null;
+  serving_size_g?: number | null;
+  calories_per_100g?: number | null;
+  protein_per_100g?: number | null;
+  carbs_per_100g?: number | null;
+  fat_per_100g?: number | null;
+  fiber_per_100g?: number | null;
+  sodium_per_100g?: number | null;
+  sugar_per_100g?: number | null;
+  purine_per_100g?: number | null;
+  ingredients: string[];
+  allergen_tags: string[];
+  risk_tags: string[];
+  nutrition_source_code: string;
+  nutrition_source_detail: string;
+  nutrition_estimate_quality: string;
+  nutrition_review_status: string;
+  provider: string;
+  provider_status: PackagedFoodProviderStatus;
+  confidence: number;
+  review_required: boolean;
+  review_reasons: string[];
+  notes: string[];
+  local_decision: PackagedFoodLocalDecision;
+  disclaimer: string;
+}
+
+export interface PackagedFoodLookupRequest {
+  barcode: string;
+  condition_codes?: string[];
+  manual_restrictions?: string[];
+}
+
+export interface PackagedFoodLookupResponse {
+  provider: string;
+  provider_status: PackagedFoodProviderStatus;
+  barcode_last4?: string | null;
+  matched: boolean;
+  candidates: PackagedFoodCandidateResponse[];
+  disclaimer: string;
+}
+
+export interface PackagedFoodLabelNormalizeRequest {
+  product_name: string;
+  brand?: string | null;
+  barcode?: string | null;
+  category: PackagedFoodCategory;
+  serving_size?: string | null;
+  serving_size_g?: number | null;
+  calories_per_100g?: number | null;
+  protein_per_100g?: number | null;
+  carbs_per_100g?: number | null;
+  fat_per_100g?: number | null;
+  fiber_per_100g?: number | null;
+  sodium_per_100g?: number | null;
+  sugar_per_100g?: number | null;
+  purine_per_100g?: number | null;
+  ingredients?: string[];
+  allergen_tags?: string[];
+  risk_tags?: string[];
+  condition_codes?: string[];
+  manual_restrictions?: string[];
+}
+
 export interface ChatStreamEvent {
   event: 'meta' | 'status' | 'delta' | 'done' | 'error' | string;
   data: {
@@ -662,6 +818,85 @@ export interface ChatStreamEvent {
     origin?: KnowledgeOrigin;
     fallback_status?: KnowledgeFallbackStatus;
   };
+}
+
+export interface IntakeReviewTelemetryPayload {
+  total_count: number;
+  pending_review_count: number;
+  in_review_count: number;
+  low_confidence_count: number;
+  high_risk_count: number;
+  hard_block_count: number;
+  source_counts: Record<string, number>;
+  status_counts: Record<string, number>;
+}
+
+export interface IntakeReviewTelemetryResponse extends IntakeReviewTelemetryPayload {
+  id: number;
+  received_at: string;
+  notes: string[];
+}
+
+export interface IntakeCandidateFeedbackPayload {
+  draft_id: string;
+  source: Extract<MealSource, 'voice' | 'photo' | 'ai_quick_log'>;
+  feedback_type: Extract<AIFeedbackType, 'recognition_correction' | 'correction' | 'knowledge_gap'>;
+  rating?: number;
+  tags?: string[];
+  correction_text: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface IntakeCandidateAlternative {
+  food_code: string;
+  food_name: string;
+  category: FoodCategory;
+  recommendation_level?: 'RECOMMEND' | 'MODERATE' | 'LIMIT' | 'AVOID' | 'CONDITIONAL' | 'INSUFFICIENT' | null;
+  reason: string;
+  calories_per_100g?: number | null;
+  sodium_per_100g?: number | null;
+  purine_per_100g?: number | null;
+  allergen_tags: string[];
+  risk_tags: string[];
+  citations: KnowledgeCitation[];
+}
+
+export interface IntakeCandidateAlternativesRequest {
+  candidate: IntakeCandidate;
+  limit?: number;
+}
+
+export interface IntakeCandidateAlternativesResponse {
+  draft_id: string;
+  generated_at: string;
+  alternatives: IntakeCandidateAlternative[];
+  notes: string[];
+}
+
+export interface IntakeConfirmPreviewRequest {
+  record_date?: string | null;
+  candidates: IntakeCandidate[];
+}
+
+export interface IntakeConfirmImpactMetric {
+  key: 'calories' | 'sodium' | 'purine' | string;
+  label: string;
+  unit: string;
+  current: number;
+  pending: number;
+  projected: number;
+  target?: number | null;
+  ratio?: number | null;
+  status: 'ok' | 'near_limit' | 'over_limit' | 'no_target' | string;
+}
+
+export interface IntakeConfirmPreviewResponse {
+  record_date: string;
+  generated_at: string;
+  meal_count: number;
+  metrics: IntakeConfirmImpactMetric[];
+  notes: string[];
+  will_create_meal: boolean;
 }
 
 export interface IntakeCandidate {
@@ -701,6 +936,9 @@ export interface IntakeCandidate {
   fallback_status: KnowledgeFallbackStatus;
   conflict_note?: string | null;
   caution_note?: string | null;
+  review_required?: boolean;
+  review_reasons?: string[];
+  review_confirmed?: boolean;
 }
 
 export type IntakeParseStatus = 'ready' | 'needs_clarification' | 'refused';

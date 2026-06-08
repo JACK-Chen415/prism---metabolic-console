@@ -15,6 +15,9 @@ test('intake confirmation requires low-confidence review and keeps editable prep
 
   for (const required of [
     'LOW_CONFIDENCE_THRESHOLD',
+    'review_required',
+    'review_reasons',
+    'review_confirmed',
     '低置信度候选',
     '确认核对',
     '主要食材',
@@ -25,9 +28,18 @@ test('intake confirmation requires low-confidence review and keeps editable prep
     assert.ok(sheetSource.includes(required), `Missing intake confirmation UI contract: ${required}`);
   }
 
-  for (const required of ['seasonings', 'ingredients', 'cooking_method']) {
+  for (const required of ['seasonings', 'ingredients', 'cooking_method', 'review_required', 'review_reasons', 'review_confirmed']) {
     assert.ok(chatSource.includes(required), `Missing chat candidate mutation contract: ${required}`);
     assert.ok(backendSchema.includes(required), `Missing backend intake schema field: ${required}`);
     assert.ok(backendService.includes(required), `Missing backend intake persistence field: ${required}`);
+  }
+
+  for (const requiredBackendGuard of [
+    'LOW_CONFIDENCE_REVIEW_THRESHOLD',
+    '候选需要人工复核',
+    'review_threshold',
+    '_with_review_requirement',
+  ]) {
+    assert.ok(backendService.includes(requiredBackendGuard), `Missing backend review guard: ${requiredBackendGuard}`);
   }
 });

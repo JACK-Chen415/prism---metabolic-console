@@ -13,6 +13,7 @@ const HIDE_BOTTOM_NAV = new Set<View>([
   View.LOGIN,
   View.REGISTER,
   View.FORGOT_PASSWORD,
+  View.PACKAGED_FOOD_SCAN,
   View.CAMERA,
   View.SETTINGS,
   View.MESSAGES,
@@ -21,6 +22,7 @@ const HIDE_BOTTOM_NAV = new Set<View>([
   View.BILLING,
   View.ADMIN,
 ]);
+
 
 const AppShell: React.FC<AppShellProps> = ({ currentView, onViewChange, children }) => {
   return (

@@ -13,9 +13,11 @@ from app.schemas import user as user_schema
 from app.models.user import SubscriptionPlan, SubscriptionStatus, User, UserRole
 from app.services.verification_service import OTPDispatchResult
 from app.services.auth_security import (
+    PASSWORD_LOGIN_FAILURE_LIMIT,
     assert_access_session_active,
     audit_security_event,
     create_session_token_pair,
+    is_password_login_locked,
     revoke_all_device_sessions,
     revoke_device_session,
     rotate_refresh_session,
@@ -59,6 +61,9 @@ class FakeResult:
         self.row = row
 
     def scalar_one_or_none(self):
+        return self.row
+
+    def scalar_one(self):
         return self.row
 
     def scalars(self):
@@ -214,6 +219,41 @@ def test_register_schema_requires_all_compliance_consents():
     data = user_schema.UserRegister(**payload)
 
     assert data.consent_version == "2026-05-30"
+
+
+@pytest.mark.asyncio
+async def test_password_login_lockout_uses_sanitized_audit_counter():
+    db = FakeQuerySession(PASSWORD_LOGIN_FAILURE_LIMIT)
+
+    locked = await is_password_login_locked(
+        db,
+        actor="13800138000",
+        failure_limit=PASSWORD_LOGIN_FAILURE_LIMIT,
+    )
+
+    assert locked is True
+    assert db.execute_count == 1
+
+
+@pytest.mark.asyncio
+async def test_login_route_blocks_locked_password_actor_before_user_lookup():
+    db = FakeQuerySession(PASSWORD_LOGIN_FAILURE_LIMIT)
+    request = SimpleNamespace(headers={}, cookies={}, client=None)
+    payload = user_schema.UserLogin(phone="13800138000", password="wrongpass123")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await auth_route.login(payload, request, Response(), db)
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.headers["Retry-After"] == "900"
+    assert db.execute_count == 1
+    audit_log = db.added[-1]
+    assert audit_log.event_type == "auth.password_login"
+    assert audit_log.event_status == "failure_locked"
+    assert audit_log.actor_hash
+    serialized = str(audit_log.__dict__)
+    assert "13800138000" not in serialized
+    assert "wrongpass123" not in serialized
 
 
 def test_send_code_payload_exposes_debug_code_only_in_development(monkeypatch):

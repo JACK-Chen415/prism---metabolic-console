@@ -60,6 +60,8 @@ def _production_settings_kwargs(**overrides):
         "database_url": "postgresql+asyncpg://prism:secret@db.example.com:5432/prism",
         "ark_api_key": "ark_prod_configured_value",
         "doubao_model": "ep-prod-multimodal",
+        "billing_provider": "wechat_pay",
+        "entitlement_enforce_limits": True,
     }
     data.update(overrides)
     return data

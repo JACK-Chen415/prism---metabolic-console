@@ -513,6 +513,9 @@ const AdminView: React.FC<AdminViewProps> = ({ onViewChange }) => {
                   ['聊天会话', activationMetrics?.chat_session_count ?? 0],
                   ['AI 回复', activationMetrics?.assistant_message_count ?? 0],
                   ['反馈', activationMetrics?.feedback_count ?? 0],
+                  ['复核快照', activationMetrics?.intake_review_telemetry.snapshot_count ?? 0],
+                  ['待复核', (activationMetrics?.intake_review_telemetry.pending_review_count ?? 0) + (activationMetrics?.intake_review_telemetry.in_review_count ?? 0)],
+                  ['风险候选', activationMetrics?.intake_review_telemetry.high_risk_count ?? 0],
                 ].map(([label, value]) => (
                   <div key={label as string} className="rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2 text-center">
                     <p className="font-serif text-[10px] font-bold tracking-wide text-slate-500">{label as string}</p>
@@ -573,13 +576,14 @@ const AdminView: React.FC<AdminViewProps> = ({ onViewChange }) => {
                 </span>
               </div>
 
-              <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
+              <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-6">
                 {[
                   ['阻断项', releaseReadiness?.blocker_count ?? 0],
                   ['观察项', releaseReadiness?.warning_count ?? 0],
                   ['AI 样本', releaseReadiness?.signals.sampled_ai_messages ?? 0],
                   ['食物待审', releaseReadiness?.signals.food_nutrition_problem_count ?? 0],
                   ['同步异常', releaseReadiness?.signals.offline_sync_problem_count ?? 0],
+                  ['复核积压', releaseReadiness?.signals.intake_review_backlog_count ?? 0],
                 ].map(([label, value]) => (
                   <div key={label} className="rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2 text-center">
                     <p className="font-serif text-[10px] font-bold tracking-wide text-slate-500">{label}</p>

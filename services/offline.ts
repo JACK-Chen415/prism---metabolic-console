@@ -4,6 +4,7 @@
  */
 
 import Dexie, { Table } from 'dexie';
+import type { IntakeDraftSession } from '../types';
 import { getLocalDateString } from './date';
 import { MealsAPI } from './api';
 
@@ -48,12 +49,32 @@ export interface SyncMeta {
     value: string | number | Date;
 }
 
+export type IntakeDraftReviewStatus = 'PENDING_REVIEW' | 'IN_REVIEW' | 'CONFIRMED' | 'DISCARDED';
+
+export interface CachedIntakeDraft {
+    id?: number;
+    userId: number;
+    clientId: string;
+    status: IntakeDraftReviewStatus;
+    source: IntakeDraftSession['source'];
+    recordDate: string;
+    candidateCount: number;
+    lowConfidenceCount: number;
+    highRiskCount: number;
+    hardBlockCount: number;
+    lastError?: string;
+    session: IntakeDraftSession;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
 type MealDraft = Omit<CachedMeal, 'id' | 'userId' | 'clientId' | 'syncStatus' | 'createdAt' | 'updatedAt'> & {
     clientId?: string;
 };
 
 class PrismDatabase extends Dexie {
     meals!: Table<CachedMeal, number>;
+    intakeDrafts!: Table<CachedIntakeDraft, number>;
     syncMeta!: Table<SyncMeta, string>;
 
     constructor() {
@@ -73,6 +94,12 @@ class PrismDatabase extends Dexie {
                 meal.syncStatus = 'CONFLICT';
             });
         });
+
+        this.version(3).stores({
+            meals: '++id, userId, [userId+recordDate], [userId+syncStatus], [userId+clientId], serverId, recordDate, syncStatus, mealType, createdAt',
+            intakeDrafts: '++id, userId, [userId+status], [userId+clientId], recordDate, updatedAt',
+            syncMeta: 'key'
+        });
     }
 }
 
@@ -89,6 +116,149 @@ export function getTodayDateString(): string {
 function syncMetaKey(userId: number, key: string): string {
     return `user:${userId}:${key}`;
 }
+
+function buildIntakeDraftClientId(session: IntakeDraftSession): string {
+    const firstDraftId = session.candidates[0]?.draft_id || generateClientId();
+    return `intake-review:${firstDraftId}`;
+}
+
+function summarizeIntakeDraft(session: IntakeDraftSession) {
+    const candidates = session.candidates || [];
+    return {
+        candidateCount: candidates.length,
+        lowConfidenceCount: candidates.filter(candidate => (candidate.confidence || 0) < 0.7 || Boolean(candidate.review_required)).length,
+        highRiskCount: candidates.filter(candidate => (
+            candidate.recommendation_level === 'AVOID'
+            || candidate.recommendation_level === 'LIMIT'
+            || (candidate.warnings || []).length > 0
+            || Boolean(candidate.conflict_note)
+        )).length,
+        hardBlockCount: candidates.filter(candidate => candidate.recommendation_level === 'AVOID').length,
+    };
+}
+
+export const IntakeDraftQueueService = {
+    async saveDraft(
+        userId: number,
+        session: IntakeDraftSession,
+        clientId: string = buildIntakeDraftClientId(session),
+        status: IntakeDraftReviewStatus = 'PENDING_REVIEW',
+        lastError?: string,
+    ): Promise<CachedIntakeDraft> {
+        const now = new Date();
+        const summary = summarizeIntakeDraft(session);
+        const existing = await db.intakeDrafts.where('[userId+clientId]').equals([userId, clientId]).first();
+        const payload = {
+            userId,
+            clientId,
+            status,
+            source: session.source,
+            recordDate: session.record_date || getTodayDateString(),
+            ...summary,
+            lastError: lastError?.slice(0, 160),
+            session,
+            updatedAt: now,
+        };
+
+        if (existing?.id) {
+            await db.intakeDrafts.update(existing.id, payload);
+            return { ...existing, ...payload, id: existing.id, createdAt: existing.createdAt };
+        }
+
+        const nextDraft: CachedIntakeDraft = {
+            ...payload,
+            createdAt: now,
+        };
+        const id = await db.intakeDrafts.add(nextDraft);
+        return { ...nextDraft, id };
+    },
+
+    async getQueue(userId: number): Promise<CachedIntakeDraft[]> {
+        const statuses: IntakeDraftReviewStatus[] = ['IN_REVIEW', 'PENDING_REVIEW'];
+        const groups = await Promise.all(
+            statuses.map(status => db.intakeDrafts.where('[userId+status]').equals([userId, status]).toArray())
+        );
+        return groups
+            .flat()
+            .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+    },
+
+    async getByClientId(userId: number, clientId: string): Promise<CachedIntakeDraft | undefined> {
+        return db.intakeDrafts.where('[userId+clientId]').equals([userId, clientId]).first();
+    },
+
+    async markInReview(userId: number, clientId: string): Promise<void> {
+        const draft = await this.getByClientId(userId, clientId);
+        if (!draft?.id || draft.userId !== userId) return;
+        await db.intakeDrafts.update(draft.id, {
+            status: 'IN_REVIEW',
+            updatedAt: new Date(),
+        });
+    },
+
+    async markPendingReview(userId: number, clientId: string): Promise<void> {
+        const draft = await this.getByClientId(userId, clientId);
+        if (!draft?.id || draft.userId !== userId || draft.status !== 'IN_REVIEW') return;
+        await db.intakeDrafts.update(draft.id, {
+            status: 'PENDING_REVIEW',
+            updatedAt: new Date(),
+        });
+    },
+
+    async markConfirmed(userId: number, clientId: string): Promise<void> {
+        const draft = await this.getByClientId(userId, clientId);
+        if (!draft?.id || draft.userId !== userId) return;
+        await db.intakeDrafts.update(draft.id, {
+            status: 'CONFIRMED',
+            updatedAt: new Date(),
+        });
+    },
+
+    async discard(userId: number, clientId: string): Promise<void> {
+        const draft = await this.getByClientId(userId, clientId);
+        if (!draft?.id || draft.userId !== userId) return;
+        await db.intakeDrafts.update(draft.id, {
+            status: 'DISCARDED',
+            updatedAt: new Date(),
+        });
+    },
+
+    async clearUserData(userId: number): Promise<void> {
+        const drafts = await db.intakeDrafts.where('userId').equals(userId).toArray();
+        await db.intakeDrafts.bulkDelete(drafts.map(draft => draft.id!).filter(Boolean));
+    },
+
+    async getStats(userId: number): Promise<{
+        intakeDraftCount: number;
+        pendingReviewCount: number;
+        inReviewCount: number;
+        highRiskDraftCount: number;
+        hardBlockDraftCount: number;
+        lowConfidenceDraftCount: number;
+        intakeDraftSourceCounts: Record<string, number>;
+        intakeDraftStatusCounts: Record<string, number>;
+    }> {
+        const queue = await this.getQueue(userId);
+        const sourceCounts: Record<string, number> = {};
+        const statusCounts: Record<string, number> = {};
+        queue.forEach(draft => {
+            const sourceKey = draft.source || 'unknown';
+            sourceCounts[sourceKey] = (sourceCounts[sourceKey] || 0) + 1;
+            statusCounts[draft.status] = (statusCounts[draft.status] || 0) + 1;
+        });
+
+        return {
+            intakeDraftCount: queue.length,
+            pendingReviewCount: queue.filter(draft => draft.status === 'PENDING_REVIEW').length,
+            inReviewCount: queue.filter(draft => draft.status === 'IN_REVIEW').length,
+            highRiskDraftCount: queue.filter(draft => draft.highRiskCount > 0 || draft.hardBlockCount > 0).length,
+            hardBlockDraftCount: queue.filter(draft => draft.hardBlockCount > 0).length,
+            lowConfidenceDraftCount: queue.filter(draft => draft.lowConfidenceCount > 0).length,
+            intakeDraftSourceCounts: sourceCounts,
+            intakeDraftStatusCounts: statusCounts,
+        };
+    },
+};
 
 export const OfflineMealsService = {
     async add(userId: number, meal: MealDraft): Promise<CachedMeal> {
@@ -430,17 +600,33 @@ export const CacheCleanupService = {
         pendingCount: number;
         failedCount: number;
         conflictCount: number;
+        intakeDraftCount: number;
+        pendingReviewCount: number;
+        inReviewCount: number;
+        highRiskDraftCount: number;
+        lowConfidenceDraftCount: number;
+        hardBlockDraftCount: number;
+        intakeDraftSourceCounts: Record<string, number>;
+        intakeDraftStatusCounts: Record<string, number>;
         oldestDate: string | null;
         newestDate: string | null;
         estimatedSizeKB: number;
     }> {
         const allMeals = await db.meals.where('userId').equals(userId).toArray();
+        const intakeDrafts = await IntakeDraftQueueService.getQueue(userId);
         const synced = allMeals.filter(m => m.syncStatus === 'SYNCED');
         const pending = allMeals.filter(m => m.syncStatus === 'PENDING');
         const failed = allMeals.filter(m => m.syncStatus === 'FAILED');
         const conflict = allMeals.filter(m => m.syncStatus === 'CONFLICT');
-        const dates = allMeals.map(m => m.recordDate).sort();
-        const estimatedSizeKB = Math.max(1, Math.round(JSON.stringify(allMeals).length / 1024));
+        const intakeDraftSourceCounts: Record<string, number> = {};
+        const intakeDraftStatusCounts: Record<string, number> = {};
+        intakeDrafts.forEach(draft => {
+            const sourceKey = draft.source || 'unknown';
+            intakeDraftSourceCounts[sourceKey] = (intakeDraftSourceCounts[sourceKey] || 0) + 1;
+            intakeDraftStatusCounts[draft.status] = (intakeDraftStatusCounts[draft.status] || 0) + 1;
+        });
+        const dates = [...allMeals.map(m => m.recordDate), ...intakeDrafts.map(draft => draft.recordDate)].sort();
+        const estimatedSizeKB = Math.max(1, Math.round(JSON.stringify({ allMeals, intakeDrafts }).length / 1024));
 
         return {
             totalCount: allMeals.length,
@@ -448,6 +634,14 @@ export const CacheCleanupService = {
             pendingCount: pending.length,
             failedCount: failed.length,
             conflictCount: conflict.length,
+            intakeDraftCount: intakeDrafts.length,
+            pendingReviewCount: intakeDrafts.filter(draft => draft.status === 'PENDING_REVIEW').length,
+            inReviewCount: intakeDrafts.filter(draft => draft.status === 'IN_REVIEW').length,
+            highRiskDraftCount: intakeDrafts.filter(draft => draft.highRiskCount > 0 || draft.hardBlockCount > 0).length,
+            lowConfidenceDraftCount: intakeDrafts.filter(draft => draft.lowConfidenceCount > 0).length,
+            hardBlockDraftCount: intakeDrafts.filter(draft => draft.hardBlockCount > 0).length,
+            intakeDraftSourceCounts,
+            intakeDraftStatusCounts,
             oldestDate: dates[0] || null,
             newestDate: dates[dates.length - 1] || null,
             estimatedSizeKB
@@ -456,11 +650,13 @@ export const CacheCleanupService = {
 
     async clearUserLocalData(userId: number): Promise<void> {
         await OfflineMealsService.clearUserData(userId);
+        await IntakeDraftQueueService.clearUserData(userId);
         await SyncMetaService.clearUserMeta(userId);
     },
 
     async clearAll(): Promise<void> {
         await db.meals.clear();
+        await db.intakeDrafts.clear();
         await db.syncMeta.clear();
     }
 };

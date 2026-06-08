@@ -2,9 +2,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.models.health_condition import ConditionStatus
 from app.models.knowledge import FallbackStatus, KnowledgeOrigin, RecommendationLevel
 from app.models.meal import FoodCategory, MealType
-from app.schemas.intake import IntakeConfirmItem, IntakeParseStatus, IntakeSource, TextParseRequest
+from app.schemas.intake import IntakeConfirmItem, IntakeConfirmRequest, IntakeParseStatus, IntakeSource, TextParseRequest
 from app.services.intake import IntakeService
 from app.services.knowledge.contracts import LocalDecision, NormalizedConditions
 
@@ -358,3 +359,268 @@ async def test_reevaluate_confirm_item_marks_prep_allergens_as_local_blocks() ->
     assert "high_sugar" in candidate.risk_tags
     assert "high_fat" in candidate.risk_tags
     assert "过敏约束命中：花生" in candidate.warnings
+
+
+@pytest.mark.asyncio
+async def test_confirm_rejects_low_confidence_candidate_without_review_confirmation() -> None:
+    service = IntakeService(knowledge_service=FakeKnowledgeService())
+    item = IntakeConfirmItem(
+        draft_id="draft-review-1",
+        source=IntakeSource.PHOTO,
+        meal_type=MealType.LUNCH,
+        category=FoodCategory.MEAT,
+        food_name="虾仁",
+        food_code="shrimp",
+        amount_text="1份",
+        normalized_amount=None,
+        unit="份",
+        ingredients=[],
+        cooking_method=None,
+        seasonings=[],
+        confidence=0.2,
+        origin=KnowledgeOrigin.CLOUD_SUPPLEMENT,
+        fallback_status=FallbackStatus.NO_LOCAL_MATCH_ALLOW_CLOUD,
+    )
+
+    result = await service.confirm(
+        FakeAuditDb(),
+        user=SimpleNamespace(id=1, nickname="tester"),
+        conditions=[],
+        data=IntakeConfirmRequest(
+            source=IntakeSource.PHOTO,
+            raw_summary="photo candidate",
+            candidates=[item],
+        ),
+    )
+
+    assert result.meals == []
+    assert result.meal_ids == []
+    assert len(result.failed_items) == 1
+    assert result.failed_items[0].draft_id == "draft-review-1"
+    assert "候选需要人工复核" in result.failed_items[0].reason
+    assert "低置信度" in result.failed_items[0].reason
+
+
+@pytest.mark.asyncio
+async def test_meal_from_confirm_item_persists_review_metadata_when_confirmed() -> None:
+    service = IntakeService(knowledge_service=FakeKnowledgeService())
+    item = IntakeConfirmItem(
+        draft_id="draft-review-2",
+        source=IntakeSource.PHOTO,
+        meal_type=MealType.LUNCH,
+        category=FoodCategory.MEAT,
+        food_name="虾仁",
+        food_code="shrimp",
+        amount_text="120g",
+        normalized_amount=120,
+        unit="g",
+        ingredients=["虾仁"],
+        cooking_method="清炒",
+        seasonings=["少量盐"],
+        confidence=0.2,
+        origin=KnowledgeOrigin.CLOUD_SUPPLEMENT,
+        fallback_status=FallbackStatus.NO_LOCAL_MATCH_ALLOW_CLOUD,
+        review_confirmed=True,
+    )
+
+    meal, candidate = await service._meal_from_confirm_item(
+        NoWriteDb(),
+        user=SimpleNamespace(id=1, nickname="tester"),
+        normalized=NormalizedConditions(disease_codes=["gout"], allergy_terms=["虾"]),
+        item=item,
+        record_date=__import__("datetime").date(2026, 6, 6),
+        raw_input_text="",
+        raw_summary="",
+    )
+
+    assert candidate.review_required is True
+    assert candidate.review_confirmed is True
+    assert "low_confidence" in candidate.review_reasons
+    assert meal.recognition_meta_json["review_required"] is True
+    assert meal.recognition_meta_json["review_confirmed"] is True
+    assert "low_confidence" in meal.recognition_meta_json["review_reasons"]
+    assert meal.recognition_meta_json["review_threshold"] == 0.55
+
+@pytest.mark.asyncio
+async def test_suggest_candidate_alternatives_filters_hard_blocks_without_writing_meals() -> None:
+    class AlternativeMatcher:
+        def __init__(self):
+            self.foods = [
+                SimpleNamespace(
+                    food_code="shrimp",
+                    name_zh="虾仁",
+                    category=FoodCategory.MEAT.value,
+                    calories_per_100g=90.0,
+                    sodium_per_100g=150.0,
+                    purine_per_100g=137.0,
+                    allergen_tags_json=["虾"],
+                    risk_tags_json=["seafood"],
+                ),
+                SimpleNamespace(
+                    food_code="crab",
+                    name_zh="螃蟹",
+                    category=FoodCategory.MEAT.value,
+                    calories_per_100g=97.0,
+                    sodium_per_100g=260.0,
+                    purine_per_100g=152.0,
+                    allergen_tags_json=["蟹"],
+                    risk_tags_json=["seafood"],
+                ),
+                SimpleNamespace(
+                    food_code="steamed_chicken",
+                    name_zh="清蒸鸡胸肉",
+                    category=FoodCategory.MEAT.value,
+                    calories_per_100g=165.0,
+                    sodium_per_100g=70.0,
+                    purine_per_100g=80.0,
+                    allergen_tags_json=[],
+                    risk_tags_json=[],
+                ),
+                SimpleNamespace(
+                    food_code="tofu",
+                    name_zh="北豆腐",
+                    category=FoodCategory.MEAT.value,
+                    calories_per_100g=82.0,
+                    sodium_per_100g=7.0,
+                    purine_per_100g=25.0,
+                    allergen_tags_json=["soy"],
+                    risk_tags_json=[],
+                ),
+            ]
+
+        async def find_by_name_or_code(self, db, *, food_name=None, food_code=None):
+            for food in self.foods:
+                if food.food_code == food_code or food.name_zh == food_name:
+                    return food
+            return None
+
+        async def list_enabled_foods(self, db):
+            return self.foods
+
+    class AlternativeKnowledgeService:
+        def __init__(self):
+            self.matcher = AlternativeMatcher()
+
+        async def normalize_conditions(self, db, conditions):
+            return NormalizedConditions(disease_codes=["gout"], allergy_terms=["虾", "蟹"])
+
+        async def evaluate_food(
+            self,
+            db,
+            *,
+            normalized,
+            food_name=None,
+            food_code=None,
+            manual_restrictions=None,
+            user=None,
+        ):
+            if food_code in {"shrimp", "crab"}:
+                return LocalDecision(
+                    food_code=food_code,
+                    food_name="虾蟹",
+                    recommendation_level=RecommendationLevel.AVOID,
+                    matched_disease_codes=normalized.disease_codes,
+                    hard_blocks=["过敏约束命中"],
+                    risk_tags=["seafood"],
+                    summary="命中过敏或显式忌口，本地规则阻断。",
+                    origin=KnowledgeOrigin.LOCAL_RULE,
+                    fallback_status=FallbackStatus.LOCAL_BLOCKED_NO_CLOUD,
+                )
+            return LocalDecision(
+                food_code=food_code,
+                food_name="替代项",
+                recommendation_level=RecommendationLevel.RECOMMEND if food_code == "tofu" else RecommendationLevel.MODERATE,
+                matched_disease_codes=normalized.disease_codes,
+                hard_blocks=[],
+                risk_tags=[],
+                summary="本地规则未发现当前档案下的绝对阻断项。",
+                origin=KnowledgeOrigin.LOCAL_RULE,
+                fallback_status=FallbackStatus.LOCAL_COMPLETE,
+            )
+
+    service = IntakeService(knowledge_service=AlternativeKnowledgeService())
+    item = IntakeConfirmItem(
+        draft_id="draft-alt-1",
+        source=IntakeSource.PHOTO,
+        meal_type=MealType.LUNCH,
+        category=FoodCategory.MEAT,
+        food_name="虾仁",
+        food_code="shrimp",
+        amount_text="100g",
+        normalized_amount=100,
+        unit="g",
+        ingredients=["虾仁"],
+        cooking_method="清蒸",
+        seasonings=[],
+        manual_restrictions=["虾"],
+        origin=KnowledgeOrigin.CLOUD_SUPPLEMENT,
+        fallback_status=FallbackStatus.NO_LOCAL_MATCH_ALLOW_CLOUD,
+    )
+
+    response = await service.suggest_candidate_alternatives(
+        NoWriteDb(),
+        user=SimpleNamespace(id=1, nickname="tester"),
+        conditions=[],
+        item=item,
+        limit=3,
+    )
+
+    assert response.draft_id == "draft-alt-1"
+    names = [item.food_name for item in response.alternatives]
+    assert "虾仁" not in names
+    assert "螃蟹" not in names
+    assert names == ["北豆腐", "清蒸鸡胸肉"]
+    assert all(item.recommendation_level in {RecommendationLevel.RECOMMEND, RecommendationLevel.MODERATE} for item in response.alternatives)
+    assert any("不作诊断" in note for note in response.notes)
+    assert all("本地规则" in item.reason for item in response.alternatives)
+
+@pytest.mark.asyncio
+async def test_preview_confirm_impact_projects_targets_without_writing_meals() -> None:
+    class FakeSummaryResult:
+        def one(self):
+            return SimpleNamespace(calories=1000.0, sodium=1200.0, purine=250.0, count=2)
+
+    class PreviewDb(NoWriteDb):
+        async def execute(self, *_):
+            return FakeSummaryResult()
+
+    service = IntakeService(knowledge_service=FakeKnowledgeService())
+    response = await service.preview_confirm_impact(
+        PreviewDb(),
+        user=SimpleNamespace(id=1, gender="FEMALE", age=35, height=160, weight=60),
+        conditions=[
+            SimpleNamespace(status=ConditionStatus.ACTIVE, condition_code="hypertension", title="高血压"),
+            SimpleNamespace(status=ConditionStatus.ACTIVE, condition_code="gout", title="痛风"),
+        ],
+        data=__import__("app.schemas.intake", fromlist=["IntakeConfirmPreviewRequest"]).IntakeConfirmPreviewRequest(
+            record_date=__import__("datetime").date(2026, 6, 7),
+            candidates=[
+                IntakeConfirmItem(
+                    draft_id="draft-preview-1",
+                    source=IntakeSource.PHOTO,
+                    meal_type=MealType.LUNCH,
+                    category=FoodCategory.MEAT,
+                    food_name="牛肉面",
+                    amount_text="1碗",
+                    normalized_amount=1,
+                    unit="碗",
+                    calories=700,
+                    sodium=500,
+                    purine=80,
+                    origin=KnowledgeOrigin.CLOUD_SUPPLEMENT,
+                    fallback_status=FallbackStatus.NO_LOCAL_MATCH_ALLOW_CLOUD,
+                ),
+            ],
+        ),
+    )
+
+    metrics = {metric.key: metric for metric in response.metrics}
+    assert response.will_create_meal is False
+    assert response.meal_count == 2
+    assert metrics["calories"].projected == 1700.0
+    assert metrics["sodium"].target == 1500.0
+    assert metrics["sodium"].status == "over_limit"
+    assert metrics["purine"].target == 300.0
+    assert metrics["purine"].status == "over_limit"
+    assert any("不会创建饮食记录" in note for note in response.notes)
+    assert any("不作诊断" in note for note in response.notes)

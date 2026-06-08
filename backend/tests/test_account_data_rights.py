@@ -77,3 +77,19 @@ def test_device_session_export_omits_token_and_network_hash_material() -> None:
     assert "ua-secret-hash" not in serialized
     assert "ip-secret-hash" not in serialized
     assert "token" not in serialized.lower()
+
+
+def test_export_manifest_matches_declared_sections_and_includes_request_trace() -> None:
+    manifest = account_route._build_export_manifest(
+        request_id="req_export_trace",
+        export_version="Prism/1.2.3",
+        generated_at="2026-06-06T12:00:00+00:00",
+    )
+
+    assert manifest["request_id"] == "req_export_trace"
+    assert manifest["export_version"] == "Prism/1.2.3"
+    assert manifest["generated_at"] == "2026-06-06T12:00:00+00:00"
+    assert manifest["section_count"] == len(manifest["section_keys"])
+    assert manifest["section_keys"] == account_route.EXPORT_SECTION_KEYS
+    assert "医疗诊断" in manifest["medical_disclaimer"]
+    assert "token" not in json.dumps(manifest, ensure_ascii=False).lower()

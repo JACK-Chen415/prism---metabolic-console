@@ -7,6 +7,7 @@ from app.core.security import hash_sensitive_value
 from app.models.chat import ChatMessage, ChatSession, MessageRole
 from app.models.feedback import AIFeedback, AIFeedbackStatus, AIFeedbackType
 from app.models.health_metric import HealthMetric, HealthMetricType
+from app.models.intake_telemetry import IntakeReviewTelemetrySnapshot
 from app.models.knowledge import FallbackStatus, FoodItem, KnowledgeAuditLog, KnowledgeOrigin
 from app.models.meal import FoodCategory, Meal, MealSource, MealType, SyncStatus
 from app.models.security import SecurityAuditLog
@@ -567,6 +568,7 @@ def test_admin_activation_metrics_summary_aggregates_without_sensitive_content()
         SecurityAuditLog(id=1, event_type="otp.login.send", event_status="limited"),
         SecurityAuditLog(id=2, event_type="auth.refresh", event_status="revoked_or_reused"),
         SecurityAuditLog(id=3, event_type="admin.access", event_status="denied"),
+        SecurityAuditLog(id=4, event_type="auth.password_login", event_status="failure_locked"),
     ]
     for row in security_rows:
         row.created_at = now
@@ -581,6 +583,43 @@ def test_admin_activation_metrics_summary_aggregates_without_sensitive_content()
         )
     ]
     health_metrics[0].created_at = now
+    raw_draft_key = "raw_food_name_不要泄漏"
+    intake_review_rows = [
+        IntakeReviewTelemetrySnapshot(
+            id=1,
+            user_id=1,
+            total_count=2,
+            pending_review_count=1,
+            in_review_count=1,
+            low_confidence_count=1,
+            high_risk_count=1,
+            hard_block_count=1,
+            source_counts_json={"photo": 1, raw_draft_key: 99},
+            status_counts_json={"PENDING_REVIEW": 1, "IN_REVIEW": 1, "DISCARDED": 1},
+        ),
+        IntakeReviewTelemetrySnapshot(
+            id=2,
+            user_id=1,
+            total_count=10,
+            pending_review_count=10,
+            source_counts_json={"voice": 10},
+            status_counts_json={"PENDING_REVIEW": 10},
+        ),
+        IntakeReviewTelemetrySnapshot(
+            id=3,
+            user_id=2,
+            total_count=1,
+            pending_review_count=1,
+            source_counts_json={"voice": 1},
+            status_counts_json={"PENDING_REVIEW": 1},
+        ),
+    ]
+    intake_review_rows[0].generated_at = now
+    intake_review_rows[0].created_at = now
+    intake_review_rows[1].generated_at = now - timedelta(hours=1)
+    intake_review_rows[1].created_at = now - timedelta(hours=1)
+    intake_review_rows[2].generated_at = now
+    intake_review_rows[2].created_at = now
 
     summary = admin_route._build_activation_metrics_summary(
         users=users,
@@ -591,6 +630,7 @@ def test_admin_activation_metrics_summary_aggregates_without_sensitive_content()
         security_rows=security_rows,
         health_metrics=health_metrics,
         window_days=2,
+        intake_review_rows=intake_review_rows,
         generated_at=now,
     )
     serialized = summary.model_dump_json()
@@ -612,8 +652,17 @@ def test_admin_activation_metrics_summary_aggregates_without_sensitive_content()
     assert summary.unsafe_open_feedback_count == 1
     assert summary.health_metric_users == 1
     assert summary.health_metric_count == 1
-    assert summary.security_event_count == 3
-    assert summary.auth_lockout_count == 1
+    assert summary.intake_review_telemetry.snapshot_count == 3
+    assert summary.intake_review_telemetry.user_count == 2
+    assert summary.intake_review_telemetry.total_count == 3
+    assert summary.intake_review_telemetry.pending_review_count == 2
+    assert summary.intake_review_telemetry.in_review_count == 1
+    assert summary.intake_review_telemetry.high_risk_count == 1
+    assert summary.intake_review_telemetry.hard_block_count == 1
+    assert summary.intake_review_telemetry.source_counts == {"photo": 1, "voice": 1}
+    assert summary.intake_review_telemetry.status_counts == {"IN_REVIEW": 1, "PENDING_REVIEW": 2}
+    assert summary.security_event_count == 4
+    assert summary.auth_lockout_count == 2
     assert summary.refresh_reuse_count == 1
     assert summary.admin_denied_count == 1
     assert [row.date for row in summary.daily_activity] == [date(2026, 5, 29), date(2026, 5, 30)]
@@ -622,6 +671,7 @@ def test_admin_activation_metrics_summary_aggregates_without_sensitive_content()
     assert raw_phone not in serialized
     assert raw_chat not in serialized
     assert raw_correction not in serialized
+    assert raw_draft_key not in serialized
 
 
 def test_admin_commercialization_summary_aggregates_safe_billing_and_usage_pressure():
@@ -786,6 +836,7 @@ def test_admin_release_readiness_blocks_on_unsafe_feedback_and_refresh_reuse():
         SecurityAuditLog(id=1, event_type="auth.refresh", event_status="revoked_or_reused"),
         SecurityAuditLog(id=2, event_type="otp.login.send", event_status="limited"),
         SecurityAuditLog(id=3, event_type="admin.access", event_status="denied"),
+        SecurityAuditLog(id=4, event_type="auth.password_login", event_status="failure_locked"),
     ]
     knowledge_rows = [
         KnowledgeAuditLog(
@@ -833,7 +884,7 @@ def test_admin_release_readiness_blocks_on_unsafe_feedback_and_refresh_reuse():
     assert gate_statuses["unsafe_feedback"] == "block"
     assert gate_statuses["refresh_reuse"] == "block"
     assert gate_statuses["ai_errors"] == "warn"
-    assert [item.key for item in summary.action_items] == ["unsafe_feedback", "refresh_reuse", "ai_errors"]
+    assert [item.key for item in summary.action_items] == ["unsafe_feedback", "refresh_reuse", "auth_lockouts"]
     assert summary.signals["feedback_followup_open"] == 1
     assert summary.signals["knowledge_gap_count"] == 1
     assert raw_correction not in serialized
@@ -959,6 +1010,47 @@ def test_admin_release_readiness_warns_on_offline_sync_problems_without_leaking_
     assert summary.signals["sampled_offline_sync_problem_meals"] == 2
     assert raw_meal_name not in serialized
     assert "raw offline note must not leak" not in serialized
+
+
+def test_admin_release_readiness_warns_on_intake_review_backlog_without_leaking_candidate_details():
+    raw_candidate_key = "raw_private_candidate_虾蟹过敏备注"
+    snapshot = IntakeReviewTelemetrySnapshot(
+        id=1,
+        user_id=2,
+        total_count=3,
+        pending_review_count=2,
+        in_review_count=1,
+        low_confidence_count=2,
+        high_risk_count=1,
+        hard_block_count=1,
+        source_counts_json={"photo": 2, "voice": 1, raw_candidate_key: 9},
+        status_counts_json={"PENDING_REVIEW": 2, "IN_REVIEW": 1, "CONFIRMED": 1},
+    )
+    snapshot.generated_at = datetime(2026, 6, 7, 12, 0, tzinfo=timezone.utc)
+    aggregate = admin_route._build_intake_review_telemetry_aggregate([snapshot])
+
+    summary = admin_route._build_release_readiness_summary(
+        security_rows=[],
+        knowledge_rows=[],
+        feedback_rows=[],
+        telemetry=admin_route._build_ai_telemetry_summary([], limit=50),
+        intake_review_telemetry=aggregate,
+        limit=50,
+    )
+    serialized = summary.model_dump_json()
+    gate_statuses = {item.key: item.status for item in summary.gate_items}
+
+    assert summary.status == "yellow"
+    assert summary.blocker_count == 0
+    assert summary.warning_count == 1
+    assert gate_statuses["intake_review_backlog"] == "warn"
+    assert [item.key for item in summary.action_items] == ["intake_review_backlog"]
+    assert summary.signals["intake_review_backlog_count"] == 3
+    assert summary.signals["intake_review_high_risk_count"] == 1
+    assert summary.signals["intake_review_hard_block_count"] == 1
+    assert aggregate.source_counts == {"photo": 2, "voice": 1}
+    assert aggregate.status_counts == {"IN_REVIEW": 1, "PENDING_REVIEW": 2}
+    assert raw_candidate_key not in serialized
 
 
 def test_admin_release_readiness_blocks_when_offline_sync_problems_exceed_threshold():

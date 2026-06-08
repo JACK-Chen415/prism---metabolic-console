@@ -153,6 +153,13 @@ test('settings exposes offline queue status and safe retry action', () => {
       'OfflineMealsService.discardLocal',
       '日志编辑',
       '本地草稿已丢弃',
+      'offlineRiskCount',
+      'openLogoutConfirm',
+      '当前还有 {offlineRiskCount} 条离线记录未完成同步',
+      '确认退出会清理本账号本地队列',
+      '查看队列',
+      '先重试同步',
+      '仍要退出并清理本地队列',
     ],
     'offline queue settings surface',
   );

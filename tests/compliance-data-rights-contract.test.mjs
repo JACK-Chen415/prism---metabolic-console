@@ -85,8 +85,15 @@ test('settings data-rights UI stays wired to account endpoints and local cache c
 
 test('account export covers consent subscription and device-session state without token material', () => {
   const accountRouteSource = read('backend/app/api/routes/account.py');
+  const typesSource = read('types.ts');
 
   for (const required of [
+    '"section_keys"',
+    '"section_count"',
+    '"request_id"',
+    '"export_manifest"',
+    'def _build_export_manifest',
+    'EXPORT_SECTION_KEYS',
     '"account_state"',
     '_export_account_state',
     '"subscription_plan"',
@@ -97,6 +104,26 @@ test('account export covers consent subscription and device-session state withou
     '_device_session_export_item',
   ]) {
     assert.ok(accountRouteSource.includes(required), `Missing account export contract: ${required}`);
+  }
+
+  assert.ok(
+    accountRouteSource.includes('"section_count": len(EXPORT_SECTION_KEYS)'),
+    'Export manifest section_count must be derived from EXPORT_SECTION_KEYS',
+  );
+  assert.ok(
+    accountRouteSource.includes('"sections": export_manifest["section_keys"]'),
+    'Data export audit metadata must include manifest section keys',
+  );
+
+  for (const requiredType of [
+    'export interface UserDataExportManifest',
+    'request_id: string;',
+    'section_count: number;',
+    'section_keys: string[];',
+    'account_state: DataExportSection;',
+    'device_sessions: DataExportSection;',
+  ]) {
+    assert.ok(typesSource.includes(requiredType), `Missing export type contract: ${requiredType}`);
   }
 
   for (const forbidden of ['refresh_jti_hash', 'user_agent_hash', 'ip_hash', 'password_hash']) {

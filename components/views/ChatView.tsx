@@ -1,7 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { AIFeedbackType, ChatStreamEvent, IntakeCandidate, IntakeDraftSession, KnowledgeFallbackStatus, KnowledgeOrigin, View } from '../../types';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
+import { AIFeedbackType, ChatStreamEvent, IntakeCandidate, IntakeCandidateAlternative, IntakeCandidateFeedbackPayload, IntakeConfirmPreviewResponse, IntakeDraftSession, KnowledgeFallbackStatus, KnowledgeOrigin, View } from '../../types';
 import { ChatAPI, IntakeAPI, TokenManager } from '../../services/api';
-import { OfflineMealsService, getTodayDateString } from '../../services/offline';
+import { CachedIntakeDraft, IntakeDraftQueueService, OfflineMealsService, getTodayDateString } from '../../services/offline';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { CHAT_PREFERENCE_CHANGED_EVENT, clearChatSessionId, getAssistantIntensity, getChatMode, getChatSessionId, setChatMode, setChatSessionId, type AssistantIntensity, type ChatMode } from '../../services/sessionState';
@@ -33,6 +33,7 @@ interface ChatViewProps {
 
 type MessageRole = 'USER' | 'AI' | 'SYSTEM';
 type DetailedAIFeedbackType = Extract<AIFeedbackType, 'correction' | 'recognition_correction' | 'knowledge_gap'>;
+type IntakeReviewFilter = 'ALL' | 'HIGH_RISK' | 'LOW_CONFIDENCE' | 'PHOTO' | 'VOICE' | 'TEXT_AI';
 
 interface Message {
   id: string;
@@ -130,6 +131,19 @@ const ChatView: React.FC<ChatViewProps> = ({
   const [intakeError, setIntakeError] = useState<string | null>(null);
   const [reevaluatingDraftIds, setReevaluatingDraftIds] = useState<string[]>([]);
   const [staleEvaluationDraftIds, setStaleEvaluationDraftIds] = useState<string[]>([]);
+  const [loadingCandidateAlternativeIds, setLoadingCandidateAlternativeIds] = useState<string[]>([]);
+  const [candidateAlternativesByDraftId, setCandidateAlternativesByDraftId] = useState<Record<string, IntakeCandidateAlternative[]>>({});
+  const [candidateAlternativeNotesByDraftId, setCandidateAlternativeNotesByDraftId] = useState<Record<string, string[]>>({});
+  const [confirmImpactPreview, setConfirmImpactPreview] = useState<IntakeConfirmPreviewResponse | null>(null);
+  const [isLoadingConfirmImpactPreview, setIsLoadingConfirmImpactPreview] = useState(false);
+  const [submittingCandidateFeedbackIds, setSubmittingCandidateFeedbackIds] = useState<string[]>([]);
+  const [submittedCandidateFeedbackIds, setSubmittedCandidateFeedbackIds] = useState<string[]>([]);
+  const [intakeDraftQueue, setIntakeDraftQueue] = useState<CachedIntakeDraft[]>([]);
+  const [isLoadingIntakeDraftQueue, setIsLoadingIntakeDraftQueue] = useState(false);
+  const [intakeDraftQueueActionId, setIntakeDraftQueueActionId] = useState<string | null>(null);
+  const [intakeDraftQueueNotice, setIntakeDraftQueueNotice] = useState<string | null>(null);
+  const [activeIntakeDraftClientId, setActiveIntakeDraftClientId] = useState<string | null>(null);
+  const [intakeReviewFilter, setIntakeReviewFilter] = useState<IntakeReviewFilter>('ALL');
   const [currentMode, setCurrentMode] = useState<'STRICT' | 'GENTLE'>(() => getChatMode());
   const [assistantIntensity, setAssistantIntensityState] = useState<AssistantIntensity>(() => getAssistantIntensity());
   const [feedbackByMessage, setFeedbackByMessage] = useState<Record<number, AIFeedbackType>>({});
@@ -192,9 +206,120 @@ const ChatView: React.FC<ChatViewProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    void loadIntakeDraftQueue();
+  }, [currentUserId]);
+
   const isLikelyNetworkFailure = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error || '');
     return !navigator.onLine || /failed to fetch|networkerror|load failed|request failed/i.test(message);
+  };
+
+  const getIntakeDraftClientId = (session: IntakeDraftSession) => `intake-review:${session.candidates[0]?.draft_id || session.record_date || Date.now()}`;
+
+  const intakeSourceLabelMap: Record<IntakeDraftSession['source'], string> = {
+    voice: '语音',
+    photo: '拍照',
+    ai_quick_log: 'AI',
+  };
+
+  const intakeReviewFilterOptions: Array<{ key: IntakeReviewFilter; label: string; icon: string }> = [
+    { key: 'ALL', label: '全部', icon: 'fact_check' },
+    { key: 'HIGH_RISK', label: '风险', icon: 'warning' },
+    { key: 'LOW_CONFIDENCE', label: '低置信度', icon: 'help' },
+    { key: 'PHOTO', label: '拍照', icon: 'photo_camera' },
+    { key: 'VOICE', label: '语音', icon: 'mic' },
+    { key: 'TEXT_AI', label: '文本/AI', icon: 'edit_note' },
+  ];
+
+  const loadIntakeDraftQueue = async () => {
+    if (!currentUserId) {
+      setIntakeDraftQueue([]);
+      return;
+    }
+
+    setIsLoadingIntakeDraftQueue(true);
+    try {
+      const queue = await IntakeDraftQueueService.getQueue(currentUserId);
+      setIntakeDraftQueue(queue);
+    } catch (error) {
+      console.error('读取候选复核队列失败', error);
+      setIntakeDraftQueueNotice(error instanceof Error ? error.message : '待复核候选加载失败。');
+    } finally {
+      setIsLoadingIntakeDraftQueue(false);
+    }
+  };
+
+  const saveActiveIntakeDraftForReview = async (session: IntakeDraftSession, status: 'PENDING_REVIEW' | 'IN_REVIEW' = 'IN_REVIEW') => {
+    if (!currentUserId || !session.candidates.length) return;
+    const clientId = activeIntakeDraftClientId || getIntakeDraftClientId(session);
+    await IntakeDraftQueueService.saveDraft(currentUserId, session, clientId, status);
+    setActiveIntakeDraftClientId(clientId);
+    await loadIntakeDraftQueue();
+  };
+
+  const handleResumeIntakeDraft = async (draft: CachedIntakeDraft) => {
+    if (!currentUserId || intakeDraftQueueActionId) return;
+
+    setIntakeDraftQueueActionId(`resume:${draft.clientId}`);
+    setIntakeDraftQueueNotice(null);
+    setIntakeError(null);
+    try {
+      if (pendingIntakeSession && activeIntakeDraftClientId && activeIntakeDraftClientId !== draft.clientId) {
+        await IntakeDraftQueueService.saveDraft(currentUserId, pendingIntakeSession, activeIntakeDraftClientId, 'PENDING_REVIEW');
+      }
+      await IntakeDraftQueueService.markInReview(currentUserId, draft.clientId);
+      setActiveIntakeDraftClientId(draft.clientId);
+      onPendingIntakeSessionChange(draft.session);
+      setReevaluatingDraftIds([]);
+      setStaleEvaluationDraftIds([]);
+      setIntakeDraftQueueNotice('已载入候选复核台。低置信度和风险候选不会自动写入日志，请核对后再确认。');
+      await loadIntakeDraftQueue();
+    } catch (error) {
+      setIntakeDraftQueueNotice(error instanceof Error ? error.message : '继续复核失败，请稍后再试。');
+    } finally {
+      setIntakeDraftQueueActionId(null);
+    }
+  };
+
+  const handleDiscardIntakeDraft = async (draft: CachedIntakeDraft, event?: React.MouseEvent<HTMLButtonElement>) => {
+    event?.stopPropagation();
+    if (!currentUserId || intakeDraftQueueActionId) return;
+
+    setIntakeDraftQueueActionId(`discard:${draft.clientId}`);
+    setIntakeDraftQueueNotice(null);
+    try {
+      await IntakeDraftQueueService.discard(currentUserId, draft.clientId);
+      if (activeIntakeDraftClientId === draft.clientId) {
+        onPendingIntakeSessionChange(null);
+        setActiveIntakeDraftClientId(null);
+      }
+      setIntakeDraftQueueNotice('已丢弃该待复核候选，不会写入日志。');
+      await loadIntakeDraftQueue();
+    } catch (error) {
+      setIntakeDraftQueueNotice(error instanceof Error ? error.message : '丢弃失败，请稍后再试。');
+    } finally {
+      setIntakeDraftQueueActionId(null);
+    }
+  };
+
+  const closePendingIntakeReview = async () => {
+    const session = pendingIntakeSessionRef.current;
+    setIntakeError(null);
+    setReevaluatingDraftIds([]);
+    setStaleEvaluationDraftIds([]);
+
+    if (session && currentUserId) {
+      try {
+        await saveActiveIntakeDraftForReview(session, 'PENDING_REVIEW');
+        setIntakeDraftQueueNotice('已保存到待复核候选。风险候选不自动写入日志，可稍后继续复核。');
+      } catch (error) {
+        setIntakeDraftQueueNotice(error instanceof Error ? error.message : '候选保存失败，请尽快完成复核。');
+      }
+    }
+
+    onPendingIntakeSessionChange(null);
+    setActiveIntakeDraftClientId(null);
   };
 
   const persistPendingIntakeOffline = async (session: IntakeDraftSession) => {
@@ -399,11 +524,27 @@ const ChatView: React.FC<ChatViewProps> = ({
 
     if (pendingIntakeSession) {
       setPendingTextClarification(null);
+      if (currentUserId && pendingIntakeSession.candidates.length > 0) {
+        const clientId = activeIntakeDraftClientId || getIntakeDraftClientId(pendingIntakeSession);
+        if (!activeIntakeDraftClientId) setActiveIntakeDraftClientId(clientId);
+        void IntakeDraftQueueService.saveDraft(currentUserId, pendingIntakeSession, clientId, 'IN_REVIEW')
+          .then(() => loadIntakeDraftQueue())
+          .catch(error => {
+            console.error('保存待复核候选失败', error);
+            setIntakeDraftQueueNotice(error instanceof Error ? error.message : '待复核候选保存失败。');
+          });
+      }
     }
 
     if (!pendingIntakeSession) {
+      setActiveIntakeDraftClientId(null);
       setReevaluatingDraftIds([]);
       setStaleEvaluationDraftIds([]);
+      setLoadingCandidateAlternativeIds([]);
+      setCandidateAlternativesByDraftId({});
+      setCandidateAlternativeNotesByDraftId({});
+      setConfirmImpactPreview(null);
+      setIsLoadingConfirmImpactPreview(false);
       return;
     }
 
@@ -415,7 +556,10 @@ const ChatView: React.FC<ChatViewProps> = ({
 
     setReevaluatingDraftIds(keepActiveIds);
     setStaleEvaluationDraftIds(keepActiveIds);
-  }, [pendingIntakeSession]);
+    setLoadingCandidateAlternativeIds(keepActiveIds);
+    setCandidateAlternativesByDraftId(prev => Object.fromEntries(Object.entries(prev).filter(([id]) => activeDraftIds.has(id))));
+    setCandidateAlternativeNotesByDraftId(prev => Object.fromEntries(Object.entries(prev).filter(([id]) => activeDraftIds.has(id))));
+  }, [pendingIntakeSession, currentUserId, activeIntakeDraftClientId]);
 
   useEffect(() => {
     const handlePreferenceChanged = (event: Event) => {
@@ -1486,7 +1630,36 @@ const ChatView: React.FC<ChatViewProps> = ({
       candidates: pendingIntakeSession.candidates.map((candidate) => {
         if (candidate.draft_id !== draftId) return candidate;
 
-        const nextCandidate = { ...candidate, ...patch };
+        const reviewSensitivePatch = (
+          Object.prototype.hasOwnProperty.call(patch, 'food_name') ||
+          Object.prototype.hasOwnProperty.call(patch, 'food_code') ||
+          Object.prototype.hasOwnProperty.call(patch, 'category') ||
+          Object.prototype.hasOwnProperty.call(patch, 'normalized_amount') ||
+          Object.prototype.hasOwnProperty.call(patch, 'unit') ||
+          Object.prototype.hasOwnProperty.call(patch, 'ingredients') ||
+          Object.prototype.hasOwnProperty.call(patch, 'cooking_method') ||
+          Object.prototype.hasOwnProperty.call(patch, 'seasonings')
+        );
+        if (reviewSensitivePatch) {
+          setSubmittedCandidateFeedbackIds(prev => prev.filter(id => id !== draftId));
+          setCandidateAlternativesByDraftId(prev => {
+            const next = { ...prev };
+            delete next[draftId];
+            return next;
+          });
+          setCandidateAlternativeNotesByDraftId(prev => {
+            const next = { ...prev };
+            delete next[draftId];
+            return next;
+          });
+          setConfirmImpactPreview(null);
+        }
+
+        const nextCandidate = {
+          ...candidate,
+          ...(reviewSensitivePatch ? { review_confirmed: false } : {}),
+          ...patch,
+        };
 
         if (patch.normalized_amount !== undefined || patch.unit !== undefined) {
           const amount = nextCandidate.normalized_amount;
@@ -1504,11 +1677,91 @@ const ChatView: React.FC<ChatViewProps> = ({
 
     setReevaluatingDraftIds(prev => prev.filter(id => id !== draftId));
     setStaleEvaluationDraftIds(prev => prev.filter(id => id !== draftId));
+    setLoadingCandidateAlternativeIds(prev => prev.filter(id => id !== draftId));
+    setCandidateAlternativesByDraftId(prev => {
+      const next = { ...prev };
+      delete next[draftId];
+      return next;
+    });
+    setCandidateAlternativeNotesByDraftId(prev => {
+      const next = { ...prev };
+      delete next[draftId];
+      return next;
+    });
+    setConfirmImpactPreview(null);
 
     onPendingIntakeSessionChange({
       ...pendingIntakeSession,
       candidates: pendingIntakeSession.candidates.filter(candidate => candidate.draft_id !== draftId),
     });
+  };
+
+  const buildCandidateFeedbackPayload = (candidate: IntakeCandidate): IntakeCandidateFeedbackPayload => {
+    const isLowConfidence = candidate.confidence < 0.7 || Boolean(candidate.review_required);
+    const hasRisk = candidate.recommendation_level === 'AVOID' || candidate.recommendation_level === 'LIMIT' || candidate.warnings.length > 0;
+    const tags = [
+      'intake_candidate',
+      candidate.source,
+      isLowConfidence ? 'low_confidence' : '',
+      hasRisk ? 'safety_rule' : '',
+      candidate.warnings.length > 0 ? 'rule_warning' : '',
+    ].filter(Boolean);
+
+    return {
+      draft_id: candidate.draft_id,
+      source: candidate.source,
+      feedback_type: candidate.source === 'photo' || candidate.source === 'voice' ? 'recognition_correction' : 'correction',
+      rating: 1,
+      tags,
+      correction_text: '用户在候选确认中提交了识别或估算纠错；为保护隐私，原始候选内容仅保留在用户本机确认流程中。',
+      metadata: {
+        source: candidate.source,
+        surface: 'intake_confirmation',
+        recommendation_level: candidate.recommendation_level || 'INSUFFICIENT',
+        candidate_count: pendingIntakeSessionRef.current?.candidates.length || 1,
+        low_confidence_count: isLowConfidence ? 1 : 0,
+        high_risk_count: hasRisk ? 1 : 0,
+        hard_block_count: candidate.recommendation_level === 'AVOID' ? 1 : 0,
+        risk_tag_count: candidate.risk_tags.length,
+        allergen_tag_count: candidate.allergen_tags.length,
+        warning_count: candidate.warnings.length,
+      },
+    };
+  };
+
+  const handleSubmitCandidateFeedback = async (candidate: IntakeCandidate) => {
+    if (submittingCandidateFeedbackIds.includes(candidate.draft_id) || submittedCandidateFeedbackIds.includes(candidate.draft_id)) return;
+
+    setSubmittingCandidateFeedbackIds(prev => prev.includes(candidate.draft_id) ? prev : [...prev, candidate.draft_id]);
+    setIntakeError(null);
+    try {
+      await IntakeAPI.submitCandidateFeedback(buildCandidateFeedbackPayload(candidate));
+      setSubmittedCandidateFeedbackIds(prev => prev.includes(candidate.draft_id) ? prev : [...prev, candidate.draft_id]);
+      setIntakeDraftQueueNotice('候选纠错反馈已提交；运营后台只看到类型、标签、哈希和安全 metadata，不会暴露原始候选内容。');
+    } catch (error) {
+      setIntakeError(error instanceof Error ? error.message : '提交候选纠错失败，请稍后再试。');
+    } finally {
+      setSubmittingCandidateFeedbackIds(prev => prev.filter(id => id !== candidate.draft_id));
+    }
+  };
+
+  const handleSuggestCandidateAlternatives = async (candidate: IntakeCandidate) => {
+    if (loadingCandidateAlternativeIds.includes(candidate.draft_id) || !candidate.food_name.trim()) return;
+
+    setLoadingCandidateAlternativeIds(prev => prev.includes(candidate.draft_id) ? prev : [...prev, candidate.draft_id]);
+    setIntakeError(null);
+    try {
+      const response = await IntakeAPI.suggestCandidateAlternatives({ candidate, limit: 3 });
+      setCandidateAlternativesByDraftId(prev => ({ ...prev, [candidate.draft_id]: response.alternatives }));
+      setCandidateAlternativeNotesByDraftId(prev => ({ ...prev, [candidate.draft_id]: response.notes }));
+      setIntakeDraftQueueNotice(response.alternatives.length > 0
+        ? '已生成本地规则替代建议；建议不会自动写入，请手动编辑候选并重新评估。'
+        : '本地知识库暂未找到明确通过复核的替代项，请改选成分更明确的食物并重新评估。');
+    } catch (error) {
+      setIntakeError(error instanceof Error ? error.message : '生成替代建议失败，请稍后再试。');
+    } finally {
+      setLoadingCandidateAlternativeIds(prev => prev.filter(id => id !== candidate.draft_id));
+    }
   };
 
   const handleReevaluatePendingCandidate = async (draftId: string) => {
@@ -1537,6 +1790,7 @@ const ChatView: React.FC<ChatViewProps> = ({
             ...item,
             ...reevaluatedCandidate,
             draft_id: item.draft_id,
+            review_confirmed: false,
           };
         }),
       });
@@ -1592,6 +1846,9 @@ const ChatView: React.FC<ChatViewProps> = ({
       fallback_status: 'NO_LOCAL_MATCH_ALLOW_CLOUD',
       conflict_note: null,
       caution_note: null,
+      review_required: true,
+      review_reasons: ['manual_review_required'],
+      review_confirmed: false,
     };
 
     onPendingIntakeSessionChange({
@@ -1606,6 +1863,26 @@ const ChatView: React.FC<ChatViewProps> = ({
     setStaleEvaluationDraftIds(prev => prev.includes(draftId) ? prev : [...prev, draftId]);
   };
 
+  const handlePreviewConfirmImpact = async () => {
+    const session = pendingIntakeSessionRef.current;
+    if (!session || isLoadingConfirmImpactPreview) return;
+
+    setIsLoadingConfirmImpactPreview(true);
+    setIntakeError(null);
+    try {
+      const response = await IntakeAPI.previewConfirmImpact({
+        record_date: session.record_date,
+        candidates: session.candidates,
+      });
+      setConfirmImpactPreview(response);
+      setIntakeDraftQueueNotice('已生成确认前影响预览；预览不会创建饮食记录，确认前仍需核对候选。');
+    } catch (error) {
+      setIntakeError(error instanceof Error ? error.message : '生成影响预览失败，请稍后再试。');
+    } finally {
+      setIsLoadingConfirmImpactPreview(false);
+    }
+  };
+
   const handleConfirmIntake = async () => {
     if (!pendingIntakeSession || isSubmittingIntake) return;
     if (pendingIntakeSession.candidates.some(candidate => !candidate.food_name.trim())) {
@@ -1614,6 +1891,10 @@ const ChatView: React.FC<ChatViewProps> = ({
     }
     if (staleEvaluationDraftIds.length > 0) {
       setIntakeError('候选项已修改，请先点击“重新评估”，再确认写入日志。');
+      return;
+    }
+    if (pendingIntakeSession.candidates.some(candidate => candidate.review_required && !candidate.review_confirmed)) {
+      setIntakeError('存在需要人工复核的候选，请先点击“确认核对”。');
       return;
     }
 
@@ -1641,7 +1922,12 @@ const ChatView: React.FC<ChatViewProps> = ({
       }
 
       if (result.meal_ids?.length && !result.failed_items?.length) {
+        if (currentUserId && activeIntakeDraftClientId) {
+          await IntakeDraftQueueService.markConfirmed(currentUserId, activeIntakeDraftClientId);
+          await loadIntakeDraftQueue();
+        }
         onPendingIntakeSessionChange(null);
+        setActiveIntakeDraftClientId(null);
         await onMealLogged?.(pendingIntakeSession.record_date);
         onViewChange(View.LOG);
       } else if (result.meal_ids?.length) {
@@ -1652,6 +1938,10 @@ const ChatView: React.FC<ChatViewProps> = ({
       if (currentUserId && isLikelyNetworkFailure(error)) {
         try {
           await persistPendingIntakeOffline(pendingIntakeSession);
+          if (currentUserId && activeIntakeDraftClientId) {
+            await IntakeDraftQueueService.markConfirmed(currentUserId, activeIntakeDraftClientId);
+            await loadIntakeDraftQueue();
+          }
           setMessages(prev => [...prev, {
             id: Date.now().toString(),
             role: 'SYSTEM',
@@ -1659,6 +1949,7 @@ const ChatView: React.FC<ChatViewProps> = ({
             timestamp: Date.now(),
           }]);
           onPendingIntakeSessionChange(null);
+          setActiveIntakeDraftClientId(null);
           await onMealLogged?.(pendingIntakeSession.record_date);
           onViewChange(View.LOG);
           return;
@@ -1717,6 +2008,49 @@ const ChatView: React.FC<ChatViewProps> = ({
               ? '文本记餐：写下食物、时间和大致分量...'
               : '输入问题，或描述刚吃了什么...';
   const currentSession = chatSessions.find(item => item.id === sessionId);
+  const intakeDraftQueueMetrics = useMemo(() => {
+    const sourceCounts = intakeDraftQueue.reduce<Record<IntakeDraftSession['source'], number>>((acc, draft) => {
+      acc[draft.source] += 1;
+      return acc;
+    }, { voice: 0, photo: 0, ai_quick_log: 0 });
+
+    return {
+      total: intakeDraftQueue.length,
+      pendingReview: intakeDraftQueue.filter(draft => draft.status === 'PENDING_REVIEW').length,
+      inReview: intakeDraftQueue.filter(draft => draft.status === 'IN_REVIEW').length,
+      lowConfidence: intakeDraftQueue.reduce((sum, draft) => sum + draft.lowConfidenceCount, 0),
+      highRisk: intakeDraftQueue.reduce((sum, draft) => sum + draft.highRiskCount, 0),
+      hardBlock: intakeDraftQueue.reduce((sum, draft) => sum + draft.hardBlockCount, 0),
+      sourceCounts,
+    };
+  }, [intakeDraftQueue]);
+
+  const prioritizedIntakeDraftQueue = useMemo(() => {
+    const matchesFilter = (draft: CachedIntakeDraft) => {
+      if (intakeReviewFilter === 'HIGH_RISK') return draft.highRiskCount > 0 || draft.hardBlockCount > 0;
+      if (intakeReviewFilter === 'LOW_CONFIDENCE') return draft.lowConfidenceCount > 0;
+      if (intakeReviewFilter === 'PHOTO') return draft.source === 'photo';
+      if (intakeReviewFilter === 'VOICE') return draft.source === 'voice';
+      if (intakeReviewFilter === 'TEXT_AI') return draft.source === 'ai_quick_log';
+      return true;
+    };
+
+    const priorityScore = (draft: CachedIntakeDraft) => (
+      draft.hardBlockCount * 100
+      + draft.highRiskCount * 20
+      + draft.lowConfidenceCount * 8
+      + (draft.status === 'IN_REVIEW' ? 4 : 0)
+      + Math.min(draft.candidateCount, 5)
+    );
+
+    return intakeDraftQueue
+      .filter(matchesFilter)
+      .sort((left, right) => {
+        const scoreDiff = priorityScore(right) - priorityScore(left);
+        if (scoreDiff !== 0) return scoreDiff;
+        return right.updatedAt.getTime() - left.updatedAt.getTime();
+      });
+  }, [intakeDraftQueue, intakeReviewFilter]);
 
   return (
     <div className="flex flex-col w-full min-h-[calc(100vh-100px)]">
@@ -1866,6 +2200,150 @@ const ChatView: React.FC<ChatViewProps> = ({
           <div className="text-center text-xs text-slate-500 my-4 font-serif font-bold tracking-wide">
             正在加载历史消息...
           </div>
+        )}
+
+        {intakeDraftQueue.length > 0 && (
+          <section className="rounded-2xl border border-primary/20 bg-primary/[0.06] p-3.5 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs text-primary font-serif font-bold tracking-wide">候选复核台</p>
+                <p className="mt-1 text-[11px] text-slate-400 font-serif leading-relaxed">
+                  待复核候选包含低置信度或风险候选，不自动写入日志；继续复核后仍需在确认卡片中手动确认。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void loadIntakeDraftQueue()}
+                disabled={isLoadingIntakeDraftQueue}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-primary/20 bg-primary/10 text-primary disabled:opacity-50"
+                title="刷新待复核候选"
+                aria-label="刷新待复核候选"
+              >
+                <span className={`material-symbols-outlined text-[17px] ${isLoadingIntakeDraftQueue ? 'animate-spin' : ''}`}>
+                  {isLoadingIntakeDraftQueue ? 'progress_activity' : 'refresh'}
+                </span>
+              </button>
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-black/20 p-2">
+              <div className="mb-2 flex items-center justify-between gap-2 px-1">
+                <span className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">本地复核指标</span>
+                <span className="text-[10px] text-slate-600 font-serif font-bold tracking-wide">仅保存在本机</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                {[
+                  ['待复核', intakeDraftQueueMetrics.pendingReview],
+                  ['当前复核', intakeDraftQueueMetrics.inReview],
+                  ['低置信度', intakeDraftQueueMetrics.lowConfidence],
+                  ['高风险', intakeDraftQueueMetrics.highRisk],
+                  ['AVOID', intakeDraftQueueMetrics.hardBlock],
+                  ['拍照/语音', `${intakeDraftQueueMetrics.sourceCounts.photo}/${intakeDraftQueueMetrics.sourceCounts.voice}`],
+                ].map(([label, value]) => (
+                  <div key={label} className="rounded-lg border border-white/5 bg-white/[0.03] px-2 py-1.5">
+                    <p className="text-[9px] text-slate-500 font-serif font-bold tracking-wide">{label}</p>
+                    <p className="mt-0.5 text-xs text-white font-serif font-bold tracking-wide">{value}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {intakeDraftQueueNotice && (
+              <p className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-[11px] text-slate-200 font-serif leading-relaxed">
+                {intakeDraftQueueNotice}
+              </p>
+            )}
+
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {intakeReviewFilterOptions.map(option => (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => setIntakeReviewFilter(option.key)}
+                  className={`shrink-0 rounded-full border px-3 py-1.5 text-[11px] font-serif font-bold tracking-wide transition-colors flex items-center gap-1 ${intakeReviewFilter === option.key
+                    ? 'border-primary/30 bg-primary/10 text-primary'
+                    : 'border-white/10 bg-black/20 text-slate-400 hover:bg-white/5'
+                    }`}
+                >
+                  <span className="material-symbols-outlined text-[14px]">{option.icon}</span>
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {prioritizedIntakeDraftQueue.length === 0 ? (
+                <div className="min-w-full rounded-xl border border-dashed border-white/10 bg-black/20 px-3 py-6 text-center">
+                  <p className="text-xs text-slate-500 font-serif font-bold tracking-wide">当前筛选下没有待复核候选</p>
+                </div>
+              ) : prioritizedIntakeDraftQueue.map((draft) => {
+                const isBusy = intakeDraftQueueActionId?.endsWith(draft.clientId);
+                const isActiveDraft = activeIntakeDraftClientId === draft.clientId;
+                const candidateName = draft.session.candidates[0]?.food_name || '未命名候选';
+                return (
+                  <div key={draft.clientId} className="min-w-[230px] max-w-[260px] rounded-xl border border-white/10 bg-black/20 p-3 space-y-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm text-white font-serif font-bold tracking-wide">
+                          {candidateName}
+                        </p>
+                        <p className="mt-1 text-[10px] text-slate-500 font-serif font-bold tracking-wide">
+                          {draft.recordDate} · {intakeSourceLabelMap[draft.source]} · {draft.candidateCount} 项
+                        </p>
+                      </div>
+                      <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-serif font-bold tracking-wide ${draft.status === 'IN_REVIEW' ? 'border-primary/20 bg-primary/10 text-primary' : 'border-amber-300/20 bg-amber-500/10 text-amber-100'}`}>
+                        {isActiveDraft ? '当前复核' : '待复核'}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5 text-center">
+                      <div className="rounded-lg border border-white/5 bg-white/[0.03] px-1.5 py-1">
+                        <p className="text-[9px] text-slate-500 font-serif font-bold tracking-wide">低置信度</p>
+                        <p className="text-[11px] text-slate-200 font-serif font-bold">{draft.lowConfidenceCount}</p>
+                      </div>
+                      <div className="rounded-lg border border-white/5 bg-white/[0.03] px-1.5 py-1">
+                        <p className="text-[9px] text-slate-500 font-serif font-bold tracking-wide">风险</p>
+                        <p className="text-[11px] text-amber-100 font-serif font-bold">{draft.highRiskCount}</p>
+                      </div>
+                      <div className="rounded-lg border border-white/5 bg-white/[0.03] px-1.5 py-1">
+                        <p className="text-[9px] text-slate-500 font-serif font-bold tracking-wide">AVOID</p>
+                        <p className="text-[11px] text-red-100 font-serif font-bold">{draft.hardBlockCount}</p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {draft.lowConfidenceCount > 0 && (
+                        <span className="rounded border border-amber-300/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-100 font-serif font-bold tracking-wide">低置信度</span>
+                      )}
+                      {draft.highRiskCount > 0 && (
+                        <span className="rounded border border-red-400/20 bg-red-500/10 px-1.5 py-0.5 text-[10px] text-red-100 font-serif font-bold tracking-wide">风险候选</span>
+                      )}
+                      {draft.hardBlockCount > 0 && (
+                        <span className="rounded border border-red-400/30 bg-red-500/15 px-1.5 py-0.5 text-[10px] text-red-100 font-serif font-bold tracking-wide">AVOID</span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleResumeIntakeDraft(draft)}
+                        disabled={Boolean(intakeDraftQueueActionId)}
+                        className="h-9 rounded-lg border border-primary/20 bg-primary/10 text-[11px] text-primary font-serif font-bold tracking-wide hover:bg-primary/20 disabled:opacity-50"
+                      >
+                        继续复核
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => void handleDiscardIntakeDraft(draft, event)}
+                        disabled={Boolean(intakeDraftQueueActionId)}
+                        className="h-9 rounded-lg border border-red-500/20 bg-red-500/10 text-[11px] text-red-200 font-serif font-bold tracking-wide hover:bg-red-500/20 disabled:opacity-50"
+                        title="丢弃待复核候选"
+                        aria-label="丢弃待复核候选"
+                      >
+                        {isBusy ? '处理中' : '丢弃'}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
         )}
 
         {messages.map((msg, index) => {
@@ -2342,15 +2820,22 @@ const ChatView: React.FC<ChatViewProps> = ({
           reevaluatingDraftIds={reevaluatingDraftIds}
           staleEvaluationDraftIds={staleEvaluationDraftIds}
           onClose={() => {
-            setIntakeError(null);
-            setReevaluatingDraftIds([]);
-            setStaleEvaluationDraftIds([]);
-            onPendingIntakeSessionChange(null);
+            void closePendingIntakeReview();
           }}
           onChangeCandidate={handlePendingCandidateChange}
           onDeleteCandidate={handleDeletePendingCandidate}
           onAddCandidate={handleAddPendingCandidate}
           onReevaluateCandidate={handleReevaluatePendingCandidate}
+          onSuggestCandidateAlternatives={handleSuggestCandidateAlternatives}
+          alternativeSuggestionsByDraftId={candidateAlternativesByDraftId}
+          alternativeNotesByDraftId={candidateAlternativeNotesByDraftId}
+          loadingAlternativeDraftIds={loadingCandidateAlternativeIds}
+          confirmImpactPreview={confirmImpactPreview}
+          isLoadingConfirmImpactPreview={isLoadingConfirmImpactPreview}
+          onPreviewConfirmImpact={handlePreviewConfirmImpact}
+          onSubmitCandidateFeedback={handleSubmitCandidateFeedback}
+          submittingFeedbackDraftIds={submittingCandidateFeedbackIds}
+          submittedFeedbackDraftIds={submittedCandidateFeedbackIds}
           onConfirm={handleConfirmIntake}
         />
       )}

@@ -12,6 +12,7 @@ test('mock billing persists subscriptions and admin can manage roles safely', ()
   const adminSource = read('components/views/AdminView.tsx');
   const billingSource = read('components/views/BillingView.tsx');
   const backendBilling = read('backend/app/api/routes/billing.py');
+  const backendBillingService = read('backend/app/services/billing_service.py');
   const backendAdmin = read('backend/app/api/routes/admin.py');
   const userModel = read('backend/app/models/user.py');
 
@@ -32,8 +33,6 @@ test('mock billing persists subscriptions and admin can manage roles safely', ()
     'SubscriptionStatus.CANCELED',
     'BillingProviderResponse',
     'billing_provider_registry',
-    'billing.checkout',
-    'billing.subscription.cancel',
     '@router.get("/plans"',
     '@router.get("/providers"',
     '@router.get("/usage"',
@@ -43,6 +42,16 @@ test('mock billing persists subscriptions and admin can manage roles safely', ()
     '@router.post("/subscription/cancel"',
   ]) {
     assert.ok(backendBilling.includes(required), `Missing mock billing persistence contract: ${required}`);
+  }
+
+  for (const required of [
+    'create_checkout_order',
+    'cancel_user_subscription',
+    'billing.checkout',
+    'billing.subscription.cancel',
+    'audit_security_event',
+  ]) {
+    assert.ok(backendBillingService.includes(required), `Missing billing service audit contract: ${required}`);
   }
 
   for (const required of [

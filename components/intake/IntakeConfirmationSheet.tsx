@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { IntakeCandidate, IntakeDraftSession, FoodCategory } from '../../types';
+import React from 'react';
+import { IntakeCandidate, IntakeCandidateAlternative, IntakeConfirmPreviewResponse, IntakeDraftSession, FoodCategory } from '../../types';
 import { AI_INTAKE_CONFIRMATION_NOTICE } from '../../constants/compliance';
 
 interface IntakeConfirmationSheetProps {
@@ -13,6 +13,16 @@ interface IntakeConfirmationSheetProps {
   onDeleteCandidate: (draftId: string) => void;
   onAddCandidate: () => void;
   onReevaluateCandidate?: (draftId: string) => void;
+  onSuggestCandidateAlternatives?: (candidate: IntakeCandidate) => void | Promise<void>;
+  alternativeSuggestionsByDraftId?: Record<string, IntakeCandidateAlternative[]>;
+  alternativeNotesByDraftId?: Record<string, string[]>;
+  loadingAlternativeDraftIds?: string[];
+  confirmImpactPreview?: IntakeConfirmPreviewResponse | null;
+  isLoadingConfirmImpactPreview?: boolean;
+  onPreviewConfirmImpact?: () => void | Promise<void>;
+  onSubmitCandidateFeedback?: (candidate: IntakeCandidate) => void | Promise<void>;
+  submittingFeedbackDraftIds?: string[];
+  submittedFeedbackDraftIds?: string[];
   onConfirm: () => void;
 }
 
@@ -84,7 +94,21 @@ const getLevelLabel = (level?: IntakeCandidate['recommendation_level']) => {
   return levelLabelMap[level] || '待评估';
 };
 
+const getImpactStatusClass = (status: string) => {
+  if (status === 'over_limit') return 'border-red-400/25 bg-red-500/10 text-red-100';
+  if (status === 'near_limit') return 'border-amber-300/25 bg-amber-500/10 text-amber-100';
+  return 'border-white/10 bg-black/20 text-slate-200';
+};
+
+const getImpactStatusLabel = (status: string) => {
+  if (status === 'over_limit') return '超过上限';
+  if (status === 'near_limit') return '接近上限';
+  if (status === 'no_target') return '目标待完善';
+  return '可记录';
+};
+
 const formatFieldLabel = (field: string) => fieldLabelMap[field] || field;
+const getCategoryLabel = (category: FoodCategory) => CATEGORY_OPTIONS.find((option) => option.value === category)?.label || category;
 
 const summarizeFields = (fields: string[], emptyText: string) => {
   if (fields.length === 0) return emptyText;
@@ -110,9 +134,18 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
   onDeleteCandidate,
   onAddCandidate,
   onReevaluateCandidate,
+  onSuggestCandidateAlternatives,
+  alternativeSuggestionsByDraftId = {},
+  alternativeNotesByDraftId = {},
+  loadingAlternativeDraftIds = [],
+  confirmImpactPreview = null,
+  isLoadingConfirmImpactPreview = false,
+  onPreviewConfirmImpact,
+  onSubmitCandidateFeedback,
+  submittingFeedbackDraftIds = [],
+  submittedFeedbackDraftIds = [],
   onConfirm,
 }) => {
-  const [lowConfidenceAcknowledgedIds, setLowConfidenceAcknowledgedIds] = useState<string[]>([]);
   const sourceLabel = session.source === 'voice' ? '语音候选' : session.source === 'photo' ? '拍照候选' : 'AI候选';
   const staleCandidates = session.candidates.filter((candidate) => staleEvaluationDraftIds.includes(candidate.draft_id));
   const staleCandidateNames = staleCandidates
@@ -122,17 +155,13 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
     ? `${staleEvaluationDraftIds.length}条候选修改后尚未重新评估${staleCandidateNames.length > 0 ? `：${staleCandidateNames.slice(0, 3).join('、')}` : ''}${staleCandidateNames.length > 3 ? '等' : ''}`
     : '';
   const blankCandidateCount = session.candidates.filter((candidate) => !candidate.food_name.trim()).length;
-  const lowConfidenceCandidates = session.candidates.filter((candidate) => (candidate.confidence || 0) < LOW_CONFIDENCE_THRESHOLD);
-  const lowConfidencePending = lowConfidenceCandidates.filter((candidate) => !lowConfidenceAcknowledgedIds.includes(candidate.draft_id));
+  const lowConfidenceCandidates = session.candidates.filter((candidate) => (candidate.confidence || 0) < LOW_CONFIDENCE_THRESHOLD || candidate.review_required);
+  const lowConfidencePending = lowConfidenceCandidates.filter((candidate) => !candidate.review_confirmed);
   const confirmBlockedReason = blankCandidateCount > 0
     ? `${blankCandidateCount}条候选缺少食物名称，请补全后重新评估。`
     : staleReason || (lowConfidencePending.length > 0
       ? `${lowConfidencePending.length}条低置信度候选尚未核对，请先确认。`
       : '');
-
-  useEffect(() => {
-    setLowConfidenceAcknowledgedIds(prev => prev.filter(id => session.candidates.some(candidate => candidate.draft_id === id)));
-  }, [session.candidates]);
 
   return (
     <div className="fixed inset-0 z-[90] bg-black/80 backdrop-blur-sm px-4 pt-[calc(16px_+_env(safe-area-inset-top))] pb-[calc(120px_+_env(safe-area-inset-bottom))] flex items-end justify-center">
@@ -174,9 +203,15 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
             const levelClass = levelClassMap[candidate.recommendation_level || 'INSUFFICIENT'] || levelClassMap.INSUFFICIENT;
             const levelLabel = getLevelLabel(candidate.recommendation_level);
             const isReevaluating = reevaluatingDraftIds.includes(candidate.draft_id);
+            const isLoadingAlternatives = loadingAlternativeDraftIds.includes(candidate.draft_id);
+            const candidateAlternatives = alternativeSuggestionsByDraftId[candidate.draft_id] || [];
+            const candidateAlternativeNotes = alternativeNotesByDraftId[candidate.draft_id] || [];
+            const isSubmittingFeedback = submittingFeedbackDraftIds.includes(candidate.draft_id);
+            const hasSubmittedFeedback = submittedFeedbackDraftIds.includes(candidate.draft_id);
             const isEvaluationStale = staleEvaluationDraftIds.includes(candidate.draft_id);
-            const isLowConfidence = (candidate.confidence || 0) < LOW_CONFIDENCE_THRESHOLD;
-            const isLowConfidenceAcknowledged = lowConfidenceAcknowledgedIds.includes(candidate.draft_id);
+            const reviewReasons = candidate.review_reasons || [];
+            const isLowConfidence = (candidate.confidence || 0) < LOW_CONFIDENCE_THRESHOLD || Boolean(candidate.review_required);
+            const isLowConfidenceAcknowledged = Boolean(candidate.review_confirmed);
             const estimateSummary = summarizeFields(candidate.estimated_fields, '无估算项');
             const warningSummary = candidate.warnings.length > 0 ? `${candidate.warnings.length}条提醒` : '无风险提醒';
             const citationSummary = candidate.citations.length > 0 ? `${candidate.citations.length}个来源` : '无规则来源';
@@ -226,6 +261,35 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
                       >
                         <span className={`material-symbols-outlined text-[16px] ${isReevaluating ? 'animate-spin' : ''}`}>sync</span>
                         <span>{isReevaluating ? '评估中' : '重新评估'}</span>
+                      </button>
+                    )}
+                    {onSuggestCandidateAlternatives && (
+                      <button
+                        onClick={() => void onSuggestCandidateAlternatives(candidate)}
+                        disabled={isLoadingAlternatives || !candidate.food_name.trim()}
+                        className="h-8 rounded-full border border-white/10 bg-white/5 px-2 inline-flex items-center gap-1 text-[11px] text-slate-300 hover:text-emerald-100 hover:border-emerald-300/30 hover:bg-emerald-500/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="查看本地规则替代建议"
+                      >
+                        <span className={`material-symbols-outlined text-[16px] ${isLoadingAlternatives ? 'animate-spin' : ''}`}>
+                          {isLoadingAlternatives ? 'sync' : 'alt_route'}
+                        </span>
+                        <span>{isLoadingAlternatives ? '生成中' : '替代建议'}</span>
+                      </button>
+                    )}
+                    {onSubmitCandidateFeedback && (
+                      <button
+                        onClick={() => void onSubmitCandidateFeedback(candidate)}
+                        disabled={isSubmittingFeedback || hasSubmittedFeedback || !candidate.food_name.trim()}
+                        className={`h-8 rounded-full border px-2 inline-flex items-center gap-1 text-[11px] transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${hasSubmittedFeedback
+                          ? 'border-emerald-300/20 bg-emerald-500/10 text-emerald-200'
+                          : 'border-white/10 bg-white/5 text-slate-300 hover:text-amber-100 hover:border-amber-300/30 hover:bg-amber-500/10'
+                          }`}
+                        title="提交识别纠错反馈"
+                      >
+                        <span className={`material-symbols-outlined text-[16px] ${isSubmittingFeedback ? 'animate-spin' : ''}`}>
+                          {isSubmittingFeedback ? 'sync' : hasSubmittedFeedback ? 'check' : 'flag'}
+                        </span>
+                        <span>{isSubmittingFeedback ? '提交中' : hasSubmittedFeedback ? '已提交' : '提交纠错'}</span>
                       </button>
                     )}
                     <button
@@ -325,6 +389,49 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
                   <p className="text-sm text-slate-200 font-serif tracking-wide mt-1">{candidate.amount_text || '1份'}</p>
                 </div>
 
+                {onSubmitCandidateFeedback && (candidate.review_required || candidate.confidence < 0.85 || candidate.warnings.length > 0 || isEvaluationStale) && (
+                  <div className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2.5 text-[11px] text-slate-400 font-serif leading-relaxed">
+                    若本条候选识别或估算有误，可先编辑并重新评估，再提交纠错反馈；反馈会进入运营复核队列，本次仍需手动确认后才会写入日志。
+                  </div>
+                )}
+
+                {(candidateAlternatives.length > 0 || candidateAlternativeNotes.length > 0) && (
+                  <div className="rounded-2xl border border-emerald-300/20 bg-emerald-500/10 px-3 py-3 space-y-2">
+                    <div className="flex items-start gap-2">
+                      <span className="material-symbols-outlined mt-0.5 text-[16px] text-emerald-100">alt_route</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-serif text-xs font-bold tracking-wide text-emerald-100">本地规则替代建议</p>
+                        <p className="mt-1 font-serif text-[11px] leading-relaxed text-emerald-100/80">
+                          建议只作记录辅助，不会自动替换候选；请选择后手动编辑并重新评估。
+                        </p>
+                      </div>
+                    </div>
+                    {candidateAlternatives.length > 0 && (
+                      <div className="space-y-2">
+                        {candidateAlternatives.map((alternative) => (
+                          <div key={alternative.food_code} className="rounded-xl border border-emerald-300/15 bg-black/20 px-3 py-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="min-w-0 truncate font-serif text-xs font-bold tracking-wide text-white">{alternative.food_name}</p>
+                              <span className="shrink-0 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-bold tracking-wide text-emerald-100">
+                                {getLevelLabel(alternative.recommendation_level)}
+                              </span>
+                            </div>
+                            <p className="mt-1 font-serif text-[11px] leading-relaxed text-slate-300">
+                              {getCategoryLabel(alternative.category)} · 钠 {Math.round(alternative.sodium_per_100g || 0)}mg/100g · 嘌呤 {Math.round(alternative.purine_per_100g || 0)}mg/100g
+                            </p>
+                            <p className="mt-1 line-clamp-2 font-serif text-[11px] leading-relaxed text-slate-400">{alternative.reason}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {candidateAlternativeNotes.length > 0 && (
+                      <p className="font-serif text-[11px] leading-relaxed text-emerald-100/70">
+                        {candidateAlternativeNotes.join(' ')}
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 {isLowConfidence && (
                   <div className="rounded-2xl border border-amber-300/25 bg-amber-500/10 px-3 py-3">
                     <div className="flex items-start gap-2">
@@ -332,16 +439,16 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
                       <div className="min-w-0 flex-1">
                         <p className="font-serif text-xs font-bold tracking-wide text-amber-100">低置信度候选</p>
                         <p className="mt-1 font-serif text-[11px] leading-relaxed text-amber-100/80">
-                          请核对名称、份量、食材、调料和烹调方式后再写入日志。
+                          请核对名称、份量、食材、调料和烹调方式后再写入日志{reviewReasons.length > 0 ? `：${reviewReasons.join('、')}` : '。'}
                         </p>
                       </div>
                       <button
                         type="button"
-                        onClick={() => setLowConfidenceAcknowledgedIds(prev => (
-                          prev.includes(candidate.draft_id)
-                            ? prev.filter(id => id !== candidate.draft_id)
-                            : [...prev, candidate.draft_id]
-                        ))}
+                        onClick={() => onChangeCandidate(candidate.draft_id, {
+                          review_required: true,
+                          review_reasons: reviewReasons.length > 0 ? reviewReasons : ['manual_review_required'],
+                          review_confirmed: !isLowConfidenceAcknowledged,
+                        })}
                         className={`shrink-0 rounded-full border px-2 py-1 font-serif text-[10px] font-bold tracking-wide transition-colors ${isLowConfidenceAcknowledged
                           ? 'border-emerald-300/25 bg-emerald-500/10 text-emerald-200'
                           : 'border-amber-300/30 bg-black/20 text-amber-100'
@@ -450,6 +557,29 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
         </div>
 
         <div className="shrink-0 border-t border-white/10 px-4 py-4 bg-[#101719] space-y-3 shadow-[0_-12px_24px_rgba(0,0,0,0.18)]">
+          {confirmImpactPreview && (
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-serif text-xs font-bold tracking-wide text-white">确认前影响预览</p>
+                <span className="font-serif text-[10px] text-slate-500">{confirmImpactPreview.record_date}</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {confirmImpactPreview.metrics.map((metric) => (
+                  <div key={metric.key} className={`rounded-xl border px-2 py-2 ${getImpactStatusClass(metric.status)}`}>
+                    <p className="font-serif text-[10px] font-bold tracking-wide">{metric.label}</p>
+                    <p className="mt-1 font-serif text-sm font-bold tracking-wide">{Math.round(metric.projected)}{metric.unit}</p>
+                    <p className="mt-1 font-serif text-[10px] leading-snug opacity-80">
+                      +{Math.round(metric.pending)} · {metric.target ? `目标${Math.round(metric.target)}` : '目标待完善'}
+                    </p>
+                    <p className="mt-1 font-serif text-[10px] font-bold tracking-wide opacity-90">{getImpactStatusLabel(metric.status)}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="font-serif text-[11px] leading-relaxed text-slate-400">
+                {confirmImpactPreview.notes.join(' ')}
+              </p>
+            </div>
+          )}
           {confirmBlockedReason && (
             <div className="rounded-2xl border border-amber-300/25 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-100 leading-relaxed font-serif tracking-wide">
               <div className="flex items-start gap-2">
@@ -457,6 +587,19 @@ const IntakeConfirmationSheet: React.FC<IntakeConfirmationSheetProps> = ({
                 <span>暂不能确认。{confirmBlockedReason}{blankCandidateCount === 0 && staleReason ? '，请先点击对应候选的“重新评估”。' : ''}</span>
               </div>
             </div>
+          )}
+          {onPreviewConfirmImpact && (
+            <button
+              type="button"
+              onClick={() => void onPreviewConfirmImpact()}
+              disabled={isLoadingConfirmImpactPreview || session.candidates.length === 0}
+              className="w-full h-11 rounded-2xl border border-primary/25 bg-primary/10 text-primary text-sm font-serif font-bold tracking-wide hover:bg-primary/15 transition-colors disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
+            >
+              <span className={`material-symbols-outlined text-[17px] ${isLoadingConfirmImpactPreview ? 'animate-spin' : ''}`}>
+                {isLoadingConfirmImpactPreview ? 'sync' : 'monitoring'}
+              </span>
+              <span>{isLoadingConfirmImpactPreview ? '正在预览...' : '影响预览'}</span>
+            </button>
           )}
           <button
             onClick={onAddCandidate}
