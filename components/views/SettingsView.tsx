@@ -124,6 +124,37 @@ const assistantIntensityLabelMap: Record<AssistantIntensity, string> = {
     HIGH: '强干预',
 };
 
+const formatDeviceSessionLabel = (rawLabel?: string | null): string => {
+    const label = (rawLabel || '').trim();
+    if (!label) return '未知设备';
+    if (!/Mozilla\/|AppleWebKit|Chrome\/|Safari\/|Firefox\//i.test(label)) return label;
+
+    const os = /Windows NT/i.test(label)
+        ? 'Windows'
+        : /Mac OS X|Macintosh/i.test(label)
+            ? 'macOS'
+            : /iPhone|iPad/i.test(label)
+                ? 'iOS'
+                : /Android/i.test(label)
+                    ? 'Android'
+                    : /Linux/i.test(label)
+                        ? 'Linux'
+                        : '浏览器设备';
+    const browser = /Edg\//i.test(label)
+        ? 'Edge'
+        : /OPR\//i.test(label)
+            ? 'Opera'
+            : /Firefox\//i.test(label)
+                ? 'Firefox'
+                : /Chrome\//i.test(label)
+                    ? 'Chrome'
+                    : /Safari\//i.test(label)
+                        ? 'Safari'
+                        : '浏览器';
+
+    return `${os} · ${browser}`;
+};
+
 const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, currentUserId, onUpdateProfile, onLogout, onOpenCompliance, onDataDeleted, onOpenLogDate }) => {
     const [editProfile, setEditProfile] = useState<UserProfile>(userProfile);
     const [activeModal, setActiveModal] = useState<ModalType>(null);
@@ -351,7 +382,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
 
     const handleRevokeDeviceSession = async (session: DeviceSessionItem) => {
         if (!currentUserId || session.is_current) return;
-        const confirmed = window.confirm(`确认撤销设备会话「${session.device_label || session.session_id}」？这台设备将需要重新登录。`);
+        const confirmed = window.confirm(`确认撤销设备会话「${formatDeviceSessionLabel(session.device_label) || session.session_id}」？这台设备将需要重新登录。`);
         if (!confirmed) return;
 
         setSessionActionId(session.session_id);
@@ -1354,12 +1385,13 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                                 </div>
                             ) : deviceSessions.map(session => {
                                 const isBusy = sessionActionId === session.session_id;
+                                const deviceLabel = formatDeviceSessionLabel(session.device_label);
                                 return (
                                     <div key={session.session_id} className="rounded-xl border border-mineral/20 bg-[#131b1d]/80 p-4">
                                         <div className="flex items-start justify-between gap-3">
                                             <div className="min-w-0">
                                                 <p className="truncate text-sm text-white font-serif font-bold tracking-wide">
-                                                    {session.device_label || '未知设备'}
+                                                    {deviceLabel}
                                                 </p>
                                                 <p className="mt-1 text-[11px] text-slate-500 font-serif tracking-wide">
                                                     最近活动 {formatSessionTime(session.last_seen_at)}

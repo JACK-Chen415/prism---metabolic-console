@@ -119,6 +119,40 @@ async def test_create_session_token_pair_persists_session_and_adds_sid_jti():
     assert device_session.refresh_jti_hash
 
 
+@pytest.mark.asyncio
+async def test_create_session_token_pair_revokes_existing_same_device_session():
+    now = datetime.now(timezone.utc)
+    existing_session = DeviceSession(
+        user_id=42,
+        session_id="sid-old",
+        refresh_jti_hash="jti-old",
+        device_label="Mozilla/5.0",
+        user_agent_hash=security_core.hash_sensitive_value("same-browser"),
+        ip_hash=security_core.hash_sensitive_value("127.0.0.1"),
+        expires_at=now + timedelta(days=7),
+        created_at=now,
+        last_seen_at=now,
+    )
+    db = FakeQuerySession([existing_session])
+    user = User(id=42, phone="13800138000", password_hash="hash", is_active=True)
+    request = SimpleNamespace(
+        headers={"user-agent": "same-browser"},
+        client=SimpleNamespace(host="127.0.0.1"),
+    )
+
+    _, _, device_session = await create_session_token_pair(
+        db,
+        user=user,
+        request=request,
+    )
+
+    assert existing_session.revoked_at is not None
+    assert existing_session.revoke_reason == "same_device_relogin"
+    assert device_session.user_agent_hash == existing_session.user_agent_hash
+    assert device_session.ip_hash == existing_session.ip_hash
+    assert db.flush_count == 1
+
+
 def test_device_session_response_marks_current_and_omits_hashes():
     now = datetime.now(timezone.utc)
     session = DeviceSession(
@@ -142,6 +176,62 @@ def test_device_session_response_marks_current_and_omits_hashes():
     assert "secret-jti-hash" not in serialized
     assert "raw-ua-hash" not in serialized
     assert "raw-ip-hash" not in serialized
+
+
+def test_dedupe_device_session_rows_collapses_same_device_and_prefers_current():
+    now = datetime.now(timezone.utc)
+    older_same_device = DeviceSession(
+        user_id=42,
+        session_id="sid-old",
+        refresh_jti_hash="jti-old",
+        device_label="Mozilla/5.0",
+        user_agent_hash="ua-1",
+        ip_hash="ip-1",
+        expires_at=now + timedelta(days=7),
+        created_at=now - timedelta(hours=2),
+        last_seen_at=now - timedelta(hours=2),
+    )
+    current_same_device = DeviceSession(
+        user_id=42,
+        session_id="sid-current",
+        refresh_jti_hash="jti-current",
+        device_label="Mozilla/5.0",
+        user_agent_hash="ua-1",
+        ip_hash="ip-1",
+        expires_at=now + timedelta(days=7),
+        created_at=now - timedelta(hours=3),
+        last_seen_at=now - timedelta(hours=3),
+    )
+    other_device = DeviceSession(
+        user_id=42,
+        session_id="sid-other",
+        refresh_jti_hash="jti-other",
+        device_label="Mobile Safari",
+        user_agent_hash="ua-2",
+        ip_hash="ip-2",
+        expires_at=now + timedelta(days=7),
+        created_at=now - timedelta(hours=1),
+        last_seen_at=now - timedelta(hours=1),
+    )
+    revoked_device = DeviceSession(
+        user_id=42,
+        session_id="sid-revoked",
+        refresh_jti_hash="jti-revoked",
+        device_label="Firefox",
+        user_agent_hash="ua-3",
+        ip_hash="ip-3",
+        expires_at=now + timedelta(days=7),
+        created_at=now,
+        last_seen_at=now,
+        revoked_at=now,
+    )
+
+    rows = auth_route._dedupe_device_session_rows(
+        [other_device, older_same_device, current_same_device, revoked_device],
+        current_session_id="sid-current",
+    )
+
+    assert [row.session_id for row in rows] == ["sid-current", "sid-other"]
 
 
 @pytest.mark.asyncio

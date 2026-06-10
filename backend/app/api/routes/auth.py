@@ -173,6 +173,33 @@ def _device_session_response(row: DeviceSession, *, current_session_id: str | No
     )
 
 
+def _device_session_group_key(row: DeviceSession) -> str:
+    if row.user_agent_hash or row.ip_hash:
+        return f"{row.user_agent_hash or 'unknown-ua'}:{row.ip_hash or 'unknown-ip'}"
+    return f"label:{row.device_label or row.session_id}"
+
+
+def _dedupe_device_session_rows(rows: list[DeviceSession], *, current_session_id: str | None) -> list[DeviceSession]:
+    """Collapse repeated logins from the same browser/device for settings UI."""
+    selected_by_device: dict[str, DeviceSession] = {}
+    for row in rows:
+        if row.revoked_at is not None:
+            continue
+        key = _device_session_group_key(row)
+        selected = selected_by_device.get(key)
+        if selected is None or row.session_id == current_session_id:
+            selected_by_device[key] = row
+
+    return sorted(
+        selected_by_device.values(),
+        key=lambda row: (
+            row.session_id != current_session_id,
+            -(row.last_seen_at.timestamp() if row.last_seen_at else 0),
+            -(row.created_at.timestamp() if row.created_at else 0),
+        ),
+    )
+
+
 def _send_code_response_payload(result) -> dict:
     payload = {
         "success": True,
@@ -693,6 +720,7 @@ async def list_device_sessions(
         .order_by(DeviceSession.last_seen_at.desc(), DeviceSession.created_at.desc())
     )
     rows = list(result.scalars().all())
+    visible_rows = _dedupe_device_session_rows(rows, current_session_id=token_payload.get("sid"))
     await audit_security_event(
         db,
         event_type="auth.session.list",
@@ -701,9 +729,9 @@ async def list_device_sessions(
         request=request,
         session_id=token_payload.get("sid"),
         route_name="/api/auth/sessions",
-        metadata={"returned": len(rows)},
+        metadata={"returned": len(visible_rows), "raw_session_count": len(rows)},
     )
-    return [_device_session_response(row, current_session_id=token_payload.get("sid")) for row in rows]
+    return [_device_session_response(row, current_session_id=token_payload.get("sid")) for row in visible_rows]
 
 
 @router.delete("/sessions/{session_id}")

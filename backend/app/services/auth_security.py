@@ -55,6 +55,17 @@ def _device_label(request: Optional[Request]) -> str:
     return user_agent[:120] or "web"
 
 
+def _device_fingerprint(request: Optional[Request]) -> tuple[Optional[str], Optional[str]]:
+    """Return the coarse device fingerprint used for same-browser session cleanup.
+
+    The raw IP and user-agent are never stored; callers persist only the hashes.
+    """
+    return (
+        hash_sensitive_value(_request_user_agent(request)),
+        hash_sensitive_value(_request_ip(request)),
+    )
+
+
 SENSITIVE_AUDIT_METADATA_KEY_MARKERS = (
     "password",
     "token",
@@ -217,16 +228,31 @@ async def create_session_token_pair(
     refresh_token, refresh_jti = create_refresh_token(user.id, session_id=session_id)
     access_token = create_access_token(user.id, session_id=session_id)
     expires_at = _utcnow() + timedelta(days=settings.jwt_refresh_token_expire_days)
+    now = _utcnow()
+    user_agent_hash, ip_hash = _device_fingerprint(request)
+
+    if user_agent_hash and ip_hash:
+        result = await db.execute(
+            select(DeviceSession).where(
+                DeviceSession.user_id == user.id,
+                DeviceSession.user_agent_hash == user_agent_hash,
+                DeviceSession.ip_hash == ip_hash,
+                DeviceSession.revoked_at.is_(None),
+            )
+        )
+        for existing_session in result.scalars().all():
+            existing_session.revoked_at = now
+            existing_session.revoke_reason = "same_device_relogin"
 
     device_session = DeviceSession(
         user_id=user.id,
         session_id=session_id,
         refresh_jti_hash=hash_sensitive_value(refresh_jti) or "",
         device_label=_device_label(request),
-        user_agent_hash=hash_sensitive_value(_request_user_agent(request)),
-        ip_hash=hash_sensitive_value(_request_ip(request)),
+        user_agent_hash=user_agent_hash,
+        ip_hash=ip_hash,
         expires_at=expires_at,
-        last_seen_at=_utcnow(),
+        last_seen_at=now,
     )
     db.add(device_session)
     await db.flush()
