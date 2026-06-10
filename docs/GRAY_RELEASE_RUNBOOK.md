@@ -1,8 +1,8 @@
 # Prism Gray Release Runbook
 
-_Last updated: 2026-06-07_
+_Last updated: 2026-06-09_
 
-This runbook is for controlled internal testing and small gray release. It assumes mock billing is still enabled and no real payment provider is connected.
+This runbook is for controlled internal testing and small gray release. It assumes mock 计费 is still enabled and no live payment provider is connected.
 
 ## 1. Preflight Gate
 
@@ -77,15 +77,15 @@ Operational rules:
 
 ## 4. Billing And Entitlements
 
-Current billing is mock-only:
+Current billing is mock-only; no live payment gateway is wired:
 
 - `/api/billing/plans` returns the current FREE/PRO/COACH catalog, mock prices, advisory limits, and upgrade reasons.
 - `/api/billing/providers` returns the configured mock provider and planned external payment provider capabilities without exposing payment secrets.
 - `/api/billing/usage` returns current daily AI-chat and monthly photo-recognition usage against advisory plan limits; use it to monitor user-scoped limit pressure during gray release, not to block users yet.
 - Billing responses expose `enforcement_scope`: `observe_only` for soft quota observation, `feature_entitlement_gate` when entitlement checks are enforced by the server.
-- `/api/admin/commercialization/summary` returns admin-scoped aggregate plan/status distribution, mock billing event counts, and quota pressure for cohort-level review.
-- `settings.readiness_snapshot()` keeps mock billing visible as a warning in the gray-release gate so it cannot be mistaken for real commercial readiness.
-- `/api/billing/checkout` creates a mock checkout session and persists `subscription_plan`, `subscription_status`, and `subscription_updated_at`.
+- `/api/admin/commercialization/summary` returns admin-scoped aggregate plan/status distribution, mock 计费 event counts, and quota pressure for cohort-level review.
+- `settings.readiness_snapshot()` keeps mock 计费 visible as a warning in the gray-release gate so it cannot be mistaken for real commercial readiness.
+- `/api/billing/checkout` creates a mock 订阅会话 and persists `subscription_plan`, `subscription_status`, and `subscription_updated_at`.
 - `/api/billing/subscription/cancel` requires `CANCEL_SUBSCRIPTION`, audits the request, preserves the prior paid plan for admin visibility, and removes active paid entitlements.
 - Entitlements are read from the persisted user subscription state and expose both effective plan and billing plan.
 - Canceled or inactive subscriptions fall back to FREE entitlements while the previous billing plan remains visible to admins.
@@ -99,8 +99,8 @@ Review during gray release:
 - `/api/admin/audit/security` for auth, data rights, billing, and admin operations; search by event keywords such as `otp`, `auth`, `report`, `account`, or filter by event status when investigating noisy gray-release windows. Audit metadata is helper-sanitized before write; do not paste raw support text, OTPs, tokens, images, or health notes into operator comments.
 - `/api/admin/audit/knowledge` for local-rule fallback, cloud-call reasons, and blocked cloud calls; filter by fallback status and cloud-call mode when investigating whether LLM output was properly constrained by local rules.
 - `/api/admin/activation/metrics` for aggregate gray-release activation and usage signals: active/new/paid users, meal users, AI replies, feedback volume, health-metric usage, intake-review backlog snapshots, security events, and daily trends. Do not use this panel for raw health review.
-- `/api/admin/commercialization/summary` and the Admin “商业化概览” tab for aggregate plan/status distribution, mock billing events, and quota-pressure checks before expanding a cohort. Do not use it to infer individual health behavior.
-- `/api/billing/usage` and the Billing page for user-scoped quota-pressure checks during interviews; this is observe-only until real billing enforcement is implemented.
+- `/api/admin/commercialization/summary` and the Admin “商业化概览” tab for aggregate plan/status distribution, mock 计费 events, and quota-pressure checks before expanding a cohort. Do not use it to infer individual health behavior.
+- `/api/billing/usage` and the Billing page for user-scoped quota-pressure checks during interviews; this is observe-only until server-side billing enforcement is implemented and audited.
 - `/api/admin/ai/telemetry` for sanitized AI latency, failure, and cost status (`local_only`, `unconfigured`, `estimated`, or `partial_estimate`). AI upstream exceptions should be reviewed by error type and request ID; raw upstream exception bodies, endpoint IDs, model IDs, API keys, and token fragments must not be copied into release notes.
 - `/api/admin/release/readiness` for the red/yellow/green gray-release gate before expanding traffic; it includes the sanitized `/api/ready` config signal, offline sync health, aggregate intake-review backlog telemetry, and `action_items` with the top block/warn operator priorities, and must be checked before gray release.
 - `/api/admin/feedback` for unsafe answer reports, recognition corrections, and knowledge gaps; use the status and type filters to isolate open items during gray-release triage.

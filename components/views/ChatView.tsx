@@ -139,7 +139,9 @@ const ChatView: React.FC<ChatViewProps> = ({
   const [submittingCandidateFeedbackIds, setSubmittingCandidateFeedbackIds] = useState<string[]>([]);
   const [submittedCandidateFeedbackIds, setSubmittedCandidateFeedbackIds] = useState<string[]>([]);
   const [intakeDraftQueue, setIntakeDraftQueue] = useState<CachedIntakeDraft[]>([]);
+  const [intakeDraftArchive, setIntakeDraftArchive] = useState<CachedIntakeDraft[]>([]);
   const [isLoadingIntakeDraftQueue, setIsLoadingIntakeDraftQueue] = useState(false);
+  const [isLoadingIntakeDraftArchive, setIsLoadingIntakeDraftArchive] = useState(false);
   const [intakeDraftQueueActionId, setIntakeDraftQueueActionId] = useState<string | null>(null);
   const [intakeDraftQueueNotice, setIntakeDraftQueueNotice] = useState<string | null>(null);
   const [activeIntakeDraftClientId, setActiveIntakeDraftClientId] = useState<string | null>(null);
@@ -235,25 +237,49 @@ const ChatView: React.FC<ChatViewProps> = ({
   const loadIntakeDraftQueue = async () => {
     if (!currentUserId) {
       setIntakeDraftQueue([]);
+      setIntakeDraftArchive([]);
       return;
     }
 
     setIsLoadingIntakeDraftQueue(true);
+    setIsLoadingIntakeDraftArchive(true);
     try {
-      const queue = await IntakeDraftQueueService.getQueue(currentUserId);
-      setIntakeDraftQueue(queue);
+      const [queueResult, archiveResult] = await Promise.allSettled([
+        IntakeDraftQueueService.getQueue(currentUserId),
+        IntakeDraftQueueService.getArchive(currentUserId),
+      ]);
+
+      if (queueResult.status === 'fulfilled') {
+        setIntakeDraftQueue(queueResult.value);
+      } else {
+        console.error('读取候选复核队列失败', queueResult.reason);
+        setIntakeDraftQueueNotice(queueResult.reason instanceof Error ? queueResult.reason.message : '待复核候选加载失败。');
+      }
+
+      if (archiveResult.status === 'fulfilled') {
+        setIntakeDraftArchive(archiveResult.value);
+      } else {
+        console.error('读取已丢弃候选失败', archiveResult.reason);
+      }
     } catch (error) {
       console.error('读取候选复核队列失败', error);
       setIntakeDraftQueueNotice(error instanceof Error ? error.message : '待复核候选加载失败。');
     } finally {
       setIsLoadingIntakeDraftQueue(false);
+      setIsLoadingIntakeDraftArchive(false);
     }
   };
 
   const saveActiveIntakeDraftForReview = async (session: IntakeDraftSession, status: 'PENDING_REVIEW' | 'IN_REVIEW' = 'IN_REVIEW') => {
     if (!currentUserId || !session.candidates.length) return;
     const clientId = activeIntakeDraftClientId || getIntakeDraftClientId(session);
-    await IntakeDraftQueueService.saveDraft(currentUserId, session, clientId, status);
+    try {
+      await IntakeDraftQueueService.saveDraft(currentUserId, session, clientId, status);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '待复核候选保存失败。';
+      await IntakeDraftQueueService.markLastError(currentUserId, clientId, message).catch(() => {});
+      throw error;
+    }
     setActiveIntakeDraftClientId(clientId);
     await loadIntakeDraftQueue();
   };
@@ -263,7 +289,7 @@ const ChatView: React.FC<ChatViewProps> = ({
 
     setIntakeDraftQueueActionId(`resume:${draft.clientId}`);
     setIntakeDraftQueueNotice(null);
-    setIntakeError(null);
+    setIntakeError(draft.lastError || null);
     try {
       if (pendingIntakeSession && activeIntakeDraftClientId && activeIntakeDraftClientId !== draft.clientId) {
         await IntakeDraftQueueService.saveDraft(currentUserId, pendingIntakeSession, activeIntakeDraftClientId, 'PENDING_REVIEW');
@@ -303,6 +329,70 @@ const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
+  const handleRetryIntakeDraft = async (draft: CachedIntakeDraft) => {
+    if (!currentUserId || intakeDraftQueueActionId) return;
+
+    setIntakeDraftQueueActionId(`retry:${draft.clientId}`);
+    setIntakeDraftQueueNotice(null);
+    try {
+      await IntakeDraftQueueService.saveDraft(currentUserId, draft.session, draft.clientId, draft.status === 'IN_REVIEW' ? 'IN_REVIEW' : 'PENDING_REVIEW');
+      await loadIntakeDraftQueue();
+      setIntakeDraftQueueNotice('已重试保存候选草稿。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '重试保存失败，请稍后再试。';
+      await IntakeDraftQueueService.markLastError(currentUserId, draft.clientId, message).catch(() => {});
+      setIntakeDraftQueueNotice(message);
+    } finally {
+      setIntakeDraftQueueActionId(null);
+    }
+  };
+
+  const handleRestoreIntakeDraft = async (draft: CachedIntakeDraft) => {
+    if (!currentUserId || intakeDraftQueueActionId) return;
+
+    setIntakeDraftQueueActionId(`restore:${draft.clientId}`);
+    setIntakeDraftQueueNotice(null);
+    try {
+      if (pendingIntakeSession && activeIntakeDraftClientId && activeIntakeDraftClientId !== draft.clientId) {
+        await IntakeDraftQueueService.saveDraft(currentUserId, pendingIntakeSession, activeIntakeDraftClientId, 'PENDING_REVIEW');
+      }
+      await IntakeDraftQueueService.restore(currentUserId, draft.clientId, 'IN_REVIEW');
+      setActiveIntakeDraftClientId(draft.clientId);
+      onPendingIntakeSessionChange(draft.session);
+      setReevaluatingDraftIds([]);
+      setStaleEvaluationDraftIds([]);
+      setLoadingCandidateAlternativeIds([]);
+      setCandidateAlternativesByDraftId({});
+      setCandidateAlternativeNotesByDraftId({});
+      setConfirmImpactPreview(null);
+      setIsLoadingConfirmImpactPreview(false);
+      setIntakeDraftQueueNotice('已恢复到复核台，可继续编辑后确认。');
+      await loadIntakeDraftQueue();
+    } catch (error) {
+      setIntakeDraftQueueNotice(error instanceof Error ? error.message : '恢复失败，请稍后再试。');
+    } finally {
+      setIntakeDraftQueueActionId(null);
+    }
+  };
+
+  const handleRetryCurrentIntakeDraftSave = async () => {
+    const session = pendingIntakeSessionRef.current;
+    if (!session || !currentUserId || intakeDraftQueueActionId) return;
+
+    setIntakeDraftQueueActionId(`retry-current:${activeIntakeDraftClientId || getIntakeDraftClientId(session)}`);
+    setIntakeDraftQueueNotice(null);
+    try {
+      await saveActiveIntakeDraftForReview(session, 'IN_REVIEW');
+      setIntakeDraftQueueNotice('已重试保存当前候选草稿。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '重试保存失败，请稍后再试。';
+      setIntakeError(message);
+      setIntakeDraftQueueNotice(message);
+    } finally {
+      setIntakeDraftQueueActionId(null);
+    }
+  };
+
   const closePendingIntakeReview = async () => {
     const session = pendingIntakeSessionRef.current;
     setIntakeError(null);
@@ -314,7 +404,8 @@ const ChatView: React.FC<ChatViewProps> = ({
         await saveActiveIntakeDraftForReview(session, 'PENDING_REVIEW');
         setIntakeDraftQueueNotice('已保存到待复核候选。风险候选不自动写入日志，可稍后继续复核。');
       } catch (error) {
-        setIntakeDraftQueueNotice(error instanceof Error ? error.message : '候选保存失败，请尽快完成复核。');
+        setIntakeDraftQueueNotice(error instanceof Error ? error.message : '候选保存失败，请稍后重试。');
+        return;
       }
     }
 
@@ -531,6 +622,13 @@ const ChatView: React.FC<ChatViewProps> = ({
           .then(() => loadIntakeDraftQueue())
           .catch(error => {
             console.error('保存待复核候选失败', error);
+            if (currentUserId) {
+              void IntakeDraftQueueService.markLastError(
+                currentUserId,
+                clientId,
+                error instanceof Error ? error.message : '待复核候选保存失败。',
+              ).catch(() => {});
+            }
             setIntakeDraftQueueNotice(error instanceof Error ? error.message : '待复核候选保存失败。');
           });
       }
@@ -2340,8 +2438,72 @@ const ChatView: React.FC<ChatViewProps> = ({
                       </button>
                     </div>
                   </div>
-                );
-              })}
+                  );
+                })}
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-black/20 p-3 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">已丢弃候选</p>
+                  <p className="mt-1 text-[11px] text-slate-400 font-serif leading-relaxed">
+                    可恢复到复核台继续编辑，也可以重试上次保存失败的草稿。
+                  </p>
+                </div>
+                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-slate-300 font-serif font-bold tracking-wide">
+                  {intakeDraftArchive.length}
+                </span>
+              </div>
+
+              {isLoadingIntakeDraftArchive ? (
+                <div className="rounded-xl border border-dashed border-white/10 px-3 py-5 text-center">
+                  <p className="text-xs text-slate-500 font-serif font-bold tracking-wide">正在加载归档候选...</p>
+                </div>
+              ) : intakeDraftArchive.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-white/10 px-3 py-5 text-center">
+                  <p className="text-xs text-slate-500 font-serif font-bold tracking-wide">暂无已丢弃候选</p>
+                </div>
+              ) : (
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {intakeDraftArchive.map((draft) => {
+                    const isBusy = intakeDraftQueueActionId?.endsWith(draft.clientId);
+                    const candidateName = draft.session.candidates[0]?.food_name || '未命名候选';
+                    return (
+                      <div key={draft.clientId} className="min-w-[220px] max-w-[250px] rounded-xl border border-white/10 bg-white/[0.03] p-3 space-y-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm text-white font-serif font-bold tracking-wide">{candidateName}</p>
+                          <p className="mt-1 text-[10px] text-slate-500 font-serif font-bold tracking-wide">
+                            {draft.recordDate} · {draft.candidateCount} 项 · 已丢弃
+                          </p>
+                        </div>
+                        {draft.lastError && (
+                          <p className="rounded-lg border border-amber-300/20 bg-amber-500/10 px-2.5 py-2 text-[10px] text-amber-100 font-serif leading-relaxed">
+                            上次保存失败：{draft.lastError}
+                          </p>
+                        )}
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void handleRestoreIntakeDraft(draft)}
+                            disabled={Boolean(intakeDraftQueueActionId)}
+                            className="h-9 rounded-lg border border-primary/20 bg-primary/10 text-[11px] text-primary font-serif font-bold tracking-wide hover:bg-primary/20 disabled:opacity-50"
+                          >
+                            恢复
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleRetryIntakeDraft(draft)}
+                            disabled={Boolean(intakeDraftQueueActionId)}
+                            className="h-9 rounded-lg border border-white/10 bg-white/5 text-[11px] text-slate-200 font-serif font-bold tracking-wide hover:bg-white/10 disabled:opacity-50"
+                          >
+                            {isBusy ? '处理中' : '重试保存'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </section>
         )}

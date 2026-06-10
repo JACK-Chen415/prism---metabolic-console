@@ -1189,7 +1189,7 @@ const AdminView: React.FC<AdminViewProps> = ({ onViewChange }) => {
                 <div>
                   <p className="font-serif text-sm font-bold tracking-wide text-white">商业化概览</p>
                   <p className="mt-1 font-serif text-[11px] tracking-wide text-slate-500">
-                    最近 {commercializationSummary?.window_days ?? 30} 天的订阅、事件和用量压力
+                    最近 {commercializationSummary?.window_days ?? 30} 天的 mock 订阅、事件和用量压力
                   </p>
                 </div>
                 <span className="rounded-full border border-[#45b7aa]/25 bg-[#45b7aa]/10 px-2 py-1 font-serif text-[10px] font-bold tracking-wide text-[#45b7aa]">
@@ -1202,9 +1202,9 @@ const AdminView: React.FC<AdminViewProps> = ({ onViewChange }) => {
                   ['总用户', commercializationSummary?.total_users ?? 0],
                   ['付费活跃', commercializationSummary?.active_paid_users ?? 0],
                   ['已取消付费', commercializationSummary?.canceled_paid_users ?? 0],
-                  ['checkout', commercializationSummary?.checkout_event_count ?? 0],
-                  ['cancel', commercializationSummary?.cancel_event_count ?? 0],
-                  ['usage views', commercializationSummary?.usage_snapshot_count ?? 0],
+                  ['模拟订阅', commercializationSummary?.checkout_event_count ?? 0],
+                  ['取消订阅', commercializationSummary?.cancel_event_count ?? 0],
+                  ['用量快照', commercializationSummary?.usage_snapshot_count ?? 0],
                 ].map(([label, value]) => (
                   <div key={label as string} className="rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2 text-center">
                     <p className="font-serif text-[10px] font-bold tracking-wide text-slate-500">{label as string}</p>

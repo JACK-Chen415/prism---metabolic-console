@@ -105,7 +105,7 @@ test('mock billing persists subscriptions and admin can manage roles safely', ()
     'handleCancelSubscription',
     'planCatalog',
     'providerCatalog',
-    '支付 Provider',
+    '计费 Provider',
     'supports_webhook',
     'requires_secret',
     'upgrade_reasons',
@@ -116,11 +116,13 @@ test('mock billing persists subscriptions and admin can manage roles safely', ()
     '灰度观测，不强制拦截',
     'enforcementScopeLabelMap',
     '权益门禁',
+    '创建模拟订阅',
   ]) {
     assert.ok(billingSource.includes(required), `Missing billing lifecycle UI contract: ${required}`);
   }
 
   assert.ok(billingSource.includes("snapshot?.status"), 'Billing page should display persisted subscription status');
+  assert.ok(billingSource.includes('模拟会话'), 'Billing page should label checkout as a mock session');
   assert.ok(apiSource.includes('BillingUsageSnapshot'), 'Frontend API should expose billing usage snapshots');
   assert.ok(read('types.ts').includes('BillingEnforcementScope'), 'Frontend types should model billing enforcement mode');
 });

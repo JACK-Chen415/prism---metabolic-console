@@ -1,6 +1,6 @@
 # Prism Commercialization Readiness Notes
 
-_Last updated: 2026-06-07_
+_Last updated: 2026-06-09_
 
 This note tracks the current engineering state for controlled internal testing, small gray release, and commercialization foundation work.
 
@@ -31,10 +31,10 @@ This note tracks the current engineering state for controlled internal testing, 
 - Optional `AI_COST_USD_PER_1K_TOKENS` can enable rough character-based AI cost estimation for gray-release monitoring without storing prompts, images, tokens, API keys, or raw health content in telemetry.
 - A sanitized gray-release smoke script lives at `backend/scripts/ai_release_smoke.py` and can exercise `/api/ready`, registration/login, a chat turn, and an optional image-recognition check without printing secrets or raw content.
 - Weekly/monthly reports are exposed as JSON and CSV, with disclaimer and audit logging.
-- FREE/PRO/COACH entitlement skeleton and mock checkout provider are available.
-- Mock checkout now persists subscription plan/status on the user record, and entitlement snapshots read that persisted state.
+- FREE/PRO/COACH 权益骨架和 mock 计费 provider 已可用；真实扣费仍未实现。
+- Mock 订阅会话现在会把 subscription plan/status 持久化到用户记录，entitlement snapshots 读取这份状态。
 - Billing now exposes a mock plan catalog, advisory plan limits, persisted billing/effective plan state, and audited subscription cancellation back to FREE entitlements.
-- Billing provider status now uses a registry surface: current `mock` provider is visible to the UI, the real payment gateway slot is marked planned, and startup rejects unsupported `BILLING_PROVIDER` values.
+- Billing provider status now uses a registry surface: the UI shows the active `mock` provider and a planned external payment provider slot, and startup rejects unsupported `BILLING_PROVIDER` values. No live gateway is wired.
 - Billing usage snapshots now expose daily AI chat and monthly photo recognition counts/limits through `/api/billing/usage`, with aggregate-only payloads and no raw content or credential material.
 - Admin audit/knowledge overview skeleton is guarded by admin phone-hash allowlist and also supports a persisted ADMIN role bootstrap path.
 - Production readiness now warns with `admin_bootstrap_allowlist_missing` when no break-glass `ADMIN_PHONE_HASHES` entry is configured; the snapshot exposes only the allowlist count, never hash values or phone numbers.
@@ -77,7 +77,7 @@ This note tracks the current engineering state for controlled internal testing, 
   - Admin UI includes an “激活指标” tab with daily trend bars for meal, AI reply, and feedback volume, plus aggregate intake-review snapshot/pending/high-risk cards.
   - The endpoint is admin-gated and audited as `admin.activation.metrics.list`; payloads are aggregate-only and avoid raw user health content.
 - Admin commercialization summary:
-  - `GET /api/admin/commercialization/summary?window_days=30` returns plan/status distribution, mock billing event counts, and advisory quota pressure for daily AI chat and monthly photo recognition.
+  - `GET /api/admin/commercialization/summary?window_days=30` returns plan/status distribution, mock 计费 event counts, and advisory quota pressure for daily AI chat and monthly photo recognition.
   - Admin UI includes a “商业化概览” tab for gray-release interviews and subscription triage.
   - The endpoint is admin-gated and audited as `admin.commercialization.summary.list`; payloads are aggregate-only and do not include raw content, files, credentials, or contact details.
 - AI feedback loop:
@@ -113,7 +113,7 @@ This note tracks the current engineering state for controlled internal testing, 
   - `GET /api/billing/providers` returns the configured mock provider and planned external payment provider capabilities without exposing secrets.
   - `GET /api/billing/usage` returns current-period advisory quota usage for daily AI chat and monthly photo recognition; it is audited and intentionally gray-release observe-only.
   - Billing UI shows current-period usage bars and remaining advisory quotas without enforcing limits.
-  - `settings.readiness_snapshot()` flags mock billing as a yellow gray-release warning so operators know payment remains mock-only.
+  - `settings.readiness_snapshot()` flags mock 计费 as a yellow gray-release warning so operators know payment remains mock-only.
   - `POST /api/billing/subscription/cancel` requires explicit confirmation, audits the action, preserves the previous paid plan for admin visibility, and removes active paid entitlements.
   - Billing UI shows effective entitlement plan, billing plan, current status, advisory limits, provider capability status, and a safe cancel action for active paid mock subscriptions.
 - Offline queue status:

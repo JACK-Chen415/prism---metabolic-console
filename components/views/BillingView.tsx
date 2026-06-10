@@ -21,9 +21,9 @@ const limitLabelMap: Record<string, string> = {
 };
 
 const providerSupportLabelMap: Record<string, string> = {
-  supports_checkout: '可 checkout',
+  supports_checkout: '可创建订阅',
   supports_cancel: '可取消',
-  supports_webhook: '可 webhook',
+  supports_webhook: '可接收回调',
   supports_refund: '可退款',
   requires_secret: '需密钥',
 };
@@ -112,11 +112,11 @@ const BillingView: React.FC<BillingViewProps> = ({ onViewChange }) => {
       const session = await BillingAPI.createCheckout(plan);
       setNotice({
         title: session.message,
-        detail: `供应商 ${session.provider} · 方案 ${session.plan} · checkout ${session.status}`,
+        detail: `供应商 ${session.provider} · 方案 ${session.plan} · 模拟会话 ${session.status}`,
       });
       await loadBilling();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '发起模拟 checkout 失败。');
+      setError(err instanceof Error ? err.message : '创建模拟订阅失败。');
     } finally {
       setLoadingPlan(null);
     }
@@ -272,7 +272,7 @@ const BillingView: React.FC<BillingViewProps> = ({ onViewChange }) => {
 
         <section className="rounded-2xl border border-white/10 bg-[#101719]/80 p-4">
           <div className="flex items-center justify-between gap-3">
-            <h3 className="font-serif text-base font-bold tracking-wide text-white">支付 Provider</h3>
+            <h3 className="font-serif text-base font-bold tracking-wide text-white">计费 Provider</h3>
             <span className="font-serif text-[10px] font-bold tracking-[0.24em] text-slate-500">
               {configuredProvider?.provider || snapshot?.provider || 'mock'}
             </span>
@@ -386,7 +386,7 @@ const BillingView: React.FC<BillingViewProps> = ({ onViewChange }) => {
                     <span className="material-symbols-outlined text-[18px]">
                       {loadingPlan === plan ? 'progress_activity' : 'shopping_cart'}
                     </span>
-                    {plan === 'FREE' ? '默认可用' : active ? '已启用' : '发起模拟 checkout'}
+                    {plan === 'FREE' ? '默认可用' : active ? '已启用' : '创建模拟订阅'}
                   </button>
                 </div>
               </article>

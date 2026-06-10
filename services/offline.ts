@@ -4,7 +4,7 @@
  */
 
 import Dexie, { Table } from 'dexie';
-import type { IntakeDraftSession } from '../types';
+import type { FavoriteMeal, IntakeDraftSession } from '../types';
 import { getLocalDateString } from './date';
 import { MealsAPI } from './api';
 
@@ -68,6 +68,29 @@ export interface CachedIntakeDraft {
     updatedAt: Date;
 }
 
+export interface CachedFavoriteMeal {
+    id?: number;
+    userId: number;
+    favoriteId: number;
+    sourceMealId?: number | null;
+    name: string;
+    portion: string;
+    mealType: FavoriteMeal['meal_type'];
+    category: FavoriteMeal['category'];
+    note?: string | null;
+    calories: number;
+    sodium: number;
+    purine: number;
+    protein?: number | null;
+    carbs?: number | null;
+    fat?: number | null;
+    fiber?: number | null;
+    usageCount: number;
+    lastUsedAt?: string | null;
+    createdAt: string;
+    updatedAt: string;
+}
+
 type MealDraft = Omit<CachedMeal, 'id' | 'userId' | 'clientId' | 'syncStatus' | 'createdAt' | 'updatedAt'> & {
     clientId?: string;
 };
@@ -75,6 +98,7 @@ type MealDraft = Omit<CachedMeal, 'id' | 'userId' | 'clientId' | 'syncStatus' | 
 class PrismDatabase extends Dexie {
     meals!: Table<CachedMeal, number>;
     intakeDrafts!: Table<CachedIntakeDraft, number>;
+    favoriteMeals!: Table<CachedFavoriteMeal, number>;
     syncMeta!: Table<SyncMeta, string>;
 
     constructor() {
@@ -98,6 +122,13 @@ class PrismDatabase extends Dexie {
         this.version(3).stores({
             meals: '++id, userId, [userId+recordDate], [userId+syncStatus], [userId+clientId], serverId, recordDate, syncStatus, mealType, createdAt',
             intakeDrafts: '++id, userId, [userId+status], [userId+clientId], recordDate, updatedAt',
+            syncMeta: 'key'
+        });
+
+        this.version(4).stores({
+            meals: '++id, userId, [userId+recordDate], [userId+syncStatus], [userId+clientId], serverId, recordDate, syncStatus, mealType, createdAt',
+            intakeDrafts: '++id, userId, [userId+status], [userId+clientId], recordDate, updatedAt',
+            favoriteMeals: '++id, userId, favoriteId, [userId+favoriteId], [userId+updatedAt], [userId+usageCount], updatedAt',
             syncMeta: 'key'
         });
     }
@@ -135,6 +166,69 @@ function summarizeIntakeDraft(session: IntakeDraftSession) {
         )).length,
         hardBlockCount: candidates.filter(candidate => candidate.recommendation_level === 'AVOID').length,
     };
+}
+
+function favoriteMealToCacheRecord(userId: number, favorite: FavoriteMeal, now = new Date()): CachedFavoriteMeal {
+    return {
+        userId,
+        favoriteId: favorite.id,
+        sourceMealId: favorite.source_meal_id ?? null,
+        name: favorite.name,
+        portion: favorite.portion,
+        mealType: favorite.meal_type,
+        category: favorite.category,
+        note: favorite.note ?? null,
+        calories: favorite.calories,
+        sodium: favorite.sodium,
+        purine: favorite.purine,
+        protein: favorite.protein ?? null,
+        carbs: favorite.carbs ?? null,
+        fat: favorite.fat ?? null,
+        fiber: favorite.fiber ?? null,
+        usageCount: favorite.usage_count,
+        lastUsedAt: favorite.last_used_at ?? null,
+        createdAt: favorite.created_at,
+        updatedAt: favorite.updated_at,
+    };
+}
+
+function cacheRecordToFavoriteMeal(item: CachedFavoriteMeal): FavoriteMeal {
+    return {
+        id: item.favoriteId,
+        source_meal_id: item.sourceMealId ?? null,
+        name: item.name,
+        portion: item.portion,
+        meal_type: item.mealType,
+        category: item.category,
+        note: item.note ?? null,
+        calories: item.calories,
+        sodium: item.sodium,
+        purine: item.purine,
+        protein: item.protein ?? null,
+        carbs: item.carbs ?? null,
+        fat: item.fat ?? null,
+        fiber: item.fiber ?? null,
+        usage_count: item.usageCount,
+        last_used_at: item.lastUsedAt ?? null,
+        created_at: item.createdAt,
+        updated_at: item.updatedAt,
+    };
+}
+
+function sortFavoriteMeals(items: FavoriteMeal[]) {
+    return items
+        .filter((item): item is FavoriteMeal => Boolean(item?.id && item?.name))
+        .sort((a, b) => b.usage_count - a.usage_count || new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+}
+
+function favoriteSignature(favorite: Pick<FavoriteMeal, 'source_meal_id' | 'name' | 'portion' | 'meal_type' | 'category'>) {
+    return [
+        favorite.source_meal_id ?? 'none',
+        favorite.name.trim().toLowerCase(),
+        favorite.portion.trim().toLowerCase(),
+        favorite.meal_type,
+        favorite.category,
+    ].join('|');
 }
 
 export const IntakeDraftQueueService = {
@@ -183,6 +277,14 @@ export const IntakeDraftQueueService = {
             .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
     },
 
+    async getArchive(userId: number): Promise<CachedIntakeDraft[]> {
+        return db.intakeDrafts
+            .where('[userId+status]')
+            .equals([userId, 'DISCARDED'])
+            .toArray()
+            .then(items => items.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime()));
+    },
+
     async getByClientId(userId: number, clientId: string): Promise<CachedIntakeDraft | undefined> {
         return db.intakeDrafts.where('[userId+clientId]').equals([userId, clientId]).first();
     },
@@ -192,6 +294,7 @@ export const IntakeDraftQueueService = {
         if (!draft?.id || draft.userId !== userId) return;
         await db.intakeDrafts.update(draft.id, {
             status: 'IN_REVIEW',
+            lastError: undefined,
             updatedAt: new Date(),
         });
     },
@@ -201,6 +304,7 @@ export const IntakeDraftQueueService = {
         if (!draft?.id || draft.userId !== userId || draft.status !== 'IN_REVIEW') return;
         await db.intakeDrafts.update(draft.id, {
             status: 'PENDING_REVIEW',
+            lastError: undefined,
             updatedAt: new Date(),
         });
     },
@@ -210,6 +314,7 @@ export const IntakeDraftQueueService = {
         if (!draft?.id || draft.userId !== userId) return;
         await db.intakeDrafts.update(draft.id, {
             status: 'CONFIRMED',
+            lastError: undefined,
             updatedAt: new Date(),
         });
     },
@@ -219,6 +324,26 @@ export const IntakeDraftQueueService = {
         if (!draft?.id || draft.userId !== userId) return;
         await db.intakeDrafts.update(draft.id, {
             status: 'DISCARDED',
+            updatedAt: new Date(),
+        });
+    },
+
+    async restore(userId: number, clientId: string, status: IntakeDraftReviewStatus = 'IN_REVIEW'): Promise<void> {
+        const draft = await this.getByClientId(userId, clientId);
+        if (!draft?.id || draft.userId !== userId) return;
+        if (draft.status === 'CONFIRMED') return;
+        await db.intakeDrafts.update(draft.id, {
+            status,
+            lastError: undefined,
+            updatedAt: new Date(),
+        });
+    },
+
+    async markLastError(userId: number, clientId: string, lastError: string): Promise<void> {
+        const draft = await this.getByClientId(userId, clientId);
+        if (!draft?.id || draft.userId !== userId) return;
+        await db.intakeDrafts.update(draft.id, {
+            lastError: lastError.slice(0, 160),
             updatedAt: new Date(),
         });
     },
@@ -257,6 +382,94 @@ export const IntakeDraftQueueService = {
             intakeDraftSourceCounts: sourceCounts,
             intakeDraftStatusCounts: statusCounts,
         };
+    },
+};
+
+export const FavoriteMealsCacheService = {
+    async upsertFavorite(userId: number, favorite: FavoriteMeal): Promise<FavoriteMeal> {
+        const now = new Date();
+        const existing = await db.favoriteMeals.where('[userId+favoriteId]').equals([userId, favorite.id]).first();
+        const payload = favoriteMealToCacheRecord(userId, favorite, now);
+        if (existing?.id) {
+            await db.favoriteMeals.update(existing.id, payload);
+        } else {
+            await db.favoriteMeals.add(payload);
+        }
+        return favorite;
+    },
+
+    async replaceFavorites(userId: number, favorites: FavoriteMeal[]): Promise<FavoriteMeal[]> {
+        const now = new Date();
+        const existing = await db.favoriteMeals.where('userId').equals(userId).toArray();
+        const nextIds = new Set(favorites.map(item => item.id));
+        const nextSignatures = new Set(favorites.map(favoriteSignature));
+
+        await db.transaction('rw', db.favoriteMeals, async () => {
+            for (const favorite of favorites) {
+                const payload = favoriteMealToCacheRecord(userId, favorite, now);
+                const match = existing.find(item => item.favoriteId === favorite.id);
+                if (match?.id) {
+                    await db.favoriteMeals.update(match.id, payload);
+                } else {
+                    await db.favoriteMeals.add(payload);
+                }
+            }
+
+            const staleIds = existing
+                .filter(item => (
+                    item.favoriteId > 0
+                        ? !nextIds.has(item.favoriteId)
+                        : !nextSignatures.has(favoriteSignature({
+                            source_meal_id: item.sourceMealId ?? null,
+                            name: item.name,
+                            portion: item.portion,
+                            meal_type: item.mealType,
+                            category: item.category,
+                        }))
+                ))
+                .map(item => item.id!)
+                .filter(Boolean);
+
+            if (staleIds.length > 0) {
+                await db.favoriteMeals.bulkDelete(staleIds);
+            }
+        });
+
+        return FavoriteMealsCacheService.getFavorites(userId, Number.POSITIVE_INFINITY);
+    },
+
+    async getFavorites(userId: number, limit = 20): Promise<FavoriteMeal[]> {
+        const items = await db.favoriteMeals.where('userId').equals(userId).toArray();
+        return sortFavoriteMeals(items.map(cacheRecordToFavoriteMeal)).slice(0, limit);
+    },
+
+    async markUsed(userId: number, favoriteId: number): Promise<FavoriteMeal | null> {
+        const existing = await db.favoriteMeals.where('[userId+favoriteId]').equals([userId, favoriteId]).first();
+        if (!existing?.id) return null;
+        const now = new Date().toISOString();
+        const nextUsageCount = (existing.usageCount || 0) + 1;
+        await db.favoriteMeals.update(existing.id, {
+            usageCount: nextUsageCount,
+            lastUsedAt: now,
+            updatedAt: now,
+        });
+        return cacheRecordToFavoriteMeal({
+            ...existing,
+            usageCount: nextUsageCount,
+            lastUsedAt: now,
+            updatedAt: now,
+        });
+    },
+
+    async deleteFavorite(userId: number, favoriteId: number): Promise<void> {
+        const existing = await db.favoriteMeals.where('[userId+favoriteId]').equals([userId, favoriteId]).first();
+        if (!existing?.id || existing.userId !== userId) return;
+        await db.favoriteMeals.delete(existing.id);
+    },
+
+    async clearUserData(userId: number): Promise<void> {
+        const favorites = await db.favoriteMeals.where('userId').equals(userId).toArray();
+        await db.favoriteMeals.bulkDelete(favorites.map(favorite => favorite.id!).filter(Boolean));
     },
 };
 
@@ -651,12 +864,14 @@ export const CacheCleanupService = {
     async clearUserLocalData(userId: number): Promise<void> {
         await OfflineMealsService.clearUserData(userId);
         await IntakeDraftQueueService.clearUserData(userId);
+        await FavoriteMealsCacheService.clearUserData(userId);
         await SyncMetaService.clearUserMeta(userId);
     },
 
     async clearAll(): Promise<void> {
         await db.meals.clear();
         await db.intakeDrafts.clear();
+        await db.favoriteMeals.clear();
         await db.syncMeta.clear();
     }
 };

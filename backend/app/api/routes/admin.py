@@ -47,6 +47,7 @@ class SecurityAuditItem(BaseModel):
     user_agent_hash: Optional[str] = None
     session_id: Optional[str] = None
     metadata_json: Optional[dict] = None
+    metadata_keys: list[str] = Field(default_factory=list)
     created_at: datetime
 
 
@@ -1280,7 +1281,8 @@ def _security_item(row: SecurityAuditLog) -> SecurityAuditItem:
         ip_hash=row.ip_hash,
         user_agent_hash=row.user_agent_hash,
         session_id=row.session_id,
-        metadata_json=row.metadata_json,
+        metadata_json=None,
+        metadata_keys=_metadata_keys(row.metadata_json),
         created_at=row.created_at,
     )
 
@@ -1322,8 +1324,8 @@ def _knowledge_item(row: KnowledgeAuditLog) -> KnowledgeAuditItem:
         unmapped_conditions=_safe_list(row.unmapped_conditions_json),
         local_decision_level=getattr(row.local_decision_level, "value", row.local_decision_level),
         called_cloud=row.called_cloud,
-        cloud_call_reason=row.cloud_call_reason,
-        cloud_blocked_reason=row.cloud_blocked_reason,
+        cloud_call_reason=_safe_reason_code(row.cloud_call_reason),
+        cloud_blocked_reason=_safe_reason_code(row.cloud_blocked_reason),
         created_at=row.created_at,
     )
 

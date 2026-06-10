@@ -5,6 +5,7 @@ import { formatChineseDate, getLocalDateString } from '../../services/date';
 import { estimateMealNutrition } from '../../services/mealEstimation';
 import { KnowledgeAPI, MealsAPI } from '../../services/api';
 import { mapMeal } from '../../services/mappers/appMappers';
+import { FavoriteMealsCacheService, OfflineMealsService, type CachedMeal } from '../../services/offline';
 import { COMPLIANCE_MEDICAL_DISCLAIMER, PACKAGED_FOOD_DISCLAIMER } from '../../constants/compliance';
 
 interface LogViewProps {
@@ -116,6 +117,8 @@ type PreMealSimulationState = {
 
 type PreMealRiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'UNKNOWN';
 
+let localFavoriteSequence = 0;
+
 const formatMealType = (type: Meal['type']) => (
   MEAL_TYPES.find(item => item.id === type)?.label || '晚餐'
 );
@@ -210,6 +213,70 @@ const buildFrequentMealCTA = (shortcut: FrequentMealShortcut) => {
   const base = shortcut.count > 1 ? '再次使用' : '快速使用';
   return `${base}到餐盘`;
 };
+
+const isLikelyNetworkFailure = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return !navigator.onLine || /failed to fetch|networkerror|load failed|request failed/i.test(message);
+};
+
+const cachedMealToMeal = (item: CachedMeal): Meal => ({
+  id: item.serverId ? String(item.serverId) : item.clientId,
+  clientId: item.clientId,
+  recordDate: item.recordDate,
+  name: item.name,
+  portion: item.portion || '1份',
+  calories: item.calories || 0,
+  sodium: item.sodium || 0,
+  purine: item.purine || 0,
+  protein: item.protein,
+  carbs: item.carbs,
+  fat: item.fat,
+  fiber: item.fiber,
+  type: item.mealType || 'DINNER',
+  category: item.category || 'STAPLE',
+  note: item.note || '',
+  source: item.source || 'manual',
+  sourceDetail: item.sourceDetail || (
+    item.syncStatus === 'PENDING'
+      ? '离线待同步'
+      : item.syncStatus === 'FAILED'
+        ? '同步失败待重试'
+        : item.syncStatus === 'CONFLICT'
+          ? '离线冲突待处理'
+          : '本地缓存'
+  ),
+  confidence: item.confidence,
+  estimatedFields: item.estimatedFields || ['calories', 'sodium', 'purine'],
+  ruleWarnings: item.ruleWarnings || [],
+  recognitionMeta: item.recognitionMeta,
+  pendingDelete: item.pendingDelete ?? false,
+  syncStatus: item.syncStatus,
+  lastSyncError: item.lastSyncError,
+  retryCount: item.retryCount,
+});
+
+const generateLocalFavoriteId = () => -(Date.now() + (localFavoriteSequence += 1));
+
+const buildFavoriteFromMeal = (meal: Meal, favoriteId = generateLocalFavoriteId()): FavoriteMeal => ({
+  id: favoriteId,
+  source_meal_id: Number.isFinite(Number(meal.id)) ? Number(meal.id) : null,
+  name: meal.name,
+  portion: meal.portion || '1份',
+  meal_type: meal.type,
+  category: meal.category,
+  note: meal.note || null,
+  calories: meal.calories,
+  sodium: meal.sodium,
+  purine: meal.purine,
+  protein: meal.protein ?? null,
+  carbs: meal.carbs ?? null,
+  fat: meal.fat ?? null,
+  fiber: meal.fiber ?? null,
+  usage_count: 0,
+  last_used_at: null,
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+});
 
 const normalizeRecentMealList = (response: unknown): Meal[] => {
   const items = Array.isArray(response)
@@ -419,10 +486,12 @@ const LogView: React.FC<LogViewProps> = ({
   const [isLoadingFrequentMeals, setIsLoadingFrequentMeals] = useState(false);
   const [frequentMealsError, setFrequentMealsError] = useState<string | null>(null);
   const [favoriteMeals, setFavoriteMeals] = useState<FavoriteMeal[]>([]);
+  const [favoriteMealsSource, setFavoriteMealsSource] = useState<'server' | 'cache' | 'empty'>('empty');
   const [isLoadingFavoriteMeals, setIsLoadingFavoriteMeals] = useState(false);
   const [favoriteMealsError, setFavoriteMealsError] = useState<string | null>(null);
   const [favoriteActionId, setFavoriteActionId] = useState<string | null>(null);
   const [preMealSimulation, setPreMealSimulation] = useState<PreMealSimulationState>(EMPTY_PRE_MEAL_SIMULATION);
+  const localAssetUserId = userProfile.id ?? null;
 
   const refreshDailyTip = (e?: React.MouseEvent) => {
     e?.stopPropagation();
@@ -436,18 +505,35 @@ const LogView: React.FC<LogViewProps> = ({
   }, []);
 
   const loadFavoriteMealTemplates = useCallback(async () => {
+    if (!localAssetUserId) {
+      setFavoriteMeals([]);
+      setFavoriteMealsSource('empty');
+      return;
+    }
+
     setIsLoadingFavoriteMeals(true);
     setFavoriteMealsError(null);
     try {
       const response = await MealsAPI.listFavorites(20);
-      setFavoriteMeals(normalizeFavoriteMealList(response));
+      const normalized = normalizeFavoriteMealList(response);
+      const mergedFavorites = await FavoriteMealsCacheService.replaceFavorites(localAssetUserId, normalized);
+      setFavoriteMeals(mergedFavorites.slice(0, 20));
+      setFavoriteMealsSource(normalized.length > 0 ? 'server' : mergedFavorites.length > 0 ? 'cache' : 'empty');
     } catch (error) {
-      setFavoriteMeals([]);
-      setFavoriteMealsError(error instanceof Error ? error.message : '收藏餐加载失败。');
+      try {
+        const cachedFavorites = await FavoriteMealsCacheService.getFavorites(localAssetUserId, 20);
+        setFavoriteMeals(cachedFavorites);
+        setFavoriteMealsSource(cachedFavorites.length > 0 ? 'cache' : 'empty');
+        setFavoriteMealsError(null);
+      } catch (cacheError) {
+        setFavoriteMeals([]);
+        setFavoriteMealsSource('empty');
+        setFavoriteMealsError(error instanceof Error ? error.message : cacheError instanceof Error ? cacheError.message : '收藏餐加载失败。');
+      }
     } finally {
       setIsLoadingFavoriteMeals(false);
     }
-  }, []);
+  }, [localAssetUserId]);
 
   useEffect(() => {
     if (!isAdding) return;
@@ -469,9 +555,25 @@ const LogView: React.FC<LogViewProps> = ({
         }
       } catch (error) {
         if (!isCancelled) {
-          setRecentMealHistory([]);
-          setFrequentMealShortcuts([]);
-          setFrequentMealsError(error instanceof Error ? error.message : '最近常吃加载失败。');
+          if (localAssetUserId) {
+            try {
+              const localMeals = await OfflineMealsService.getByDateRange(localAssetUserId, addDays(currentDate, -13), currentDate);
+              const visibleMeals = localMeals
+                .filter(item => !item.pendingDelete)
+                .map(cachedMealToMeal);
+              setRecentMealHistory(visibleMeals);
+              setFrequentMealShortcuts(buildFrequentMealShortcuts(visibleMeals));
+              setFrequentMealsError(null);
+            } catch (localError) {
+              setRecentMealHistory([]);
+              setFrequentMealShortcuts([]);
+              setFrequentMealsError(localError instanceof Error ? localError.message : error instanceof Error ? error.message : '最近常吃加载失败。');
+            }
+          } else {
+            setRecentMealHistory([]);
+            setFrequentMealShortcuts([]);
+            setFrequentMealsError(error instanceof Error ? error.message : '最近常吃加载失败。');
+          }
         }
       } finally {
         if (!isCancelled) setIsLoadingFrequentMeals(false);
@@ -552,26 +654,52 @@ const LogView: React.FC<LogViewProps> = ({
   };
 
   const canSaveMealAsFavorite = (meal: Meal) => {
-    const syncStatus = meal.syncStatus || 'SYNCED';
-    return syncStatus === 'SYNCED' && Number.isFinite(Number(meal.id));
+    return Boolean(meal.name.trim());
   };
 
   const saveMealAsFavorite = async (meal: Meal) => {
     if (favoriteActionId || !meal.name.trim()) return;
-    if (!canSaveMealAsFavorite(meal)) {
-      setActionError('离线或待同步餐食需同步成功后再加入收藏餐。');
-      return;
-    }
 
+    const allowServerFavorite = meal.syncStatus === 'SYNCED' && Number.isFinite(Number(meal.id));
     setFavoriteActionId(`save:${meal.id}`);
     setActionError(null);
     setFeedbackMessage(null);
     try {
-      const favorite = await MealsAPI.favoriteMeal(meal.id);
-      setFavoriteMeals(previous => upsertFavoriteMeal(previous, favorite));
-      setFeedbackMessage('已加入收藏餐，记录餐食时可一键复记并编辑。');
+      if (allowServerFavorite) {
+        const favorite = await MealsAPI.favoriteMeal(meal.id);
+        if (localAssetUserId) {
+          await FavoriteMealsCacheService.upsertFavorite(localAssetUserId, favorite);
+        }
+        setFavoriteMeals(previous => upsertFavoriteMeal(previous, favorite));
+        setFavoriteMealsSource('server');
+        setFeedbackMessage('已加入收藏餐，记录餐食时可一键复记并编辑。');
+        return;
+      }
+
+      if (!localAssetUserId) {
+        setActionError('本机收藏餐仅在登录后可用。');
+        return;
+      }
+
+      const localFavorite = buildFavoriteFromMeal(meal);
+      await FavoriteMealsCacheService.upsertFavorite(localAssetUserId, localFavorite);
+      setFavoriteMeals(previous => upsertFavoriteMeal(previous, localFavorite));
+      setFavoriteMealsSource('cache');
+      setFeedbackMessage('已加入本机收藏餐，联网后会继续同步。');
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : '加入收藏餐失败，请稍后再试。');
+      if (localAssetUserId && isLikelyNetworkFailure(error)) {
+        try {
+          const localFavorite = buildFavoriteFromMeal(meal);
+          await FavoriteMealsCacheService.upsertFavorite(localAssetUserId, localFavorite);
+          setFavoriteMeals(previous => upsertFavoriteMeal(previous, localFavorite));
+          setFavoriteMealsSource('cache');
+          setFeedbackMessage('已加入本机收藏餐，联网后会继续同步。');
+        } catch (fallbackError) {
+          setActionError(fallbackError instanceof Error ? fallbackError.message : '加入收藏餐失败，请稍后再试。');
+        }
+      } else {
+        setActionError(error instanceof Error ? error.message : '加入收藏餐失败，请稍后再试。');
+      }
     } finally {
       setFavoriteActionId(null);
     }
@@ -587,10 +715,39 @@ const LogView: React.FC<LogViewProps> = ({
     setFeedbackMessage('已填入收藏餐，可继续编辑后保存。');
     setFavoriteActionId(`use:${favorite.id}`);
     try {
+      if (favorite.id < 0) {
+        if (localAssetUserId) {
+          const updatedFavorite = await FavoriteMealsCacheService.markUsed(localAssetUserId, favorite.id);
+          if (updatedFavorite) {
+            setFavoriteMeals(previous => upsertFavoriteMeal(previous, updatedFavorite));
+          }
+        }
+        setFavoriteMealsSource('cache');
+        setFeedbackMessage('已填入本机收藏餐，可继续编辑后保存。');
+        return;
+      }
+
       const updatedFavorite = await MealsAPI.useFavorite(favorite.id);
+      if (localAssetUserId) {
+        await FavoriteMealsCacheService.upsertFavorite(localAssetUserId, updatedFavorite);
+      }
       setFavoriteMeals(previous => upsertFavoriteMeal(previous, updatedFavorite));
+      setFavoriteMealsSource('server');
     } catch (error) {
-      setFavoriteMealsError(error instanceof Error ? error.message : '已填入表单，但收藏餐使用次数同步失败。');
+      if (localAssetUserId && isLikelyNetworkFailure(error)) {
+        try {
+          const cachedFavorite = await FavoriteMealsCacheService.markUsed(localAssetUserId, favorite.id);
+          if (cachedFavorite) {
+            setFavoriteMeals(previous => upsertFavoriteMeal(previous, cachedFavorite));
+            setFavoriteMealsSource('cache');
+          }
+          setFeedbackMessage('已填入收藏餐，本机已记录使用次数。');
+        } catch {
+          setFavoriteMealsError(error instanceof Error ? error.message : '已填入表单，但收藏餐使用次数同步失败。');
+        }
+      } else {
+        setFavoriteMealsError(error instanceof Error ? error.message : '已填入表单，但收藏餐使用次数同步失败。');
+      }
     } finally {
       setFavoriteActionId(null);
     }
@@ -603,8 +760,13 @@ const LogView: React.FC<LogViewProps> = ({
     setFavoriteActionId(`delete:${favorite.id}`);
     setFavoriteMealsError(null);
     try {
-      await MealsAPI.deleteFavorite(favorite.id);
+      if (favorite.id > 0) {
+        await MealsAPI.deleteFavorite(favorite.id);
+      }
       setFavoriteMeals(previous => previous.filter(item => item.id !== favorite.id));
+      if (localAssetUserId) {
+        await FavoriteMealsCacheService.deleteFavorite(localAssetUserId, favorite.id);
+      }
       setFeedbackMessage('已移除收藏餐。');
     } catch (error) {
       setFavoriteMealsError(error instanceof Error ? error.message : '删除收藏餐失败，请稍后再试。');
@@ -1246,9 +1408,9 @@ const LogView: React.FC<LogViewProps> = ({
                        <div className="space-y-2">
                             <div className="flex items-center justify-between px-1">
                                 <label className="text-xs text-slate-500 font-serif font-bold tracking-wide">收藏餐</label>
-                                {isLoadingFavoriteMeals && (
-                                  <span className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">加载中...</span>
-                                )}
+                                <span className="text-[10px] text-slate-500 font-serif font-bold tracking-wide">
+                                  {isLoadingFavoriteMeals ? '加载中...' : favoriteMealsSource === 'server' ? '云端同步' : favoriteMealsSource === 'cache' ? '本机缓存' : '暂无资产'}
+                                </span>
                             </div>
                             {favoriteMealsError && (
                               <p className="rounded-lg border border-amber-300/20 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-100 font-serif leading-relaxed">

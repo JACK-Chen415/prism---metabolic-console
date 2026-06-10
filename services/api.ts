@@ -38,9 +38,6 @@ export const resolveApiBaseUrl = (): string => {
         || Boolean(locationRef && locationRef.protocol === 'https:' && !isLocalHostname(locationRef.hostname));
 
     if (isProductionRuntime) {
-        if (!configuredApiUrl) {
-            throw new Error('生产前端必须配置 VITE_API_URL，不能回退到本地 API。');
-        }
         if (parsed.isAbsolute && isLocalHostname(parsed.url.hostname)) {
             throw new Error('生产前端的 VITE_API_URL 不能指向 localhost、127.0.0.1 或 0.0.0.0。');
         }

@@ -7,6 +7,7 @@ Create Date: 2026-06-07 11:20:00
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 revision = "20260607_0014"
@@ -14,8 +15,8 @@ down_revision = "20260606_0013"
 branch_labels = None
 depends_on = None
 
-meal_type = sa.Enum("BREAKFAST", "LUNCH", "DINNER", "SNACK", name="mealtype")
-food_category = sa.Enum("STAPLE", "MEAT", "VEG", "DRINK", "SNACK", name="foodcategory")
+meal_type = postgresql.ENUM("BREAKFAST", "LUNCH", "DINNER", "SNACK", name="mealtype", create_type=False)
+food_category = postgresql.ENUM("STAPLE", "MEAT", "VEG", "DRINK", "SNACK", name="foodcategory", create_type=False)
 
 
 def upgrade() -> None:

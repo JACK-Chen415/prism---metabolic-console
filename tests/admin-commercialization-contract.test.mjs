@@ -26,6 +26,7 @@ test('admin commercialization summary stays aggregate-only and wired to UI', () 
   for (const required of [
     '商业化概览',
     'commercializationSummary',
+    'mock 订阅',
     'usage_pressure',
     '用量压力',
     '付费活跃',

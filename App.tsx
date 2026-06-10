@@ -18,6 +18,7 @@ import LoginView from './components/views/LoginView';
 import RegisterView from './components/views/RegisterView';
 import ForgotPasswordView from './components/views/ForgotPasswordView';
 import ComplianceView from './components/views/ComplianceView';
+import CameraView from './components/views/CameraView';
 import { TokenManager } from './services/api';
 import { syncScheduler } from './services/offline';
 import { getLocalDateString } from './services/date';
@@ -127,6 +128,7 @@ const App: React.FC = () => {
   const { currentView, setCurrentView, navigate, isTransitioning, setIsTransitioning } = useNavigation();
   const [isAuthChecked, setIsAuthChecked] = useState(false);
   const [pendingIntakeSession, setPendingIntakeSession] = useState<IntakeDraftSession | null>(null);
+  const [isOffline, setIsOffline] = useState(() => typeof navigator !== 'undefined' && !navigator.onLine);
   const [smartInsightWarningPopup, setSmartInsightWarningPopup] = useState<AppMessage | null>(null);
   const [activeComplianceDocument, setActiveComplianceDocument] = useState<ComplianceDocumentKey | null>(null);
   const shownSmartInsightWarningIdsRef = useRef<Set<number>>(new Set());
@@ -228,6 +230,17 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    const syncOfflineState = () => setIsOffline(!navigator.onLine);
+    window.addEventListener('online', syncOfflineState);
+    window.addEventListener('offline', syncOfflineState);
+    syncOfflineState();
+    return () => {
+      window.removeEventListener('online', syncOfflineState);
+      window.removeEventListener('offline', syncOfflineState);
+    };
+  }, []);
+
+  useEffect(() => {
     if (isGuest || currentView === View.MESSAGES || appMessages.length === 0) {
       setSmartInsightWarningPopup(null);
       return;
@@ -263,7 +276,13 @@ const App: React.FC = () => {
   }
 
   return (
-    <AppShell currentView={currentView} onViewChange={handleNavChange}>
+    <AppShell
+      currentView={currentView}
+      onViewChange={handleNavChange}
+      isOffline={isOffline}
+      offlineQueueCount={meals.filter(meal => meal.syncStatus && meal.syncStatus !== 'SYNCED').length}
+      intakeDraftCount={pendingIntakeSession?.candidates.length || 0}
+    >
       {currentView === View.LOGIN && (
         <LoginView
           onViewChange={(view) => {
@@ -337,7 +356,10 @@ const App: React.FC = () => {
       )}
 
       {currentView === View.PACKAGED_FOOD_SCAN && (
-        <PackagedFoodScanView onViewChange={handleNavChange} />
+        <PackagedFoodScanView
+          onViewChange={handleNavChange}
+          medicalConditions={medicalConditions}
+        />
       )}
 
       {currentView === View.PROFILE && (

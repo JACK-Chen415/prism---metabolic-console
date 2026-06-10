@@ -46,7 +46,8 @@ def test_knowledge_admin_item_hashes_query_excerpt():
         matched_food_codes_json=["beer"],
         unmapped_conditions_json=[],
         called_cloud=True,
-        cloud_call_reason="cloud supplement",
+        cloud_call_reason="本地已命中部分知识，调用云端补充解释与替代建议。",
+        cloud_blocked_reason="本地命中过敏、AVOID 或 LIMIT 约束，云端不得放宽。",
     )
     row.created_at = datetime(2026, 5, 30, tzinfo=timezone.utc)
 
@@ -60,6 +61,32 @@ def test_knowledge_admin_item_hashes_query_excerpt():
     assert admin_route._knowledge_item(row).query_excerpt_hash == stored_hash
     assert item.origin == "MIXED"
     assert item.fallback_status == "LOCAL_PARTIAL_ALLOW_CLOUD"
+    assert item.cloud_call_reason == "partial_local_cloud_supplement"
+    assert item.cloud_blocked_reason == "local_rule_safety_block"
+
+
+def test_security_admin_item_hides_raw_metadata_but_keeps_keys():
+    row = SecurityAuditLog(
+        id=7,
+        user_id=2,
+        event_type="admin.feedback.list",
+        event_status="success",
+        route_name="/api/admin/feedback",
+        actor_hash=hash_sensitive_value("13800138000"),
+        ip_hash=hash_sensitive_value("127.0.0.1"),
+        user_agent_hash=hash_sensitive_value("pytest"),
+        session_id="session-1",
+        metadata_json={"limit": 50, "raw_note": "should not surface"},
+    )
+    row.created_at = datetime(2026, 5, 30, tzinfo=timezone.utc)
+
+    item = admin_route._security_item(row)
+    serialized = item.model_dump_json()
+
+    assert item.metadata_json is None
+    assert item.metadata_keys == ["limit", "raw_note"]
+    assert "should not surface" not in serialized
+    assert "metadata_json" in serialized
 
 
 def test_feedback_admin_item_never_exposes_raw_correction_text():

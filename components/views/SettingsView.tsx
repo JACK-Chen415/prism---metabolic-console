@@ -1237,7 +1237,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onViewChange, userProfile, 
                         <ListItem
                             icon="workspace_premium"
                             label="订阅与权益"
-                            value="FREE / PRO / COACH"
+                            value="FREE / PRO / COACH · mock"
                             onClick={() => onViewChange(View.BILLING)}
                         />
                         <ListItem
