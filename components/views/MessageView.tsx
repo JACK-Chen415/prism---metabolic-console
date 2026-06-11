@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, AppMessage } from '../../types';
+import { formatInsightAttribution, formatSmartInsightContent, formatSmartInsightTitle } from '../../services/insightDisplay';
 
 interface MessageViewProps {
   onViewChange: (view: View) => void;
@@ -81,7 +82,7 @@ const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages, onMar
             </button>
             <div className="flex flex-col">
               <h1 className="text-white text-xl font-bold font-serif tracking-widest">AI 洞察记录</h1>
-              <span className="text-[10px] text-primary/40 font-serif tracking-[0.3em] uppercase mt-0.5">Archive</span>
+              <span className="text-[10px] text-primary/40 font-serif tracking-[0.3em] uppercase mt-0.5">归档</span>
             </div>
           </div>
         </div>
@@ -120,6 +121,9 @@ const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages, onMar
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {filteredMessages.map((msg) => {
           const styles = getTypeStyles(msg.type);
+          const displayTitle = formatSmartInsightTitle(msg.title, msg.attribution);
+          const displayContent = formatSmartInsightContent(msg.content, msg.attribution);
+          const displayAttribution = formatInsightAttribution(msg.attribution);
           return (
             <div
               key={msg.id}
@@ -139,7 +143,7 @@ const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages, onMar
                       <div className={`w-8 h-8 rounded-full ${styles.iconBg} flex items-center justify-center border border-white/5`}>
                         <span className={`material-symbols-outlined ${styles.iconColor} text-lg`}>{styles.icon}</span>
                       </div>
-                      <h3 className="text-white text-lg font-bold font-serif tracking-wide">{msg.title}</h3>
+                      <h3 className="text-white text-lg font-bold font-serif tracking-wide">{displayTitle}</h3>
                     </div>
                     <span className="text-white/30 text-xs font-serif tracking-wider font-light">{msg.time}</span>
                   </div>
@@ -147,12 +151,12 @@ const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages, onMar
                   {/* Content */}
                   <div className="pl-11">
                     <p className="text-slate-300 text-sm leading-relaxed font-serif text-justify">
-                      {msg.content}
+                      {displayContent}
                     </p>
 
                     {/* Attribution */}
                     <p className="mt-3 text-[10px] text-slate-500 font-serif border-l-2 border-white/10 pl-2 leading-tight">
-                      {msg.attribution}
+                      {displayAttribution}
                     </p>
                   </div>
                 </div>

@@ -22,6 +22,7 @@ import CameraView from './components/views/CameraView';
 import { TokenManager } from './services/api';
 import { syncScheduler } from './services/offline';
 import { getLocalDateString } from './services/date';
+import { formatSmartInsightContent, formatSmartInsightTitle } from './services/insightDisplay';
 import { SPLASH_DURATION_MS, VIEW_TRANSITION_MS } from './constants/app';
 import { useNavigation } from './hooks/useNavigation';
 import { useAppData } from './hooks/useAppData';
@@ -55,8 +56,11 @@ const SmartInsightWarningPopup: React.FC<SmartInsightWarningPopupProps> = ({
 }) => {
   if (!message) return null;
 
+  const displayTitle = formatSmartInsightTitle(message.title, message.attribution);
+  const displayContent = formatSmartInsightContent(message.content, message.attribution);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center px-4 pb-5 pt-10 sm:items-center sm:pb-10">
+    <div className="fixed inset-0 z-50 flex items-end justify-center px-4 pb-[calc(8rem+env(safe-area-inset-bottom))] pt-10 sm:items-center sm:pb-10">
       <button
         type="button"
         aria-label="关闭智能预警"
@@ -85,10 +89,10 @@ const SmartInsightWarningPopup: React.FC<SmartInsightWarningPopupProps> = ({
                 id="smart-insight-warning-title"
                 className="mt-1 text-lg font-bold leading-snug tracking-wide text-white font-serif"
               >
-                {message.title}
+                {displayTitle}
               </h2>
               <p className="mt-2 text-sm leading-6 text-slate-300 font-serif">
-                {getShortMessageBody(message.content)}
+                {getShortMessageBody(displayContent)}
               </p>
             </div>
 

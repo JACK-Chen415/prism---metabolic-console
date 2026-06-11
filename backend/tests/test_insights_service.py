@@ -1,3 +1,4 @@
+import re
 from datetime import date, datetime, time
 from types import SimpleNamespace
 
@@ -87,8 +88,8 @@ def test_missing_lunch_detected_only_inside_default_window() -> None:
     assert [candidate.category for candidate in candidates] == [InsightCategory.MISSING_MEAL]
     assert candidates[0].meal_type == MealType.LUNCH
     assert candidates[0].severity == InsightSeverity.ADVICE
-    assert "Log lunch" in candidates[0].title
-    assert "Add it now" in candidates[0].message
+    assert "记录午餐" in candidates[0].title
+    assert "现在补充这一餐" in candidates[0].message
     assert candidates[0].signals["window_start"] == "12:00"
     assert candidates[0].signals["window_end"] == "14:00"
 
@@ -160,14 +161,14 @@ def test_calorie_high_and_low_use_meal_type_bands_from_daily_target() -> None:
 
     assert f"{TARGET_DATE}:calories:breakfast_low" in calorie_candidates
     assert calorie_candidates[f"{TARGET_DATE}:calories:breakfast_low"].severity == InsightSeverity.ADVICE
-    assert "Round out this breakfast" in calorie_candidates[f"{TARGET_DATE}:calories:breakfast_low"].title
-    assert "add a balanced side" in calorie_candidates[f"{TARGET_DATE}:calories:breakfast_low"].message
+    assert "早餐可以再补足一些" in calorie_candidates[f"{TARGET_DATE}:calories:breakfast_low"].title
+    assert "优质蛋白" in calorie_candidates[f"{TARGET_DATE}:calories:breakfast_low"].message
     assert calorie_candidates[f"{TARGET_DATE}:calories:breakfast_low"].signals["band_min"] == 400
 
     assert f"{TARGET_DATE}:calories:lunch_high" in calorie_candidates
     assert calorie_candidates[f"{TARGET_DATE}:calories:lunch_high"].severity == InsightSeverity.WARNING
-    assert "Scale back this lunch" in calorie_candidates[f"{TARGET_DATE}:calories:lunch_high"].title
-    assert "trim one calorie-dense item" in calorie_candidates[f"{TARGET_DATE}:calories:lunch_high"].message
+    assert "午餐热量偏高" in calorie_candidates[f"{TARGET_DATE}:calories:lunch_high"].title
+    assert "减少一项高热量食物" in calorie_candidates[f"{TARGET_DATE}:calories:lunch_high"].message
     assert calorie_candidates[f"{TARGET_DATE}:calories:lunch_high"].signals["band_max"] == 800
 
 
@@ -185,8 +186,8 @@ def test_sodium_excess_uses_daily_limit() -> None:
 
     assert len(sodium) == 1
     assert sodium[0].severity == InsightSeverity.WARNING
-    assert "Lower sodium for the rest of today" in sodium[0].title
-    assert "choose lower-sodium foods" in sodium[0].message
+    assert "注意控钠" in sodium[0].title
+    assert "低钠食物" in sodium[0].message
     assert sodium[0].signals == {"sodium_mg": 2600, "limit_mg": 2300}
 
 
@@ -220,8 +221,8 @@ def test_purine_excess_only_emits_for_active_gout_target_users() -> None:
     purine = [candidate for candidate in with_gout if candidate.category == InsightCategory.PURINE]
 
     assert len(purine) == 1
-    assert "lower purine" in purine[0].title
-    assert "avoid more high-purine choices" in purine[0].message
+    assert "降低嘌呤" in purine[0].title
+    assert "高嘌呤选择" in purine[0].message
     assert purine[0].signals == {"purine_mg": 360, "limit_mg": 300}
     assert not [candidate for candidate in without_gout if candidate.category == InsightCategory.PURINE]
 
@@ -244,8 +245,8 @@ def test_macro_imbalance_emits_strongest_ratio_when_macro_data_is_present() -> N
 
     assert len(macro) == 1
     assert macro[0].meal_type == MealType.LUNCH
-    assert "Add more protein" in macro[0].title
-    assert "lean protein" in macro[0].message
+    assert "增加蛋白质" in macro[0].title
+    assert "优质蛋白" in macro[0].message
     assert macro[0].signals["imbalance"] == "carb_heavy"
     assert macro[0].signals["carbs_ratio"] > 0.65
 
@@ -273,8 +274,8 @@ def test_low_fiber_heuristic_only_runs_when_fiber_data_exists() -> None:
 
     assert len(fiber) == 1
     assert fiber[0].severity == InsightSeverity.ADVICE
-    assert "Add more fiber" in fiber[0].title
-    assert "vegetables, beans, fruit, or whole grains" in fiber[0].message
+    assert "膳食纤维偏少" in fiber[0].title
+    assert "蔬菜、豆类、水果或全谷物" in fiber[0].message
     assert fiber[0].signals["fiber_g"] == 1.2
     assert not [candidate for candidate in without_fiber_data if candidate.category == InsightCategory.FIBER]
 
@@ -347,24 +348,24 @@ def test_knowledge_cautions_are_aggregated_by_meal_with_highest_severity() -> No
             MealKnowledgeCaution(
                 meal_id="m1",
                 meal_type=MealType.LUNCH,
-                food_name="shrimp",
+                food_name="虾",
                 recommendation_level=RecommendationLevel.AVOID.value,
-                summary="avoid shrimp for allergy",
+                summary="虾过敏风险",
                 hard_blocks=["allergy: shrimp"],
             ),
             MealKnowledgeCaution(
                 meal_id="m2",
                 meal_type=MealType.LUNCH,
-                food_name="beer",
+                food_name="啤酒",
                 recommendation_level=RecommendationLevel.LIMIT.value,
-                summary="limit beer for gout",
+                summary="痛风需限制啤酒",
             ),
             MealKnowledgeCaution(
                 meal_id="m2",
                 meal_type=MealType.LUNCH,
-                food_name="beer",
+                food_name="啤酒",
                 recommendation_level=RecommendationLevel.LIMIT.value,
-                summary="limit beer for gout",
+                summary="痛风需限制啤酒",
             ),
         ],
     )
@@ -373,11 +374,11 @@ def test_knowledge_cautions_are_aggregated_by_meal_with_highest_severity() -> No
 
     assert len(cautions) == 1
     assert cautions[0].severity == InsightSeverity.CRITICAL
-    assert "Remove flagged items" in cautions[0].title
-    assert "Check shrimp, beer" in cautions[0].message
-    assert "avoid the flagged items" in cautions[0].message
+    assert "风险食物" in cautions[0].title
+    assert "虾、啤酒" in cautions[0].message
+    assert "避开已标记食物" in cautions[0].message
     assert cautions[0].meal_ids == ["m1", "m2"]
-    assert cautions[0].signals["foods"] == ["shrimp", "beer"]
+    assert cautions[0].signals["foods"] == ["虾", "啤酒"]
     assert cautions[0].signals["hard_blocks"] == ["allergy: shrimp"]
 
 
@@ -460,6 +461,29 @@ def test_positive_feedback_only_when_no_stronger_candidate_exists() -> None:
 
     assert [candidate.category for candidate in positive] == [InsightCategory.POSITIVE_FEEDBACK]
     assert positive[0].severity == InsightSeverity.POSITIVE
-    assert "Keep this meal pattern going" in positive[0].title
-    assert "Repeat similar portions" in positive[0].message
+    assert "继续保持" in positive[0].title
+    assert "类似份量" in positive[0].message
     assert not [candidate for candidate in warning if candidate.category == InsightCategory.POSITIVE_FEEDBACK]
+
+
+def test_generated_smart_insight_copy_uses_simplified_chinese() -> None:
+    candidates = [
+        *_evaluate(now=datetime(2026, 5, 24, 12, 30)),
+        *_evaluate(
+            now=datetime(2026, 5, 24, 15, 0),
+            meals=[_meal(MealType.LUNCH, calories=950, sodium=2600)],
+        ),
+        *_evaluate(
+            now=datetime(2026, 5, 24, 15, 0),
+            meals=[_meal(MealType.DINNER, calories=700, protein=5, carbs=120, fat=5)],
+        ),
+    ]
+
+    legacy_fragments = ["Next step", "Scale back", "Lower sodium", "You've logged", "This meal"]
+    assert candidates
+    for candidate in candidates:
+        combined = f"{candidate.title} {candidate.message}"
+        assert re.search(r"[\u4e00-\u9fff]", candidate.title)
+        assert re.search(r"[\u4e00-\u9fff]", candidate.message)
+        for fragment in legacy_fragments:
+            assert fragment not in combined

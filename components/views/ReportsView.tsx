@@ -2,6 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { MetabolicReport, View } from '../../types';
 import { ReportsAPI } from '../../services/api';
 import { getLocalDateString } from '../../services/date';
+import {
+  formatInsightAttribution,
+  formatInsightTypeLabel,
+  formatSmartInsightContent,
+  formatSmartInsightTitle,
+} from '../../services/insightDisplay';
 
 interface ReportsViewProps {
   onViewChange: (view: View) => void;
@@ -403,9 +409,16 @@ const ReportsView: React.FC<ReportsViewProps> = ({ onViewChange }) => {
                 </div>
                 <div className="mt-3 space-y-2">
                   {latestInsights.slice(0, 5).map((insight, index) => {
-                    const title = insight.title?.trim() || '代谢洞察';
-                    const content = insight.content?.trim() || '暂无洞察正文。';
-                    const typeLabel = insight.type || 'insight';
+                    const title = formatSmartInsightTitle(
+                      insight.title?.trim() || '代谢洞察',
+                      insight.attribution,
+                    );
+                    const content = formatSmartInsightContent(
+                      insight.content?.trim() || '暂无洞察正文。',
+                      insight.attribution,
+                    );
+                    const typeLabel = formatInsightTypeLabel(insight.type);
+                    const attribution = formatInsightAttribution(insight.attribution);
                     return (
                       <article key={`${title}-${index}`} className="rounded-xl border border-white/5 bg-white/[0.03] px-3 py-3">
                         <div className="flex items-start justify-between gap-3">
@@ -416,7 +429,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({ onViewChange }) => {
                         </div>
                         <p className="mt-2 break-words font-serif text-xs leading-relaxed text-slate-300">{content}</p>
                         <p className="mt-2 font-serif text-[10px] leading-relaxed text-slate-500">
-                          {insight.attribution || 'Prism'} · {formatDateTime(insight.created_at)}
+                          {attribution} · {formatDateTime(insight.created_at)}
                         </p>
                       </article>
                     );

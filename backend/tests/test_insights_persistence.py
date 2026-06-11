@@ -209,8 +209,8 @@ class FakeRouteService:
             id=50,
             user_id=1,
             message_type=MessageType.ADVICE,
-            title="Lunch calories are low",
-            content="This meal is below the expected calorie band.",
+            title="这顿午餐可以再补足一些",
+            content="这顿午餐低于预期热量区间，可补充一份优质蛋白或适量主食。",
             attribution=f"{SMART_INSIGHT_ATTRIBUTION_PREFIX}|date={TARGET_DATE.isoformat()}|key=test",
         )
         self.message.created_at = datetime(2026, 5, 24, 15, 0, tzinfo=timezone.utc)

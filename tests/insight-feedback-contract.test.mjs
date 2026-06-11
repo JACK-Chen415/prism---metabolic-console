@@ -71,3 +71,35 @@ test('smart insight feedback is wired from home UI to audited backend storage', 
     assert.ok(backendTest.includes(required), `Missing backend insight feedback test: ${required}`);
   }
 });
+
+test('smart insight display text is localized across visible surfaces', () => {
+  const appSource = read('App.tsx');
+  const homeSource = read('components/views/HomeView.tsx');
+  const messageSource = read('components/views/MessageView.tsx');
+  const reportSource = read('components/views/ReportsView.tsx');
+  const displaySource = read('services/insightDisplay.ts');
+
+  for (const required of [
+    'formatSmartInsightTitle',
+    'formatSmartInsightContent',
+    'formatInsightAttribution',
+    'formatInsightTypeLabel',
+    '来源：智能洞察',
+    '今天后续注意控钠',
+  ]) {
+    assert.ok(displaySource.includes(required), `Missing localized insight display helper: ${required}`);
+  }
+
+  for (const [sourceName, source, required] of [
+    ['warning popup', appSource, 'formatSmartInsightContent'],
+    ['home insight feed', homeSource, '智能洞察'],
+    ['message archive', messageSource, 'formatInsightAttribution'],
+    ['message archive label', messageSource, '归档'],
+    ['report insights', reportSource, 'formatInsightTypeLabel'],
+  ]) {
+    assert.ok(source.includes(required), `Missing localized insight surface in ${sourceName}: ${required}`);
+  }
+
+  assert.ok(!homeSource.includes('Insight Feed'), 'Home insight feed should not show an English section label');
+  assert.ok(!messageSource.includes('>Archive<'), 'Message archive should not show an English subtitle');
+});

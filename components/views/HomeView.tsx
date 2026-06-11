@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { AIFeedbackType, AppMessage, DailyTargets, Meal, View } from '../../types';
 import { InsightsAPI } from '../../services/api';
 import { formatChineseDate, getLocalDateString } from '../../services/date';
+import { formatSmartInsightContent, formatSmartInsightTitle } from '../../services/insightDisplay';
 
 interface HomeViewProps {
   onViewChange: (view: View) => void;
@@ -213,6 +214,12 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
 
   const activeMessageStyle = getMessageCardStyle(activeMessage?.type || 'ADVICE');
   const latestInsightFeedback = activeMessage ? insightFeedbackByMessage[activeMessage.id] : undefined;
+  const activeMessageTitle = activeMessage
+    ? formatSmartInsightTitle(activeMessage.title, activeMessage.attribution)
+    : '';
+  const activeMessageContent = activeMessage
+    ? formatSmartInsightContent(activeMessage.content, activeMessage.attribution)
+    : '';
 
   useEffect(() => {
     if (!activeMessage?.id) return;
@@ -332,7 +339,7 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
     : 'border-emerald-300/20 bg-emerald-500/[0.07] text-emerald-100';
 
   return (
-    <div className="min-h-full bg-[#091111] pb-28 font-serif font-bold tracking-wide text-slate-100">
+    <div className="min-h-full bg-transparent pb-28 font-serif font-bold tracking-wide text-slate-100">
       <header className="px-4 pt-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -512,7 +519,7 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
       <section className="px-4 pt-5">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-[10px] uppercase text-slate-500">Insight Feed</p>
+            <p className="text-[10px] uppercase text-slate-500">智能洞察</p>
             <h2 className="mt-1 text-lg text-white">最新洞察</h2>
           </div>
           <button
@@ -534,10 +541,10 @@ const HomeView: React.FC<HomeViewProps> = ({ onViewChange, meals, dailyTargets, 
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-3">
-                  <h3 className="truncate text-base text-white">{activeMessage.title}</h3>
+                  <h3 className="truncate text-base text-white">{activeMessageTitle}</h3>
                   <span className="shrink-0 text-[10px] uppercase text-slate-500">{activeMessageStyle.label}</span>
                 </div>
-                <p className="mt-2 text-sm leading-6 text-slate-300">{activeMessage.content}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-300">{activeMessageContent}</p>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   {INSIGHT_FEEDBACK_CHOICES.map((choice) => {
                     const isSelected = latestInsightFeedback === choice.type;

@@ -294,10 +294,10 @@ class SmartInsightEvaluator:
                     key=f"{context.target_date}:missing:{state.meal_type.value.lower()}",
                     category=InsightCategory.MISSING_MEAL,
                     severity=InsightSeverity.ADVICE,
-                    title=f"Log {_meal_label(state.meal_type)} before {state.ends_at.strftime('%H:%M')}",
+                    title=f"请在 {state.ends_at.strftime('%H:%M')} 前记录{_meal_label(state.meal_type)}",
                     message=(
-                        f"The {_meal_label(state.meal_type)} window is open until "
-                        f"{state.ends_at.strftime('%H:%M')}. Add it now so today's coaching stays accurate."
+                        f"{_meal_label(state.meal_type)}记录窗口会持续到 {state.ends_at.strftime('%H:%M')}。"
+                        "现在补充这一餐，今天的建议会更准确。"
                     ),
                     target_date=context.target_date,
                     meal_type=state.meal_type,
@@ -331,11 +331,11 @@ class SmartInsightEvaluator:
                             key=f"{context.target_date}:calories:snack_high",
                             category=InsightCategory.CALORIES,
                             severity=InsightSeverity.ADVICE,
-                            title="Keep snacks lighter for the rest of today",
+                            title="今天后续加餐尽量清淡",
                             message=(
-                                f"This snack logged {_format_number(calories)} kcal, above your "
-                                f"{_format_number(threshold)} kcal snack threshold. Next step: skip one extra add-on "
-                                "or choose a lighter option later today."
+                                f"加餐已记录约 {_format_number(calories)} kcal，高于 "
+                                f"{_format_number(threshold)} kcal 的加餐参考线。下一步：今天后续少加一项高热量配料，"
+                                "或选择更清淡的食物。"
                             ),
                             target_date=context.target_date,
                             meal_type=meal_type,
@@ -357,11 +357,11 @@ class SmartInsightEvaluator:
                         key=f"{context.target_date}:calories:{meal_type.value.lower()}_high",
                         category=InsightCategory.CALORIES,
                         severity=InsightSeverity.WARNING,
-                        title=f"Scale back this {_meal_label(meal_type)}",
+                        title=f"这顿{_meal_label(meal_type)}热量偏高",
                         message=(
-                            f"This {_meal_label(meal_type)} logged {_format_number(calories)} kcal, above your "
-                            f"{_format_number(lower)}-{_format_number(upper)} kcal target band. Next step: trim one "
-                            "calorie-dense item or portion next time."
+                            f"这顿{_meal_label(meal_type)}记录约 {_format_number(calories)} kcal，高于 "
+                            f"{_format_number(lower)}-{_format_number(upper)} kcal 的目标区间。下一步："
+                            "下次减少一项高热量食物或适当减量。"
                         ),
                         target_date=context.target_date,
                         meal_type=meal_type,
@@ -380,11 +380,11 @@ class SmartInsightEvaluator:
                         key=f"{context.target_date}:calories:{meal_type.value.lower()}_low",
                         category=InsightCategory.CALORIES,
                         severity=InsightSeverity.ADVICE,
-                        title=f"Round out this {_meal_label(meal_type)} a bit more",
+                        title=f"这顿{_meal_label(meal_type)}可以再补足一些",
                         message=(
-                            f"This {_meal_label(meal_type)} logged {_format_number(calories)} kcal, below your "
-                            f"{_format_number(lower)}-{_format_number(upper)} kcal target band. Next step: add a "
-                            "balanced side like protein, fruit, or a staple portion."
+                            f"这顿{_meal_label(meal_type)}记录约 {_format_number(calories)} kcal，低于 "
+                            f"{_format_number(lower)}-{_format_number(upper)} kcal 的目标区间。下一步："
+                            "可补充一份优质蛋白、水果或适量主食。"
                         ),
                         target_date=context.target_date,
                         meal_type=meal_type,
@@ -413,11 +413,11 @@ class SmartInsightEvaluator:
                 key=f"{context.target_date}:sodium:daily_excess",
                 category=InsightCategory.SODIUM,
                 severity=InsightSeverity.WARNING,
-                title="Lower sodium for the rest of today",
+                title="今天后续注意控钠",
                 message=(
-                    f"You've logged {_format_number(total)} mg sodium, above your "
-                    f"{_format_number(limit)} mg daily limit. Next step: skip extra sauces and choose lower-sodium "
-                    "foods for later meals."
+                    f"今天已记录约 {_format_number(total)} mg 钠，高于 "
+                    f"{_format_number(limit)} mg 的每日上限。下一步：后续餐食少放酱料和汤汁，"
+                    "优先选择低钠食物。"
                 ),
                 target_date=context.target_date,
                 meal_ids=_meal_ids(meals),
@@ -442,11 +442,10 @@ class SmartInsightEvaluator:
                 key=f"{context.target_date}:purine:gout_excess",
                 category=InsightCategory.PURINE,
                 severity=InsightSeverity.WARNING,
-                title="Keep the rest of today lower purine",
+                title="今天后续注意降低嘌呤",
                 message=(
-                    f"You've logged {_format_number(total)} mg purine, above your gout-focused "
-                    f"{_format_number(limit)} mg limit. Next step: avoid more high-purine choices like beer or organ "
-                    "meats in later meals."
+                    f"今天已记录约 {_format_number(total)} mg 嘌呤，高于痛风管理参考上限 "
+                    f"{_format_number(limit)} mg。下一步：后续餐食避开啤酒、动物内脏、浓肉汤等高嘌呤选择。"
                 ),
                 target_date=context.target_date,
                 meal_ids=_meal_ids(meals),
@@ -520,10 +519,10 @@ class SmartInsightEvaluator:
                     key=f"{context.target_date}:fiber:{meal_type.value.lower()}_low",
                     category=InsightCategory.FIBER,
                     severity=InsightSeverity.ADVICE,
-                    title=f"Add more fiber to {_meal_label(meal_type)}",
+                    title=f"这顿{_meal_label(meal_type)}膳食纤维偏少",
                     message=(
-                        f"This {_meal_label(meal_type)} logged {_format_number(fiber)} g fiber. Next step: add "
-                        "vegetables, beans, fruit, or whole grains to bring it up."
+                        f"这顿{_meal_label(meal_type)}记录约 {_format_number(fiber)} g 膳食纤维。"
+                        "下一步：可增加蔬菜、豆类、水果或全谷物。"
                     ),
                     target_date=context.target_date,
                     meal_type=meal_type,
@@ -597,8 +596,8 @@ class SmartInsightEvaluator:
                 key=f"{context.target_date}:positive:daily_no_warning",
                 category=InsightCategory.POSITIVE_FEEDBACK,
                 severity=InsightSeverity.POSITIVE,
-                title="Keep this meal pattern going",
-                message="Today's logged meals stayed within current rules. Repeat similar portions and meal choices next time.",
+                title="继续保持当前饮食节奏",
+                message="今天已记录餐食均在当前规则范围内。下次可以延续类似份量和食物搭配。",
                 target_date=context.target_date,
                 meal_ids=_meal_ids(meals),
                 signals={"meal_count": len(meals)},
@@ -979,7 +978,13 @@ def _meal_ids(meals: Iterable[MealInsightInput]) -> list[str]:
 
 
 def _meal_label(meal_type: MealType) -> str:
-    return meal_type.value.lower()
+    labels = {
+        MealType.BREAKFAST: "早餐",
+        MealType.LUNCH: "午餐",
+        MealType.DINNER: "晚餐",
+        MealType.SNACK: "加餐",
+    }
+    return labels.get(meal_type, "这一餐")
 
 
 def _format_number(value: float) -> str:
@@ -992,32 +997,31 @@ def _format_number(value: float) -> str:
 def _macro_title(meal_type: MealType, imbalance: str) -> str:
     meal_label = _meal_label(meal_type)
     if imbalance == "carb_heavy":
-        return f"Add more protein to this {meal_label}"
+        return f"这顿{meal_label}需要增加蛋白质"
     if imbalance == "fat_heavy":
-        return f"Lighten the fattier parts of this {meal_label}"
-    return f"Add a stronger protein source to this {meal_label}"
+        return f"这顿{meal_label}油脂占比偏高"
+    return f"这顿{meal_label}蛋白质偏少"
 
 
 def _macro_message(meal_type: MealType, imbalance: str) -> str:
     meal_label = _meal_label(meal_type)
     if imbalance == "carb_heavy":
         return (
-            f"This {meal_label} skews carb heavy. Next step: pair the starch-heavy items with lean protein or extra "
-            "vegetables."
+            f"这顿{meal_label}主食或碳水占比偏高。下一步：把主食搭配优质蛋白或更多蔬菜。"
         )
     if imbalance == "fat_heavy":
         return (
-            f"This {meal_label} skews fat heavy. Next step: swap one fried, oily, or creamy item for a leaner choice."
+            f"这顿{meal_label}油脂占比偏高。下一步：把一项油炸、重油或奶油类食物换成更清淡的选择。"
         )
     return (
-        f"This {meal_label} is light on protein. Next step: add eggs, tofu, dairy, fish, or another protein source."
+        f"这顿{meal_label}蛋白质偏少。下一步：可加入鸡蛋、豆腐、奶制品、鱼肉或其他蛋白来源。"
     )
 
 
 def _condition_caution_title(meal_type: MealType, severity: InsightSeverity) -> str:
     if severity == InsightSeverity.CRITICAL:
-        return f"Remove flagged items from this {_meal_label(meal_type)}"
-    return f"Adjust this {_meal_label(meal_type)} for condition safety"
+        return f"这顿{_meal_label(meal_type)}包含需避开的风险食物"
+    return f"根据健康档案调整这顿{_meal_label(meal_type)}"
 
 
 def _condition_caution_message(
@@ -1027,10 +1031,28 @@ def _condition_caution_message(
     hard_blocks: Sequence[str],
 ) -> str:
     meal_label = _meal_label(meal_type)
-    food_text = f"Check {', '.join(foods[:2])}" if foods else f"Check this {meal_label}"
-    action = "avoid the flagged items and choose a safer swap" if hard_blocks else "limit or swap the flagged items"
-    note_text = f" {notes[0]}" if notes else ""
-    return f"{food_text} before repeating this {meal_label}. Next step: {action}.{note_text}"
+    chinese_foods = [
+        str(food).strip()
+        for food in foods
+        if str(food).strip() and _contains_cjk(str(food))
+    ]
+    food_text = "、".join(chinese_foods[:2]) if chinese_foods else f"这顿{meal_label}中的风险食物"
+    action = "避开已标记食物，并选择更安全的替代项" if hard_blocks else "减少份量或替换已标记食物"
+    note = _first_chinese_note(notes)
+    note_text = f"参考提示：{note}" if note else "请以健康档案中的过敏和慢病规则为准。"
+    return f"再次选择前，请先确认{food_text}。下一步：{action}。{note_text}"
+
+
+def _contains_cjk(value: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in value)
+
+
+def _first_chinese_note(notes: Sequence[str]) -> str:
+    for note in notes:
+        text = str(note).strip()
+        if text and _contains_cjk(text):
+            return text
+    return ""
 
 
 def _candidate_priority(candidate: InsightCandidate) -> tuple[int, int, int, str]:
