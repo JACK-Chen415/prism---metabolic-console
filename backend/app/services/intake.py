@@ -1,4 +1,24 @@
-"""Multimodal intake parsing and confirmation service."""
+"""Multimodal intake parsing and confirmation service.
+
+File layout (top to bottom):
+    1. Imports
+    2. Constants: category aliases, meal type hints, regex patterns,
+       log intent keywords, fallback priority, generic nutrition hints
+    3. IntakeService: facade exposing public API (parse_voice, parse_text,
+       voice_auto_log, parse_photo_result, confirm, reevaluate_confirm_item)
+    4. Private helpers grouped by concern:
+         - Candidate construction from voice / photo / confirm item
+         - Meal construction and nutrition estimation
+         - Text segmentation / cleaning / intent detection
+         - Amount / unit / category normalization
+         - Warnings, audit logging, source detail helpers
+
+IntakeService is intentionally a single large class: the public API surface
+is small and stable, and most private helpers share mutable instance state
+(self.knowledge_service). Splitting into Mixins added complexity without
+real reuse, so we kept the facade and rely on this layout + the README in
+backend/app/services/intake/README.md to keep navigation tractable.
+"""
 
 from __future__ import annotations
 
@@ -321,6 +341,14 @@ FALLBACK_PRIORITY = {
     FallbackStatus.LOCAL_COMPLETE: 2,
     FallbackStatus.LOCAL_BLOCKED_NO_CLOUD: 3,
 }
+
+
+# ---------------------------------------------------------------------------
+# IntakeService facade
+# Public API: parse_voice, parse_text, voice_auto_log, parse_photo_result,
+# confirm, reevaluate_confirm_item. See backend/app/services/intake/README.md
+# for full method index.
+# ---------------------------------------------------------------------------
 
 
 class IntakeService:

@@ -13,6 +13,12 @@ from app.core.config import settings
 from app.models.user import User
 from app.models.health_condition import HealthCondition
 from app.schemas.chat import NutritionInfo, FoodRecognitionResult
+from app.services._ai_helpers import (
+    create_chat_completion,
+    enum_value,
+    format_cloud_error,
+    image_data_url,
+)
 from app.services.target_service import calculate_bmi, calculate_daily_targets
 
 logger = logging.getLogger(__name__)
@@ -76,35 +82,21 @@ class DoubaoAIService:
 
     @staticmethod
     def _enum_value(value: Any) -> Any:
-        return getattr(value, "value", value)
+        return enum_value(value)
 
     @staticmethod
     def _format_cloud_error(error: Exception) -> str:
-        detail = str(error).strip() or error.__class__.__name__
-        lowered = detail.lower()
-        if "403" in lowered or "accessdenied" in lowered or "forbidden" in lowered:
-            return f"抱歉，AI 服务当前无访问权限，请检查豆包 endpoint 绑定、账号权限或 API key 所属项目。详细：{detail}"
-        if "connection error" in lowered or "timed out" in lowered or "timeout" in lowered:
-            return f"抱歉，AI 云端服务当前不可达，请检查网络连通性或豆包 endpoint 配置。详细：{detail}"
-        if "unauthorized" in lowered or "authentication" in lowered or "api key" in lowered:
-            return f"抱歉，AI 服务认证失败，请检查 ARK_API_KEY 或 endpoint 配置。详细：{detail}"
-        return f"抱歉，服务暂时不可用：{detail}"
+        return format_cloud_error(error)
 
     @staticmethod
     def _normalize_image_type(image_type: Optional[str]) -> str:
-        raw_type = (image_type or "jpeg").strip().lower()
-        if raw_type in {"jpg", "jpeg"}:
-            return "jpeg"
-        if raw_type in {"png", "webp", "gif"}:
-            return raw_type
-        return "jpeg"
+        from app.services._ai_helpers import normalize_image_type
+
+        return normalize_image_type(image_type)
 
     @classmethod
     def _image_data_url(cls, image_base64: str, image_type: Optional[str] = None) -> str:
-        cleaned = image_base64.strip()
-        if cleaned.startswith("data:image/"):
-            return cleaned
-        return f"data:image/{cls._normalize_image_type(image_type)};base64,{cleaned}"
+        return image_data_url(image_base64, image_type)
 
     def _create_chat_completion(
         self,
@@ -115,8 +107,8 @@ class DoubaoAIService:
         stream: bool = False,
     ):
         """Create a chat completion through the single main multimodal model."""
-        return self.client.chat.completions.create(
-            model=settings.main_doubao_model,
+        return create_chat_completion(
+            self.client,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
