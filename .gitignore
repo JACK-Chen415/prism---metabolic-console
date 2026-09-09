@@ -2,6 +2,10 @@
 .env
 .env.local
 .env.*.local
+backend/.env
+backend/.env.backup.*
+backend/.env.*.local
+backend/.env.backup
 
 # Logs
 logs
@@ -41,3 +45,13 @@ uploads/
 .runtime/
 backend/.runtime/
 *.pid
+
+# Benchmark / perf test artifacts
+backend/perf_results/
+backend/scripts/benchmark_artifacts/
+backend/scripts/*.latency.json
+backend/scripts/*.latency.csv
+backend/scripts/*.retest_report.txt
+backend/scripts/*.image_check.txt
+prism_*_retest_report.txt
+prism_*_image_check.txt
