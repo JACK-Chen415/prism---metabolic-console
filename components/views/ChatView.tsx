@@ -1,3 +1,18 @@
+// ChatView layout (top to bottom). See components/views/Chat/README.md for
+// a full method index and refactor plan.
+//
+//   1. Imports
+//   2. Module-level helpers: renderMarkdown, marked config
+//   3. Types: Message, RecognizedFood, RecognitionResponse, PendingImage,
+//      PendingTextClarification
+//   4. ChatView component
+//        a. State + refs
+//        b. Session lifecycle useEffects (init, history load, persistence)
+//        c. Chat send / stream handlers
+//        d. Voice input handlers (start/stop recognition, transcript merge)
+//        e. Image input handlers (file pick, preview, attach to send)
+//        f. Intake session handling (parse, confirm, reevaluate, voice auto log)
+//        g. Render: header, messages list, input bar, intake sheet
 import React, { useState, useRef, useEffect } from 'react';
 import { ChatStreamEvent, IntakeCandidate, IntakeDraftSession, KnowledgeFallbackStatus, KnowledgeOrigin, View } from '../../types';
 import { ChatAPI, IntakeAPI, TokenManager } from '../../services/api';
