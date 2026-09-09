@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { AppMessage, ConditionData, DailyTargets, Meal, MealUpdateInput, UserProfile } from '../types';
 import { DEFAULT_DAILY_TARGETS, DEFAULT_USER_PROFILE } from '../constants/app';
 import { GUEST_APP_MESSAGES, GUEST_MEALS, GUEST_MEDICAL_DATA, GUEST_USER_PROFILE } from '../data/demoData';
-import { AuthAPI, ConditionsAPI, MealsAPI, MessagesAPI, TokenManager } from '../services/api';
+import { AuthAPI, ConditionsAPI, InsightsAPI, MealsAPI, MessagesAPI, TokenManager } from '../services/api';
 import { CacheCleanupService, OfflineMealsService, getTodayDateString, syncScheduler } from '../services/offline';
 import { clearSensitiveSessionState } from '../services/sessionState';
 import { mapCondition, mapDailyTargets, mapMeal, mapMessage, mapProfile } from '../services/mappers/appMappers';
@@ -16,6 +16,7 @@ function cachedMealToMeal(item: Awaited<ReturnType<typeof OfflineMealsService.ge
   return {
     id: item.clientId,
     clientId: item.clientId,
+    recordDate: item.recordDate,
     name: item.name,
     portion: item.portion || '1份',
     calories: item.calories || 0,
@@ -47,6 +48,7 @@ export function useAppData() {
   const [userProfile, setUserProfile] = useState<UserProfile>(DEFAULT_USER_PROFILE);
   const [medicalConditions, setMedicalConditions] = useState<ConditionData[]>([]);
   const [meals, setMeals] = useState<Meal[]>([]);
+  const [currentMealDate, setCurrentMealDate] = useState(getTodayDateString());
   const [appMessages, setAppMessages] = useState<AppMessage[]>([]);
   const [dailyTargets, setDailyTargets] = useState<DailyTargets>(DEFAULT_DAILY_TARGETS);
 
@@ -65,13 +67,22 @@ export function useAppData() {
     }
   }, []);
 
-  const refreshMeals = useCallback(async (userId: number = currentUserId ?? 0): Promise<void> => {
+  const refreshMeals = useCallback(async (
+    targetDate: string = currentMealDate,
+    userId: number = currentUserId ?? 0
+  ): Promise<void> => {
     if (!userId) return;
+    setCurrentMealDate(targetDate);
 
     try {
-      const remoteMeals = await MealsAPI.getToday() as any[];
-      const mappedRemoteMeals = Array.isArray(remoteMeals) ? remoteMeals.map(mapMeal) : [];
-      const localPending = (await OfflineMealsService.getToday(userId))
+      const remoteMealsResponse = await MealsAPI.list({ record_date: targetDate, page_size: 100 }) as any;
+      const remoteMeals = Array.isArray(remoteMealsResponse?.items)
+        ? remoteMealsResponse.items
+        : Array.isArray(remoteMealsResponse)
+          ? remoteMealsResponse
+          : [];
+      const mappedRemoteMeals = remoteMeals.map(mapMeal);
+      const localPending = (await OfflineMealsService.getByDate(userId, targetDate))
         .filter(item => item.syncStatus === 'PENDING')
         .map(cachedMealToMeal);
 
@@ -81,10 +92,44 @@ export function useAppData() {
         ...localPending.filter(meal => !remoteClientIds.has(meal.clientId)),
       ]);
     } catch {
-      const localMeals = await OfflineMealsService.getToday(userId);
+      const localMeals = await OfflineMealsService.getByDate(userId, targetDate);
       setMeals(localMeals.map(cachedMealToMeal));
     }
-  }, [currentUserId]);
+  }, [currentMealDate, currentUserId]);
+
+  const refreshMessages = useCallback(async (): Promise<void> => {
+    if (!TokenManager.isAuthenticated()) return;
+
+    try {
+      const messagesResponse = await MessagesAPI.list({ limit: 20 });
+      const messages = Array.isArray(messagesResponse) ? (messagesResponse as any[]).map(mapMessage) : [];
+      setAppMessages(messages);
+    } catch (error) {
+      console.error('刷新消息失败:', error);
+    }
+  }, []);
+
+  const refreshSmartInsightsAndMessages = useCallback(async (): Promise<void> => {
+    if (!TokenManager.isAuthenticated()) return;
+
+    try {
+      await InsightsAPI.refresh();
+    } catch (error) {
+      console.error('刷新智能洞察失败:', error);
+    }
+
+    await refreshMessages();
+  }, [refreshMessages]);
+
+  const refreshAfterMealChange = useCallback(async (
+    recordDate: string = getTodayDateString()
+  ): Promise<void> => {
+    await refreshMeals(recordDate);
+
+    if (recordDate === getTodayDateString()) {
+      await refreshSmartInsightsAndMessages();
+    }
+  }, [refreshMeals, refreshSmartInsightsAndMessages]);
 
   const loadUserData = useCallback(async (): Promise<LoadUserDataResult> => {
     try {
@@ -110,6 +155,7 @@ export function useAppData() {
       setIsGuest(false);
       setCurrentUserId(profile.id);
       setUserProfile(profile);
+      setCurrentMealDate(getTodayDateString());
 
       if (targetsRes.status === 'fulfilled') {
         setDailyTargets(mapDailyTargets(targetsRes.value));
@@ -144,13 +190,14 @@ export function useAppData() {
       }
 
       syncScheduler.start(profile.id);
+      void refreshSmartInsightsAndMessages();
       return { success: true, userId: profile.id };
     } catch (error) {
       console.error('加载用户数据失败:', error);
       TokenManager.clearTokens();
       return { success: false };
     }
-  }, []);
+  }, [refreshSmartInsightsAndMessages]);
 
   const enterGuestMode = useCallback(() => {
     TokenManager.clearTokens();
@@ -161,7 +208,22 @@ export function useAppData() {
     setUserProfile(GUEST_USER_PROFILE);
     setMedicalConditions(GUEST_MEDICAL_DATA);
     setMeals(GUEST_MEALS);
+    setCurrentMealDate(getTodayDateString());
     setAppMessages(GUEST_APP_MESSAGES);
+    setDailyTargets(DEFAULT_DAILY_TARGETS);
+  }, []);
+
+  const exitGuestMode = useCallback(() => {
+    TokenManager.clearTokens();
+    syncScheduler.stop();
+    clearSensitiveSessionState();
+    setIsGuest(false);
+    setCurrentUserId(null);
+    setUserProfile(DEFAULT_USER_PROFILE);
+    setMedicalConditions([]);
+    setMeals([]);
+    setCurrentMealDate(getTodayDateString());
+    setAppMessages([]);
     setDailyTargets(DEFAULT_DAILY_TARGETS);
   }, []);
 
@@ -175,6 +237,7 @@ export function useAppData() {
     setUserProfile(DEFAULT_USER_PROFILE);
     setMedicalConditions([]);
     setMeals([]);
+    setCurrentMealDate(getTodayDateString());
     setAppMessages([]);
     setDailyTargets(DEFAULT_DAILY_TARGETS);
 
@@ -199,8 +262,9 @@ export function useAppData() {
     }
   }, []);
 
-  const addMeal = useCallback(async (meal: Meal) => {
-    setMeals(prev => [...prev, meal]);
+  const addMeal = useCallback(async (meal: Meal, recordDate: string = currentMealDate) => {
+    const mealForDate = { ...meal, recordDate };
+    setMeals(prev => recordDate === currentMealDate ? [...prev, mealForDate] : prev);
 
     if (!TokenManager.isAuthenticated() || !currentUserId) return;
 
@@ -218,7 +282,7 @@ export function useAppData() {
         fiber: meal.fiber,
         meal_type: meal.type,
         category: meal.category,
-        record_date: getTodayDateString(),
+        record_date: recordDate,
         note: meal.note,
         source: meal.source || 'manual',
         source_detail: meal.sourceDetail,
@@ -227,7 +291,10 @@ export function useAppData() {
         rule_warnings_json: meal.ruleWarnings || [],
         recognition_meta_json: meal.recognitionMeta,
       });
-      await refreshMeals(currentUserId);
+      await refreshMeals(recordDate, currentUserId);
+      if (recordDate === getTodayDateString()) {
+        await refreshSmartInsightsAndMessages();
+      }
     } catch (error) {
       console.error('同步饮食记录失败:', error);
       await OfflineMealsService.add(currentUserId, {
@@ -244,12 +311,12 @@ export function useAppData() {
         fiber: meal.fiber,
         mealType: meal.type,
         category: meal.category,
-        recordDate: getTodayDateString(),
+        recordDate,
         note: meal.note,
         aiRecognized: false,
       });
     }
-  }, [currentUserId, refreshMeals]);
+  }, [currentMealDate, currentUserId, refreshMeals, refreshSmartInsightsAndMessages]);
 
   const updateMeal = useCallback(async (mealId: string, changes: MealUpdateInput): Promise<void> => {
     if (!TokenManager.isAuthenticated()) {
@@ -271,8 +338,11 @@ export function useAppData() {
       category: changes.category,
       note: changes.note,
     });
-    await refreshMeals();
-  }, [refreshMeals]);
+    await refreshMeals(currentMealDate);
+    if (currentMealDate === getTodayDateString()) {
+      await refreshSmartInsightsAndMessages();
+    }
+  }, [currentMealDate, refreshMeals, refreshSmartInsightsAndMessages]);
 
   const deleteMeal = useCallback(async (mealId: string): Promise<void> => {
     if (!TokenManager.isAuthenticated()) {
@@ -281,8 +351,11 @@ export function useAppData() {
 
     const serverMealId = parseServerMealId(mealId);
     await MealsAPI.deleteMeal(serverMealId);
-    await refreshMeals();
-  }, [refreshMeals]);
+    await refreshMeals(currentMealDate);
+    if (currentMealDate === getTodayDateString()) {
+      await refreshSmartInsightsAndMessages();
+    }
+  }, [currentMealDate, refreshMeals, refreshSmartInsightsAndMessages]);
 
   const updateProfile = useCallback(async (profile: UserProfile) => {
     setUserProfile(profile);
@@ -296,7 +369,8 @@ export function useAppData() {
     });
     setUserProfile(mapProfile(updatedProfile as any));
     await refreshDailyTargets();
-  }, [refreshDailyTargets]);
+    await refreshSmartInsightsAndMessages();
+  }, [refreshDailyTargets, refreshSmartInsightsAndMessages]);
 
   const updateNickname = useCallback(async (nickname: string) => {
     const trimmed = nickname.trim();
@@ -318,18 +392,22 @@ export function useAppData() {
     userProfile,
     medicalConditions,
     meals,
+    currentMealDate,
     appMessages,
     dailyTargets,
     setMedicalConditions,
     loadUserData,
     enterGuestMode,
+    exitGuestMode,
     logout,
     markAllMessagesRead,
     addMeal,
     updateMeal,
     deleteMeal,
     refreshMeals,
+    refreshAfterMealChange,
     refreshDailyTargets,
+    refreshSmartInsightsAndMessages,
     updateProfile,
     updateNickname,
   };

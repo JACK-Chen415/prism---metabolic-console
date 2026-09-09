@@ -310,7 +310,7 @@ async def get_daily_targets(current_user: CurrentUser, db: DbSession):
     result = await db.execute(
         select(HealthCondition).where(
             HealthCondition.user_id == current_user.id,
-            HealthCondition.status.in_([ConditionStatus.ACTIVE, ConditionStatus.MONITORING])
+            HealthCondition.status.in_([ConditionStatus.ACTIVE, ConditionStatus.MONITORING, ConditionStatus.ALERT])
         )
     )
     conditions = result.scalars().all()

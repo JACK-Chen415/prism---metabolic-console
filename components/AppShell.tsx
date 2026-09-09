@@ -16,7 +16,6 @@ const HIDE_BOTTOM_NAV = new Set<View>([
   View.CAMERA,
   View.SETTINGS,
   View.MESSAGES,
-  View.HEALTH_REPORT_ARCHIVES,
 ]);
 
 const AppShell: React.FC<AppShellProps> = ({ currentView, onViewChange, children }) => {
@@ -40,4 +39,3 @@ const AppShell: React.FC<AppShellProps> = ({ currentView, onViewChange, children
 };
 
 export default AppShell;
-

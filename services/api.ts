@@ -4,12 +4,9 @@
  */
 
 import { AUTH_STORAGE_KEYS } from '../constants/storage';
-import { IntakeCandidate, IntakeDraftSession } from '../types';
+import { ChatStreamEvent, IntakeCandidate, IntakeDraftSession } from '../types';
 
-// API 基础配置
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
-
-// ==================== Token 管理 ====================
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api';
 
 export const TokenManager = {
     getAccessToken: (): string | null => {
@@ -49,15 +46,6 @@ type MealUpdatePayload = Partial<{
     category: 'STAPLE' | 'MEAT' | 'VEG' | 'DRINK' | 'SNACK';
     note: string;
 }>;
-
-// ==================== HTTP 请求封装 ====================
-
-interface ApiResponse<T> {
-    success: boolean;
-    data?: T;
-    message?: string;
-    error?: string;
-}
 
 class ApiClient {
     private baseUrl: string;
@@ -120,9 +108,7 @@ class ApiClient {
             headers: { ...headers, ...options.headers }
         });
 
-        // 处理 401 错误：尝试刷新 Token
         if (response.status === 401 && requiresAuth) {
-            // 防止多个请求同时刷新
             if (!this.isRefreshing) {
                 this.isRefreshing = true;
                 this.refreshPromise = this.refreshAccessToken();
@@ -133,7 +119,6 @@ class ApiClient {
             this.refreshPromise = null;
 
             if (refreshed) {
-                // 重试原请求
                 const newHeaders = await this.getHeaders(true);
                 const retryResponse = await fetch(url, {
                     ...options,
@@ -143,38 +128,121 @@ class ApiClient {
                 if (!retryResponse.ok) {
                     throw new Error(await this.parseError(retryResponse));
                 }
-                return retryResponse.json();
-            } else {
-                // 刷新失败，需要重新登录
-                window.dispatchEvent(new CustomEvent('auth:logout'));
-                throw new Error('登录已过期，请重新登录');
+
+                const retryText = await retryResponse.text();
+                return retryText ? JSON.parse(retryText) : {} as T;
             }
+
+            window.dispatchEvent(new CustomEvent('auth:logout'));
+            throw new Error('登录已过期，请重新登录');
         }
 
         if (!response.ok) {
             throw new Error(await this.parseError(response));
         }
 
-        // 处理空响应
         const text = await response.text();
         return text ? JSON.parse(text) : {} as T;
+    }
+
+    async streamSse(
+        endpoint: string,
+        data: unknown,
+        onEvent: (event: ChatStreamEvent) => void,
+        requiresAuth: boolean = true
+    ): Promise<void> {
+        const url = `${this.baseUrl}${endpoint}`;
+        const fetchStream = async () => {
+            const headers = await this.getHeaders(requiresAuth);
+            return fetch(url, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(data)
+            });
+        };
+
+        let response = await fetchStream();
+
+        if (response.status === 401 && requiresAuth) {
+            if (!this.isRefreshing) {
+                this.isRefreshing = true;
+                this.refreshPromise = this.refreshAccessToken();
+            }
+
+            const refreshed = await this.refreshPromise;
+            this.isRefreshing = false;
+            this.refreshPromise = null;
+
+            if (!refreshed) {
+                window.dispatchEvent(new CustomEvent('auth:logout'));
+                throw new Error('登录已过期，请重新登录');
+            }
+
+            response = await fetchStream();
+        }
+
+        if (!response.ok) {
+            throw new Error(await this.parseError(response));
+        }
+
+        if (!response.body) {
+            throw new Error('当前浏览器不支持流式响应');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+
+        const dispatchBlock = (block: string) => {
+            const lines = block.split(/\r?\n/);
+            let eventName = 'message';
+            const dataLines: string[] = [];
+
+            for (const line of lines) {
+                if (line.startsWith('event:')) {
+                    eventName = line.slice(6).trim();
+                } else if (line.startsWith('data:')) {
+                    dataLines.push(line.slice(5).trimStart());
+                }
+            }
+
+            if (!dataLines.length) return;
+            const rawData = dataLines.join('\n');
+            try {
+                onEvent({ event: eventName, data: JSON.parse(rawData) });
+            } catch {
+                onEvent({ event: eventName, data: { message: rawData } });
+            }
+        };
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const blocks = buffer.split(/\r?\n\r?\n/);
+            buffer = blocks.pop() || '';
+            blocks.forEach(dispatchBlock);
+        }
+
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+            dispatchBlock(buffer);
+        }
     }
 
     private async parseError(response: Response): Promise<string> {
         try {
             const data = await response.json();
-            return data.detail || data.message || '请求失败';
+            return data.detail || data.message || data.error || '请求失败';
         } catch {
             return `请求失败 (${response.status})`;
         }
     }
 
-    // GET 请求
     get<T>(endpoint: string, requiresAuth = true): Promise<T> {
         return this.request<T>(endpoint, { method: 'GET' }, requiresAuth);
     }
 
-    // POST 请求
     post<T>(endpoint: string, data?: unknown, requiresAuth = true): Promise<T> {
         return this.request<T>(endpoint, {
             method: 'POST',
@@ -182,7 +250,6 @@ class ApiClient {
         }, requiresAuth);
     }
 
-    // PUT 请求
     put<T>(endpoint: string, data?: unknown, requiresAuth = true): Promise<T> {
         return this.request<T>(endpoint, {
             method: 'PUT',
@@ -190,42 +257,77 @@ class ApiClient {
         }, requiresAuth);
     }
 
-    // DELETE 请求
     delete<T>(endpoint: string, requiresAuth = true): Promise<T> {
         return this.request<T>(endpoint, { method: 'DELETE' }, requiresAuth);
     }
 
-    // 文件上传
-    async upload<T>(endpoint: string, file: File | Blob, fieldName = 'file'): Promise<T> {
-        const formData = new FormData();
-        formData.append(fieldName, file);
+    async upload<T>(
+        endpoint: string,
+        file: File | Blob,
+        fieldName = 'file',
+        fields?: Record<string, string | number | boolean | null | undefined>
+    ): Promise<T> {
+        const buildFormData = () => {
+            const formData = new FormData();
+            formData.append(fieldName, file);
 
-        const token = TokenManager.getAccessToken();
-        const headers: HeadersInit = {};
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`;
+            if (fields) {
+                Object.entries(fields).forEach(([key, value]) => {
+                    if (value !== undefined && value !== null) {
+                        formData.append(key, String(value));
+                    }
+                });
+            }
+
+            return formData;
+        };
+
+        const fetchUpload = async () => {
+            const token = TokenManager.getAccessToken();
+            const headers: HeadersInit = {};
+
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+            }
+
+            return fetch(`${this.baseUrl}${endpoint}`, {
+                method: 'POST',
+                headers,
+                body: buildFormData()
+            });
+        };
+
+        let response = await fetchUpload();
+
+        if (response.status === 401) {
+            if (!this.isRefreshing) {
+                this.isRefreshing = true;
+                this.refreshPromise = this.refreshAccessToken();
+            }
+
+            const refreshed = await this.refreshPromise;
+            this.isRefreshing = false;
+            this.refreshPromise = null;
+
+            if (!refreshed) {
+                window.dispatchEvent(new CustomEvent('auth:logout'));
+                throw new Error('登录已过期，请重新登录');
+            }
+
+            response = await fetchUpload();
         }
-
-        const response = await fetch(`${this.baseUrl}${endpoint}`, {
-            method: 'POST',
-            headers,
-            body: formData
-        });
 
         if (!response.ok) {
             throw new Error(await this.parseError(response));
         }
 
-        return response.json();
+        const text = await response.text();
+        return text ? JSON.parse(text) : {} as T;
     }
 }
 
-// 导出 API 客户端单例
 export const apiClient = new ApiClient(API_BASE_URL);
 
-// ==================== 业务 API ====================
-
-// 认证相关
 export const AuthAPI = {
     register: (phone: string, password: string, nickname?: string) =>
         apiClient.post('/auth/register', { phone, password, nickname }, false),
@@ -265,7 +367,6 @@ export const AuthAPI = {
     getDailyTargets: () => apiClient.get('/auth/daily-targets')
 };
 
-// 饮食记录相关
 export const MealsAPI = {
     create: (meal: {
         client_id: string;
@@ -327,7 +428,6 @@ export const MealsAPI = {
         apiClient.post('/meals/sync', { meals, last_sync_at: lastSyncAt })
 };
 
-// AI 对话相关
 export const ChatAPI = {
     createSession: (title?: string) =>
         apiClient.post('/chat/sessions', { title }),
@@ -341,17 +441,25 @@ export const ChatAPI = {
     sendMessage: (sessionId: number, content: string, attachments?: Record<string, unknown>) =>
         apiClient.post(`/chat/sessions/${sessionId}/messages`, { content, attachments }),
 
+    sendMessageStream: (
+        sessionId: number,
+        content: string,
+        attachments: Record<string, unknown> | undefined,
+        onEvent: (event: ChatStreamEvent) => void
+    ) => apiClient.streamSse(`/chat/sessions/${sessionId}/messages/stream`, { content, attachments }, onEvent),
+
     deleteSession: (sessionId: number) =>
         apiClient.delete(`/chat/sessions/${sessionId}`),
 
-    recognizeFood: (imageBase64: string, imageType = 'jpeg') =>
+    recognizeFood: (imageBase64: string, imageType = 'jpeg', prompt?: string) =>
         apiClient.post('/chat/recognize-food', {
             image_base64: imageBase64,
-            image_type: imageType
+            image_type: imageType,
+            prompt
         }),
 
-    recognizeFoodUpload: (file: File) =>
-        apiClient.upload('/chat/recognize-food/upload', file),
+    recognizeFoodUpload: (file: File, prompt?: string) =>
+        apiClient.upload('/chat/recognize-food/upload', file, 'file', { prompt }),
 
     quickLog: (
         foodItem: {
@@ -378,10 +486,55 @@ export const ChatAPI = {
 };
 
 export const IntakeAPI = {
-    parseVoice: (transcript: string, mealTimeHint?: string) =>
+    recognizeAndParsePhotoUpload: (file: File, prompt?: string, mealTimeHint?: string, recordDate?: string) =>
+        apiClient.upload<IntakeDraftSession>('/intake/photo/recognize-parse-upload', file, 'file', {
+            prompt,
+            meal_time_hint: mealTimeHint,
+            record_date: recordDate,
+            fast: true,
+        }),
+
+    parseVoice: (
+        transcript: string,
+        mealTimeHint?: string,
+        recordDate?: string
+    ) =>
         apiClient.post<IntakeDraftSession>('/intake/voice/parse', {
             transcript,
             meal_time_hint: mealTimeHint,
+            record_date: recordDate,
+        }),
+
+    parseText: (
+        text: string,
+        contextText?: string,
+        mealTimeHint?: string,
+        recordDate?: string
+    ) =>
+        apiClient.post<IntakeDraftSession>('/intake/text/parse', {
+            text,
+            context_text: contextText,
+            meal_time_hint: mealTimeHint,
+            record_date: recordDate,
+        }),
+
+    autoLogVoice: (
+        transcript: string,
+        mealTimeHint?: string,
+        recordDate?: string
+    ) =>
+        apiClient.post<{
+            meals: unknown[];
+            meal_ids: number[];
+            warning_summary: string[];
+            failed_items: Array<{ draft_id: string; food_name: string; reason: string }>;
+            should_refresh_log: boolean;
+            should_refresh_home: boolean;
+        }>('/intake/voice/auto-log', {
+            transcript,
+            meal_time_hint: mealTimeHint,
+            record_date: recordDate,
+            auto_confirm: true,
         }),
 
     parsePhotoResult: (payload: {
@@ -404,9 +557,11 @@ export const IntakeAPI = {
         should_refresh_log: boolean;
         should_refresh_home: boolean;
     }>('/intake/confirm', payload),
+
+    reevaluateCandidate: (candidate: IntakeCandidate) =>
+        apiClient.post<IntakeCandidate>('/intake/candidate/reevaluate', candidate),
 };
 
-// 健康档案相关
 export const ConditionsAPI = {
     create: (condition: {
         condition_code: string;
@@ -438,7 +593,6 @@ export const ConditionsAPI = {
     delete: (id: number) => apiClient.delete(`/conditions/${id}`)
 };
 
-// 消息通知相关
 export const MessagesAPI = {
     list: (params?: { unread_only?: boolean; message_type?: string; limit?: number }) => {
         const query = params ? '?' + new URLSearchParams(
@@ -458,6 +612,12 @@ export const MessagesAPI = {
     markAllAsRead: () => apiClient.post('/messages/read-all'),
 
     delete: (id: number) => apiClient.delete(`/messages/${id}`)
+};
+
+export const InsightsAPI = {
+    refresh: () => apiClient.post('/insights/refresh'),
+
+    getToday: () => apiClient.get('/insights/today')
 };
 
 export default apiClient;

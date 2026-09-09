@@ -1,4 +1,3 @@
-
 export enum View {
   SPLASH = 'SPLASH',
   LOGIN = 'LOGIN',
@@ -11,8 +10,7 @@ export enum View {
   CAMERA = 'CAMERA',
   SETTINGS = 'SETTINGS',
   MESSAGES = 'MESSAGES',
-  MEDICAL_ARCHIVES = 'MEDICAL_ARCHIVES',
-  HEALTH_REPORT_ARCHIVES = 'HEALTH_REPORT_ARCHIVES'
+  MEDICAL_ARCHIVES = 'MEDICAL_ARCHIVES'
 }
 
 export interface MetricData {
@@ -45,8 +43,8 @@ export interface UserProfile {
   avatarUrl?: string;
   gender: 'MALE' | 'FEMALE';
   age: number;
-  height: number; // cm
-  weight: number; // kg
+  height: number;
+  weight: number;
 }
 
 export interface CalorieRange {
@@ -55,9 +53,9 @@ export interface CalorieRange {
 }
 
 export interface DailyTargets {
-  calories: number; // 推荐摄入热量目标(kcal)，兼容旧字段
-  sodium: number;   // mg
-  purine: number;   // mg
+  calories: number;
+  sodium: number;
+  purine: number;
   bmi?: number | null;
   bmi_category?: 'underweight' | 'normal' | 'overweight' | 'obese' | string | null;
   bmr?: number | null;
@@ -77,18 +75,19 @@ export type MealSource = 'manual' | 'voice' | 'photo' | 'ai_quick_log';
 export interface Meal {
   id: string;
   clientId?: string;
+  recordDate?: string;
   name: string;
   portion: string;
   calories: number;
-  sodium: number; // mg
-  purine: number; // mg
-  protein?: number; // g
-  carbs?: number; // g
-  fat?: number; // g
-  fiber?: number; // g
+  sodium: number;
+  purine: number;
+  protein?: number;
+  carbs?: number;
+  fat?: number;
+  fiber?: number;
   type: 'BREAKFAST' | 'LUNCH' | 'DINNER' | 'SNACK';
   category: FoodCategory;
-  note?: string; // Added note field
+  note?: string;
   source?: MealSource;
   sourceDetail?: string;
   confidence?: number;
@@ -125,6 +124,31 @@ export interface KnowledgeCitation {
   is_primary: boolean;
 }
 
+export type KnowledgeOrigin = 'LOCAL_RULE' | 'LOCAL_KNOWLEDGE' | 'CLOUD_SUPPLEMENT' | 'MIXED';
+
+export type KnowledgeFallbackStatus =
+  | 'LOCAL_COMPLETE'
+  | 'LOCAL_PARTIAL_ALLOW_CLOUD'
+  | 'LOCAL_BLOCKED_NO_CLOUD'
+  | 'NO_LOCAL_MATCH_ALLOW_CLOUD';
+
+export interface ChatStreamEvent {
+  event: 'meta' | 'status' | 'delta' | 'done' | 'error' | string;
+  data: {
+    request_id?: string;
+    session_id?: number;
+    fallback?: boolean;
+    interrupted?: boolean;
+    stage?: string;
+    message?: string;
+    content?: string;
+    message_id?: number;
+    attachments?: Record<string, unknown>;
+    origin?: KnowledgeOrigin;
+    fallback_status?: KnowledgeFallbackStatus;
+  };
+}
+
 export interface IntakeCandidate {
   draft_id: string;
   source: Extract<MealSource, 'voice' | 'photo' | 'ai_quick_log'>;
@@ -157,18 +181,48 @@ export interface IntakeCandidate {
   recommendation_level?: 'RECOMMEND' | 'MODERATE' | 'LIMIT' | 'AVOID' | 'CONDITIONAL' | 'INSUFFICIENT' | null;
   warnings: string[];
   citations: KnowledgeCitation[];
-  origin: 'LOCAL_RULE' | 'LOCAL_KNOWLEDGE' | 'CLOUD_SUPPLEMENT' | 'MIXED';
-  fallback_status: 'LOCAL_COMPLETE' | 'LOCAL_PARTIAL_ALLOW_CLOUD' | 'LOCAL_BLOCKED_NO_CLOUD' | 'NO_LOCAL_MATCH_ALLOW_CLOUD';
+  origin: KnowledgeOrigin;
+  fallback_status: KnowledgeFallbackStatus;
   conflict_note?: string | null;
   caution_note?: string | null;
 }
 
+export type IntakeParseStatus = 'ready' | 'needs_clarification' | 'refused';
+
 export interface IntakeDraftSession {
   source: Extract<MealSource, 'voice' | 'photo' | 'ai_quick_log'>;
+  status?: IntakeParseStatus;
   raw_input_text?: string | null;
   raw_summary?: string | null;
   record_date: string;
   meal_time_hint?: string | null;
   candidates: IntakeCandidate[];
   summary_warning?: string | null;
+  missing_fields?: string[];
+  follow_up_prompt?: string | null;
+  refusal_reason?: string | null;
 }
+
+export interface VoiceAutoLogRequest {
+  transcript: string;
+  meal_time_hint?: string | null;
+  record_date?: string | null;
+  auto_confirm?: boolean;
+}
+
+export interface IntakeConfirmFailure {
+  draft_id: string;
+  food_name: string;
+  reason: string;
+}
+
+export interface IntakeConfirmResponse {
+  meals: unknown[];
+  meal_ids: number[];
+  warning_summary: string[];
+  failed_items: IntakeConfirmFailure[];
+  should_refresh_log: boolean;
+  should_refresh_home: boolean;
+}
+
+export type VoiceAutoLogResponse = IntakeConfirmResponse;

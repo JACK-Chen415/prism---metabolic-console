@@ -80,8 +80,8 @@ const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages, onMar
               <span className="material-symbols-outlined text-white/80">arrow_back</span>
             </button>
             <div className="flex flex-col">
-              <h1 className="text-white text-xl font-bold font-serif tracking-widest">消息中心</h1>
-              <span className="text-[10px] text-primary/40 font-serif tracking-[0.3em] uppercase mt-0.5">Insights</span>
+              <h1 className="text-white text-xl font-bold font-serif tracking-widest">AI 洞察记录</h1>
+              <span className="text-[10px] text-primary/40 font-serif tracking-[0.3em] uppercase mt-0.5">Archive</span>
             </div>
           </div>
         </div>
@@ -116,7 +116,7 @@ const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages, onMar
         </div>
       </div>
 
-      {/* Message List - "Book Slips" */}
+      {/* Insight Archive List - "Book Slips" */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {filteredMessages.map((msg) => {
           const styles = getTypeStyles(msg.type);
@@ -163,9 +163,9 @@ const MessageView: React.FC<MessageViewProps> = ({ onViewChange, messages, onMar
 
         {filteredMessages.length === 0 ? (
           <div className="py-12 flex flex-col items-center justify-center text-center border border-dashed border-white/10 rounded-2xl bg-white/5">
-            <span className="material-symbols-outlined text-white/20 text-4xl mb-2">mark_email_unread</span>
-            <p className="text-sm text-slate-500 font-serif font-bold tracking-wide">暂无此类消息</p>
-            <p className="text-[11px] text-slate-600 font-serif mt-1">消息仅展示后端真实生成或同步的数据</p>
+            <span className="material-symbols-outlined text-white/20 text-4xl mb-2">history</span>
+            <p className="text-sm text-slate-500 font-serif font-bold tracking-wide">暂无此类洞察</p>
+            <p className="text-[11px] text-slate-600 font-serif mt-1">记录仅展示后端真实生成或同步的数据</p>
           </div>
         ) : (
           <div className="py-8 flex justify-center opacity-30">

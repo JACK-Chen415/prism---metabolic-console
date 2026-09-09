@@ -1,10 +1,13 @@
 # Prism Metabolic Console - Docker Compose 部署配置
 
 services:
-  # PostgreSQL 数据库
+  # Legacy PostgreSQL database. Keep it for backup/migration recovery only.
+  # The unified app database is the local host database on 5433.
   db:
     image: postgres:16-alpine
     container_name: prism_db
+    profiles:
+      - legacy-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
@@ -27,11 +30,10 @@ services:
       dockerfile: Dockerfile
     container_name: prism_backend
     restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:${DB_PASSWORD:-prism_secure_password}@db:5432/prism_db
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://prism:prism123@host.docker.internal:5433/prism_metabolic}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-in-production}
       ARK_API_KEY: ${ARK_API_KEY}
       DOUBAO_MODEL: ${DOUBAO_MODEL}
